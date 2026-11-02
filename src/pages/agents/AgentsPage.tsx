@@ -127,7 +127,6 @@ export default function AgentsPage() {
   // User Profile & Assigned Areas
   const [currentUserId, setCurrentUserId] = useState("");
   const [currentUserName, setCurrentUserName] = useState("User");
-  const [assignedDistricts, setAssignedDistricts] = useState<string[]>([]);
   const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>([]);
 
   // Master Data
@@ -182,7 +181,7 @@ export default function AgentsPage() {
   const [selectedLocation, setSelectedLocation] = useState<
     [number, number] | null
   >(null);
-  const [mapCenter, setMapCenter] = useState<[number, number]>([24.75, 90.4]);
+  const [mapCenter] = useState<[number, number]>([24.75, 90.4]);
   const [myLocationMode, setMyLocationMode] = useState(false);
 
   // ==================================================
@@ -213,7 +212,6 @@ export default function AgentsPage() {
     }
 
     setCurrentUserName(uName);
-    setAssignedDistricts(uDistricts);
     setAssignedUpazilas(uUpazilas);
 
     const [

@@ -226,7 +226,6 @@ export default function FarmersPage() {
   // User Profile & Assigned Areas
   const [currentUserId, setCurrentUserId] = useState("");
   const [currentUserName, setCurrentUserName] = useState("User");
-  const [assignedDistricts, setAssignedDistricts] = useState<string[]>([]);
   const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>([]);
 
   // Master Data
@@ -312,7 +311,7 @@ export default function FarmersPage() {
     }
 
     setCurrentUserName(uName);
-    setAssignedDistricts(uDistricts);
+  
     setAssignedUpazilas(uUpazilas);
 
     const [

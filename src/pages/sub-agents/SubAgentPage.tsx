@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import LocationPicker from "../../components/maps/LocationPicker";
 import { supabase } from "../../lib/supabase";
 import { getAgents } from "../../services/agentService";
@@ -126,7 +126,7 @@ export default function SubAgentPage() {
   const isFullAccess = role === "super_admin" || role === "manager";
 
   // Assigned Areas
-  const [assignedDistricts, setAssignedDistricts] = useState<string[]>([]);
+
   const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>([]);
 
   // Master Data
@@ -174,7 +174,7 @@ export default function SubAgentPage() {
   const [selectedLocation, setSelectedLocation] = useState<
     [number, number] | null
   >(null);
-  const [mapCenter, setMapCenter] = useState<[number, number]>([24.75, 90.4]);
+  const [mapCenter,] = useState<[number, number]>([24.75, 90.4]);
   const [myLocationMode, setMyLocationMode] = useState(false);
 
   // ==================================================
@@ -201,7 +201,7 @@ export default function SubAgentPage() {
       }
     }
 
-    setAssignedDistricts(uDistricts);
+    
     setAssignedUpazilas(uUpazilas);
 
     const [

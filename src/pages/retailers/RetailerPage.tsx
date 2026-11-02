@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import LocationPicker from "../../components/maps/LocationPicker";
 import { supabase } from "../../lib/supabase";
 import { getAgents } from "../../services/agentService";
@@ -126,7 +126,7 @@ export default function RetailerPage() {
   const isFullAccess = role === "super_admin" || role === "manager";
 
   // Assigned Areas
-  const [assignedDistricts, setAssignedDistricts] = useState<string[]>([]);
+  
   const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>([]);
 
   // Master Data
@@ -174,7 +174,7 @@ export default function RetailerPage() {
   const [selectedLocation, setSelectedLocation] = useState<
     [number, number] | null
   >(null);
-  const [mapCenter, setMapCenter] = useState<[number, number]>([24.75, 90.4]);
+  const [mapCenter] = useState<[number, number]>([24.75, 90.4]);
   const [myLocationMode, setMyLocationMode] = useState(false);
 
   // ==================================================
@@ -201,7 +201,7 @@ export default function RetailerPage() {
       }
     }
 
-    setAssignedDistricts(uDistricts);
+
     setAssignedUpazilas(uUpazilas);
 
     const [
@@ -514,12 +514,12 @@ export default function RetailerPage() {
   });
 
   // Parent Agents inside Add/Edit Form (Filtered by selected Company)
-  const formAvailableAgents = agents.filter((a: any) => {
-    if (form.company_id && String(a.company_id) !== String(form.company_id)) {
-      return false;
-    }
-    return true;
-  });
+ // const formAvailableAgents = agents.filter((a: any) => {
+  //  if (form.company_id && String(a.company_id) !== String(form.company_id)) {
+   //   return false;
+   // }
+ //   return true;
+ // });
 
   // ==================================================
   // SAVE, DELETE & LOCATE ME

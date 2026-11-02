@@ -47,6 +47,7 @@ L.Icon.Default.mergeOptions({
 
 const EMPTY_FORM = {
   company_id: "",
+  agent_code: "",
   agent_name: "",
   proprietor: "",
   mobile: "",
@@ -92,6 +93,10 @@ function getSaleBreakdown(agent: any) {
     { label: "Fish", val: Number(agent?.fish_sale || 0) },
   ];
   return items.filter((i) => i.val > 0);
+}
+
+function isNourishName(name?: string) {
+  return Boolean(name && name.toLowerCase().includes("nourish"));
 }
 
 function RecenterMap({ position }: { position: [number, number] }) {
@@ -152,7 +157,7 @@ export default function AgentsPage() {
   >(null);
   const [locatingInPicker, setLocatingInPicker] = useState(false);
 
-  // Agent Tracking Notes State (Used in View Modal & Map Popup)
+  // Agent Tracking Notes State
   const [activeTrackingAgentId, setActiveTrackingAgentId] = useState<
     number | null
   >(null);
@@ -184,8 +189,16 @@ export default function AgentsPage() {
   const [mapCenter] = useState<[number, number]>([24.75, 90.4]);
   const [myLocationMode, setMyLocationMode] = useState(false);
 
+  // Check if selected company in form is Nourish
+  const selectedFormCompanyObj = companies.find(
+    (c) => String(c.id) === String(form.company_id)
+  );
+  const isFormCompanyNourish = isNourishName(
+    selectedFormCompanyObj?.company_name
+  );
+
   // ==================================================
-  // INITIALIZE USER & DATA (STRICT AREA RESTRICTION)
+  // INITIALIZE USER & DATA
   // ==================================================
   async function loadData() {
     const {
@@ -266,7 +279,6 @@ export default function AgentsPage() {
     loadData();
   }, [role]);
 
-  // Auto calculate Total Monthly Sale in Form
   useEffect(() => {
     const total =
       Number(form.broiler_sale || 0) +
@@ -299,7 +311,7 @@ export default function AgentsPage() {
   }
 
   // ==================================================
-  // AGENT TRACKING NOTES (USED IN VIEW MODAL & MAP POPUP)
+  // AGENT TRACKING NOTES
   // ==================================================
   async function loadAgentNotes(agentId: number) {
     setActiveTrackingAgentId(agentId);
@@ -359,7 +371,6 @@ export default function AgentsPage() {
     }
   }
 
-  // Jump to Agent on Map when clicking "View on Map" button in table row
   function handleViewAgentOnMap(agent: any) {
     if (!agent.latitude || !agent.longitude) {
       alert("Location not available for this agent.");
@@ -387,7 +398,7 @@ export default function AgentsPage() {
   }
 
   // ==================================================
-  // DEPENDENT LOCATION DROPDOWNS (RESPECTING ASSIGNMENTS)
+  // DEPENDENT LOCATION DROPDOWNS
   // ==================================================
   const selectedDistrict = districts.find((d) => d.name === form.district);
 
@@ -445,7 +456,6 @@ export default function AgentsPage() {
     (b: any) => b.union_id === selectedUnion?.id
   );
 
-  // Filter Bar Dependent Dropdowns
   useEffect(() => {
     async function loadFilterUpazilas() {
       let query = supabase.from("upazilas").select("*").order("name");
@@ -529,7 +539,7 @@ export default function AgentsPage() {
   }, [unionFilter, filterUnions]);
 
   // ==================================================
-  // SAVE, DELETE & LOCATE ME
+  // SAVE, DELETE & LOCATE ME (INCLUDING NOURISH AGENT ID)
   // ==================================================
   async function handleSave() {
     try {
@@ -543,8 +553,13 @@ export default function AgentsPage() {
         return;
       }
 
-      const payload = {
+      const cleanAgentCode = isFormCompanyNourish
+        ? form.agent_code.trim()
+        : "";
+
+      const payload: any = {
         ...form,
+        agent_code: cleanAgentCode,
         company_id: Number(form.company_id),
         broiler_sale: Number(form.broiler_sale || 0),
         layer_sale: Number(form.layer_sale || 0),
@@ -558,11 +573,29 @@ export default function AgentsPage() {
 
       if (editingId) {
         await updateAgent(editingId, payload);
+        await supabase
+          .from("agents")
+          .update({ agent_code: cleanAgentCode })
+          .eq("id", editingId);
         alert("Agent Updated");
       } else {
-        await createAgent(payload);
+        const created: any = await createAgent(payload);
+        const createdId = created?.id || created?.[0]?.id;
+        if (createdId) {
+          await supabase
+            .from("agents")
+            .update({ agent_code: cleanAgentCode })
+            .eq("id", createdId);
+        } else if (cleanAgentCode) {
+          await supabase
+            .from("agents")
+            .update({ agent_code: cleanAgentCode })
+            .eq("agent_name", form.agent_name.trim())
+            .eq("company_id", Number(form.company_id));
+        }
         alert("Agent Saved");
       }
+
       setShowForm(false);
       setEditingId(null);
       setForm({ ...EMPTY_FORM });
@@ -668,6 +701,7 @@ export default function AgentsPage() {
     const matchSearch =
       !q ||
       agent.agent_name?.toLowerCase().includes(q) ||
+      agent.agent_code?.toLowerCase().includes(q) ||
       agent.proprietor?.toLowerCase().includes(q) ||
       agent.mobile?.toLowerCase().includes(q) ||
       agent.bazar?.toLowerCase().includes(q);
@@ -700,14 +734,16 @@ export default function AgentsPage() {
     return (a.agent_name || "").localeCompare(b.agent_name || "");
   });
 
-  // Group Agents by Company
   const companyGroupedAgents = Object.values(
     sortedAgents.reduce((acc: Record<string, any>, agent: any) => {
       const key = String(agent.company_id || "unassigned");
       if (!acc[key]) {
+        const compName =
+          agent.companies?.company_name || "Unassigned Company";
         acc[key] = {
           companyId: key,
-          companyName: agent.companies?.company_name || "Unassigned Company",
+          companyName: compName,
+          isNourish: isNourishName(compName),
           logoUrl: agent.companies?.logo_url || "",
           totalSale: 0,
           agents: [],
@@ -764,6 +800,7 @@ export default function AgentsPage() {
 
       worksheet.getRow(1).values = [
         "Company",
+        "Agent ID",
         "Agent Name",
         "Proprietor",
         "Mobile",
@@ -784,6 +821,7 @@ export default function AgentsPage() {
       sortedAgents.forEach((agent: any) => {
         worksheet.addRow([
           agent.companies?.company_name || "",
+          agent.agent_code || "-",
           agent.agent_name || "",
           agent.proprietor || "",
           agent.mobile || "",
@@ -802,13 +840,18 @@ export default function AgentsPage() {
         ]);
       });
 
-      for (let col = 1; col <= 16; col++) {
+      for (let col = 1; col <= 17; col++) {
         const cell = worksheet.getCell(1, col);
         cell.fill = {
           type: "pattern",
           pattern: "solid",
           fgColor: {
-            argb: col === 14 ? "15803D" : col >= 9 && col <= 13 ? "D97706" : "1E3A8A",
+            argb:
+              col === 15
+                ? "15803D"
+                : col >= 10 && col <= 14
+                ? "D97706"
+                : "1E3A8A",
           },
         };
         cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
@@ -839,27 +882,13 @@ export default function AgentsPage() {
         }
       });
 
-      for (let row = 2; row <= worksheet.rowCount; row++) {
-        for (let col = 9; col <= 14; col++) {
-          worksheet.getCell(row, col).numFmt = "#,##0";
-          worksheet.getCell(row, col).alignment = {
-            horizontal: "center",
-            vertical: "middle",
-          };
-        }
-      }
-
       const widths = [
-        25, 22, 20, 16, 20, 18, 18, 18, 15, 15, 15, 15, 15, 20, 20, 14,
+        24, 14, 22, 20, 16, 20, 18, 18, 18, 15, 15, 15, 15, 15, 20, 20, 14,
       ];
       widths.forEach((w, idx) => (worksheet.getColumn(idx + 1).width = w));
       worksheet.getRow(1).height = 30;
       worksheet.views = [{ state: "frozen", ySplit: 1 }];
-      worksheet.autoFilter = { from: "A1", to: "P1" };
-      worksheet.pageSetup.orientation = "landscape";
-      worksheet.pageSetup.fitToPage = true;
-      worksheet.pageSetup.fitToWidth = 1;
-      worksheet.pageSetup.fitToHeight = 0;
+      worksheet.autoFilter = { from: "A1", to: "Q1" };
 
       const buffer = await workbook.xlsx.writeBuffer();
       const blob = new Blob([buffer], {
@@ -880,6 +909,7 @@ export default function AgentsPage() {
     setEditingId(agent.id);
     setForm({
       company_id: String(agent.company_id),
+      agent_code: agent.agent_code || "",
       agent_name: agent.agent_name || "",
       proprietor: agent.proprietor || "",
       mobile: agent.mobile || "",
@@ -908,7 +938,6 @@ export default function AgentsPage() {
       ================================================== */}
       <div className="bg-white border border-slate-300 rounded-xl p-2.5 shadow-sm">
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 items-center">
-          {/* Search */}
           <div className="col-span-2 sm:col-span-2 lg:col-span-2 relative">
             <Search
               size={13}
@@ -916,14 +945,13 @@ export default function AgentsPage() {
             />
             <input
               type="text"
-              placeholder="Search agent, proprietor, mobile, bazar..."
+              placeholder="Search agent name, ID, proprietor, mobile..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full rounded-lg border border-slate-300 pl-8 pr-2.5 py-1.5 text-xs outline-none focus:border-blue-500"
             />
           </div>
 
-          {/* District */}
           <select
             value={districtFilter}
             onChange={(e) => {
@@ -942,7 +970,6 @@ export default function AgentsPage() {
             ))}
           </select>
 
-          {/* Upazila */}
           <select
             value={upazilaFilter}
             onChange={(e) => {
@@ -960,7 +987,6 @@ export default function AgentsPage() {
             ))}
           </select>
 
-          {/* Union */}
           <select
             value={unionFilter}
             onChange={(e) => {
@@ -977,7 +1003,6 @@ export default function AgentsPage() {
             ))}
           </select>
 
-          {/* Bazar */}
           <select
             value={bazarFilter}
             onChange={(e) => setBazarFilter(e.target.value)}
@@ -991,7 +1016,6 @@ export default function AgentsPage() {
             ))}
           </select>
 
-          {/* Company + Compact Reset Button */}
           <div className="col-span-2 sm:col-span-1 flex items-center gap-1.5">
             <select
               value={companyFilter}
@@ -1018,7 +1042,7 @@ export default function AgentsPage() {
       </div>
 
       {/* ==================================================
-          2. ADD AGENT, SUMMARY, EXPORT, VIEW MAP BAR (BELOW FILTER)
+          2. ADD AGENT, SUMMARY, EXPORT, VIEW MAP BAR
       ================================================== */}
       <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-slate-300 rounded-xl px-3.5 py-2 shadow-sm">
         <div className="flex flex-wrap items-center gap-2">
@@ -1100,7 +1124,7 @@ export default function AgentsPage() {
       </div>
 
       {/* ==================================================
-          3. INTERACTIVE AGENT MAP VIEW (WITH INLINE TRACKING)
+          3. INTERACTIVE AGENT MAP VIEW
       ================================================== */}
       {showMap && (
         <div
@@ -1195,7 +1219,6 @@ export default function AgentsPage() {
                     >
                       <Popup maxWidth={340}>
                         <div className="w-[270px] sm:w-[290px] text-xs space-y-2">
-                          {/* Header: Logo + Agent Name */}
                           <div className="flex items-center gap-2 border-b pb-1.5">
                             {agent.companies?.logo_url && (
                               <img
@@ -1207,6 +1230,9 @@ export default function AgentsPage() {
                             <div>
                               <h3 className="font-bold text-sm text-slate-800 leading-tight">
                                 {agent.agent_name}
+                                {agent.agent_code
+                                  ? ` (ID: ${agent.agent_code})`
+                                  : ""}
                               </h3>
                               <p className="text-[11px] text-slate-500">
                                 {agent.companies?.company_name}
@@ -1217,7 +1243,7 @@ export default function AgentsPage() {
                             </div>
                           </div>
 
-                          {/* Compact Agent Tracking Box Right Below Name */}
+                          {/* Agent Tracking Box */}
                           <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-2 space-y-1.5">
                             <div className="font-bold text-[11px] text-emerald-900">
                               📝 Agent Tracking
@@ -1278,7 +1304,6 @@ export default function AgentsPage() {
                             </form>
                           </div>
 
-                          {/* Compact Info Table Inside Popup */}
                           <table className="w-full border-collapse border border-slate-200 text-[11px]">
                             <tbody>
                               <tr>
@@ -1326,16 +1351,6 @@ export default function AgentsPage() {
                                   ).toLocaleString()}
                                 </td>
                               </tr>
-                              {agent.focus_item && (
-                                <tr>
-                                  <td className="border px-2 py-1 font-semibold bg-slate-50">
-                                    Focus Item
-                                  </td>
-                                  <td className="border px-2 py-1">
-                                    {agent.focus_item}
-                                  </td>
-                                </tr>
-                              )}
                             </tbody>
                           </table>
                         </div>
@@ -1369,7 +1384,6 @@ export default function AgentsPage() {
               key={group.companyId}
               className="bg-white border border-slate-300 rounded-lg overflow-hidden shadow-sm"
             >
-              {/* Company Group Heading */}
               <div className="bg-slate-100 border-b border-slate-300 px-3 py-2 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   {group.logoUrl && (
@@ -1394,7 +1408,6 @@ export default function AgentsPage() {
                 </div>
               </div>
 
-              {/* Simple Bordered Table under Company */}
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse text-xs">
                   <thead className="bg-slate-50">
@@ -1402,6 +1415,11 @@ export default function AgentsPage() {
                       <th className="border border-slate-300 px-2 py-1.5 text-left">
                         SL
                       </th>
+                      {group.isNourish && (
+                        <th className="border border-slate-300 px-2 py-1.5 text-left">
+                          Agent ID
+                        </th>
+                      )}
                       <th className="border border-slate-300 px-2 py-1.5 text-left">
                         Agent Name
                       </th>
@@ -1442,6 +1460,11 @@ export default function AgentsPage() {
                           <td className="border border-slate-300 px-2 py-1">
                             {idx + 1}
                           </td>
+                          {group.isNourish && (
+                            <td className="border border-slate-300 px-2 py-1 font-bold text-emerald-700">
+                              {agent.agent_code || "-"}
+                            </td>
+                          )}
                           <td className="border border-slate-300 px-2 py-1 font-semibold text-slate-800">
                             {agent.agent_name}
                           </td>
@@ -1511,7 +1534,7 @@ export default function AgentsPage() {
       )}
 
       {/* ==================================================
-          5. VIEW AGENT MODAL (CLEAN TABLE + TRACKING BOX)
+          5. VIEW AGENT MODAL
       ================================================== */}
       {selectedAgent && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
@@ -1529,7 +1552,6 @@ export default function AgentsPage() {
             </div>
 
             <div className="p-4 space-y-3 overflow-y-auto">
-              {/* Agent Tracking Box right under Agent Name */}
               <div className="bg-emerald-50 border border-emerald-300 rounded-lg p-3 space-y-2">
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-bold text-emerald-900">
@@ -1588,7 +1610,6 @@ export default function AgentsPage() {
                 </form>
               </div>
 
-              {/* Clean Compact Bordered Table for Agent Details */}
               <table className="w-full border-collapse border border-slate-300 text-xs">
                 <tbody>
                   <tr>
@@ -1599,6 +1620,16 @@ export default function AgentsPage() {
                       {selectedAgent.companies?.company_name || "-"}
                     </td>
                   </tr>
+                  {isNourishName(selectedAgent.companies?.company_name) && (
+                    <tr>
+                      <td className="border border-slate-300 bg-slate-50 px-3 py-1.5 font-semibold">
+                        Agent ID (Nourish)
+                      </td>
+                      <td className="border border-slate-300 px-3 py-1.5 font-bold text-emerald-700">
+                        {selectedAgent.agent_code || "-"}
+                      </td>
+                    </tr>
+                  )}
                   <tr>
                     <td className="border border-slate-300 bg-slate-50 px-3 py-1.5 font-semibold">
                       Agent Name
@@ -1674,16 +1705,6 @@ export default function AgentsPage() {
                       {selectedAgent.status || "Active"}
                     </td>
                   </tr>
-                  <tr>
-                    <td className="border border-slate-300 bg-slate-50 px-3 py-1.5 font-semibold">
-                      Coordinates
-                    </td>
-                    <td className="border border-slate-300 px-3 py-1.5">
-                      {selectedAgent.latitude && selectedAgent.longitude
-                        ? `${selectedAgent.latitude}, ${selectedAgent.longitude}`
-                        : "-"}
-                    </td>
-                  </tr>
                 </tbody>
               </table>
             </div>
@@ -1692,7 +1713,7 @@ export default function AgentsPage() {
       )}
 
       {/* ==================================================
-          6. ADD / EDIT AGENT MODAL
+          6. ADD / EDIT AGENT MODAL (WITH NOURISH AGENT ID OPTION)
       ================================================== */}
       {showForm && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
@@ -1731,6 +1752,23 @@ export default function AgentsPage() {
                   ))}
                 </select>
               </div>
+
+              {/* Agent ID Field — ONLY SHOWN WHEN NOURISH IS SELECTED */}
+              {isFormCompanyNourish && (
+                <div>
+                  <label className="block text-xs font-bold text-emerald-700 mb-1">
+                    Agent ID (Nourish) *
+                  </label>
+                  <input
+                    placeholder="e.g. 1059"
+                    value={form.agent_code}
+                    onChange={(e) =>
+                      setForm({ ...form, agent_code: e.target.value })
+                    }
+                    className="w-full rounded border border-emerald-400 bg-emerald-50/40 px-2.5 py-1.5 text-xs outline-none focus:border-emerald-600"
+                  />
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">

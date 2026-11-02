@@ -1,153 +1,140 @@
-import { useState } from "react";
-import {
-  useNavigate,
-  useLocation,
-} from "react-router-dom";
+import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "../../lib/supabase";
-import { getUserRole } from "../../services/userService";
+import { Mail, Lock, Eye, EyeOff, ArrowRight, Loader2 } from "lucide-react";
 
 export default function LoginPage() {
-  const [email, setEmail] =
-    useState("");
+  const navigate = useNavigate();
 
-  const [password, setPassword] =
-    useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
-    const navigate =
-  useNavigate();
+  async function handleLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setErrorMsg("");
 
-const location =
-  useLocation();
+    if (!email.trim() || !password) {
+      setErrorMsg("Please enter your email and password.");
+      return;
+    }
 
-const from =
-  (
-    location.state as any
-  )?.from?.pathname || "/";
+    setLoading(true);
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
 
-  async function handleLogin() {
-  const { error } =
-    await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-  if (error) {
-    alert(error.message);
-    return;
+      if (error) throw error;
+      navigate("/", { replace: true });
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Invalid login credentials.");
+    } finally {
+      setLoading(false);
+    }
   }
 
-  const userData =
-    await getUserRole(email);
+  return (
+    <div className="relative min-h-screen flex items-center justify-center overflow-hidden bg-gradient-to-br from-slate-900 via-emerald-950 to-teal-900 p-4">
+      {/* Subtle Ambient Glows */}
+      <div className="pointer-events-none absolute -top-28 -left-28 w-80 h-80 rounded-full bg-emerald-500/20 blur-3xl" />
+      <div className="pointer-events-none absolute -bottom-28 -right-28 w-80 h-80 rounded-full bg-teal-400/20 blur-3xl" />
 
-  if (
-    userData?.status ===
-    "inactive"
-  ) {
-    alert(
-      "Your account is inactive. Contact administrator."
-    );
-
-    await supabase.auth.signOut();
-
-    return;
-  }
-
-  
-  navigate(
-  from,
-  {
-    replace: true,
-  }
-);
-}
-
- return (
-  <div className="min-h-screen bg-gradient-to-br from-sky-100 via-blue-50 to-emerald-100 flex items-center justify-center p-6 relative overflow-hidden">
-
-    {/* Background Blur */}
-    <div className="absolute -top-40 -left-40 w-96 h-96 bg-sky-300/30 rounded-full blur-3xl"></div>
-
-    <div className="absolute -bottom-40 -right-40 w-[420px] h-[420px] bg-emerald-300/30 rounded-full blur-3xl"></div>
-
-    {/* Login Card */}
-    <div className="relative w-full max-w-md">
-
-      <div className="rounded-3xl bg-white/80 backdrop-blur-xl shadow-2xl border border-white/60 p-8">
-
-        {/* Logo */}
-        <div className="text-center mb-8">
-
-          <div className="text-6xl mb-3">
+      {/* Minimal Clean Login Card */}
+      <div className="relative z-10 w-full max-w-sm bg-white/95 backdrop-blur-xl border border-white/20 rounded-3xl shadow-2xl p-7 sm:p-8">
+        <div className="text-center mb-6">
+          <div className="w-20 h-20 mx-auto mb-3 rounded-2xl bg-emerald-50 border border-emerald-100 flex items-center justify-center p-2.5 shadow-sm">
             <img
-            src="/logo smart team.png"
-            alt="Smart Team"
-            className="w-28 mx-auto mb-4"
-          />
+              src="/logo smart team.png"
+              alt="Smart Team"
+              className="w-full h-full object-contain"
+            />
+          </div>
+          <h1 className="text-xl font-bold text-slate-800">Sign In</h1>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Enter your email and password to continue
+          </p>
+        </div>
+
+        {errorMsg && (
+          <div className="mb-4 px-3 py-2 rounded-xl bg-red-50 border border-red-200 text-red-600 text-xs font-medium text-center">
+            {errorMsg}
+          </div>
+        )}
+
+        <form onSubmit={handleLogin} className="space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1.5">
+              Email
+            </label>
+            <div className="relative">
+              <Mail
+                size={16}
+                className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
+              />
+              <input
+                type="email"
+                required
+                autoComplete="email"
+                placeholder="name@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full rounded-xl border border-slate-300 bg-slate-50/60 focus:bg-white pl-10 pr-3.5 py-2.5 text-sm text-slate-800 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100 transition"
+              />
+            </div>
           </div>
 
-          <h3 className="text-3xl font-bold text-slate-800">
-            Welcome
-          </h3>
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1.5">
+              Password
+            </label>
+            <div className="relative">
+              <Lock
+                size={16}
+                className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
+              />
+              <input
+                type={showPassword ? "text" : "password"}
+                required
+                autoComplete="current-password"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full rounded-xl border border-slate-300 bg-slate-50/60 focus:bg-white pl-10 pr-10 py-2.5 text-sm text-slate-800 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100 transition"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
+                tabIndex={-1}
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </div>
 
-          
-
-        </div>
-
-        {/* Email */}
-        <div className="mb-4">
-
-          <label className="block text-sm font-medium text-slate-700 mb-2">
-            Email Address
-          </label>
-
-          <input
-            type="email"
-            placeholder="Enter your email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
-          />
-
-        </div>
-
-        {/* Password */}
-        <div className="mb-6">
-
-          <label className="block text-sm font-medium text-slate-700 mb-2">
-            Password
-          </label>
-
-          <input
-            type="password"
-            placeholder="Enter your password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
-          />
-
-        </div>
-
-        {/* Login Button */}
-        <button
-          onClick={handleLogin}
-          className="w-full rounded-xl bg-gradient-to-r from-blue-600 to-emerald-600 py-3 font-semibold text-white shadow-lg transition duration-300 hover:scale-[1.02] hover:shadow-xl"
-        >
-          Sign In
-        </button>
-
-        {/* Footer */}
-        <div className="mt-8 text-center">
-
-          <p className="text-xs text-slate-500">
-            © 2026 Nourish Smart Team
-          </p>
-
-        </div>
-
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full mt-2 flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 active:scale-[0.99] disabled:opacity-60 text-white font-semibold py-2.5 px-4 rounded-xl text-sm shadow-md shadow-emerald-600/20 transition cursor-pointer"
+          >
+            {loading ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                <span>Signing in...</span>
+              </>
+            ) : (
+              <>
+                <span>Sign In</span>
+                <ArrowRight size={15} />
+              </>
+            )}
+          </button>
+        </form>
       </div>
-
     </div>
-
-  </div>
-);
+  );
 }

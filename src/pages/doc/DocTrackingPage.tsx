@@ -14,6 +14,79 @@ import {
 } from "react-icons/fa";
 import { RotateCcw } from "lucide-react";
 
+const FARM_CATEGORIES = [
+  "Broiler",
+  "Layer",
+  "Sonali",
+  "Duck",
+  "Quail",
+  "Cattle",
+  "Fish",
+];
+
+const BREEDS_BY_CATEGORY: Record<string, string[]> = {
+  Broiler: ["Arber Acress", "Ross", "Cobb 500", "Indian River", "Hubbard"],
+  Layer: [
+    "Shaver Star Cross 579 Brown",
+    "Bovans White",
+    "Bovans Brown",
+    "Lohman Brown",
+    "Lohman White",
+    "Isa Brown",
+    "Hisex Brown",
+    "Hisex White",
+    "Novojen Brown",
+    "Hyline Brown",
+    "Hyline White",
+    "Decalb White",
+    "BB 300",
+  ],
+  Sonali: [
+    "Local",
+    "Classic",
+    "Hybrid",
+    "Dominant",
+    "Hubbard Premium",
+    "Sasso",
+    "Tetra HB",
+    "Bornali",
+    "Bornali Plus",
+    "Cock",
+    "Brown Cock",
+    "White Cock",
+  ],
+  Duck: ["Khaki Campbell", "Pekin", "Jinding", "Deshi Duck"],
+  Quail: ["Japanese Quail", "Bobwhite Quail"],
+  Cattle: ["Holstein Friesian", "Sahiwal", "Sindhi", "Deshi", "Crossbred"],
+  Fish: ["Pangus", "Tilapia", "Koi", "Pabda", "Gulsha", "Carp", "Mixed"],
+};
+
+// PCD / DOC Type to Category & Breed Auto-Mapper
+function mapPcdToCategoryAndBreed(pcd: string): {
+  category: string;
+  breed: string;
+} {
+  const code = String(pcd || "").trim().toUpperCase();
+  if (code.startsWith("AA"))
+    return { category: "Broiler", breed: "Arber Acress" };
+  if (code.startsWith("HE")) return { category: "Broiler", breed: "Hubbard" };
+  if (code.startsWith("RO")) return { category: "Broiler", breed: "Ross" };
+
+  if (code.startsWith("SA")) return { category: "Sonali", breed: "Sasso" };
+  if (code.startsWith("BP"))
+    return { category: "Sonali", breed: "Bornali Plus" };
+  if (code.startsWith("BR")) return { category: "Sonali", breed: "Bornali" };
+  if (code.startsWith("CB")) return { category: "Sonali", breed: "Brown Cock" };
+  if (code.startsWith("CW")) return { category: "Sonali", breed: "White Cock" };
+
+  if (code.startsWith("SH"))
+    return { category: "Layer", breed: "Shaver Star Cross 579 Brown" };
+  if (code.startsWith("BO"))
+    return { category: "Layer", breed: "Bovans White" };
+
+  return { category: "Broiler", breed: "Arber Acress" };
+}
+
 interface DocAgent {
   id: string;
   doc_id: string;
@@ -49,6 +122,9 @@ interface DocTracking {
   qty: number;
   feed_company: string;
   remark: string;
+  category?: string;
+  breed?: string;
+  farmer_id?: number | null;
   created_by?: string;
   tracked_by_name?: string;
 }
@@ -63,6 +139,7 @@ interface OfficerRecord {
 
 interface FeedAgentRecord {
   id: number;
+  agent_code?: string;
   agent_name: string;
   upazila: string;
   company_id?: number;
@@ -77,7 +154,13 @@ interface FarmerRecord {
   village: string;
   union_name: string;
   upazila: string;
+  district?: string;
   companies?: { company_name?: string };
+}
+
+interface CompanyRecord {
+  id: number;
+  company_name: string;
 }
 
 let cachedPageState: {
@@ -92,6 +175,7 @@ let cachedPageState: {
   officers: OfficerRecord[];
   feedAgents: FeedAgentRecord[];
   farmersList: FarmerRecord[];
+  companiesList: CompanyRecord[];
   companyNames: string[];
   fromDate: string;
   toDate: string;
@@ -140,6 +224,9 @@ export default function DocTrackingPage() {
   const [farmersList, setFarmersList] = useState<FarmerRecord[]>(
     cachedPageState?.farmersList || []
   );
+  const [companiesList, setCompaniesList] = useState<CompanyRecord[]>(
+    cachedPageState?.companiesList || []
+  );
   const [companyNames, setCompanyNames] = useState<string[]>(
     cachedPageState?.companyNames || []
   );
@@ -169,6 +256,7 @@ export default function DocTrackingPage() {
     doc_id: string;
     agent_name: string;
     upazila: string;
+    district: string;
     feed_agent_id?: number | null;
     pcd: string;
     h_date: string;
@@ -181,6 +269,8 @@ export default function DocTrackingPage() {
     address: "",
     mobile: "",
     qty: "",
+    category: "Broiler",
+    breed: "Arber Acress",
     feed_company: "",
     remark: "",
   });
@@ -281,17 +371,17 @@ export default function DocTrackingPage() {
         .order("full_name"),
       supabase
         .from("agents")
-        .select("id, agent_name, upazila, company_id")
+        .select("id, agent_code, agent_name, upazila, company_id")
         .order("agent_name"),
       supabase
         .from("farmers")
         .select(
-          "id, agent_id, company_id, farmer_name, mobile, village, union_name, upazila, companies(company_name)"
+          "id, agent_id, company_id, farmer_name, mobile, village, union_name, upazila, district, companies(company_name)"
         )
         .order("farmer_name"),
       supabase
         .from("companies")
-        .select("company_name")
+        .select("id, company_name")
         .order("company_name"),
     ]);
 
@@ -303,17 +393,15 @@ export default function DocTrackingPage() {
       upazilas: parseArray(u.upazilas),
     }));
 
+    const loadedComps: CompanyRecord[] = (compData as any[]) || [];
     const loadedCompNames: string[] = Array.from(
-      new Set(
-        (compData || [])
-          .map((c: any) => c.company_name?.trim())
-          .filter(Boolean)
-      )
+      new Set(loadedComps.map((c) => c.company_name?.trim()).filter(Boolean))
     );
 
     setOfficers(parsedOfficers);
     setFeedAgents((faData as any[]) || []);
     setFarmersList((frmData as any[]) || []);
+    setCompaniesList(loadedComps);
     setCompanyNames(loadedCompNames);
 
     let agentQuery = supabase.from("doc_agents").select("*").order("doc_id");
@@ -397,6 +485,7 @@ export default function DocTrackingPage() {
       officers: parsedOfficers,
       feedAgents: (faData as any[]) || [],
       farmersList: (frmData as any[]) || [],
+      companiesList: loadedComps,
       companyNames: loadedCompNames,
       fromDate: defFrom,
       toDate: defTo,
@@ -583,8 +672,30 @@ export default function DocTrackingPage() {
   }
 
   // ==================================================
-  // COLLABORATED FEED AGENT FARMERS LOOKUP
+  // COLLABORATED FEED AGENT & FARMERS LOOKUP
   // ==================================================
+  function getCollaboratedFeedAgentId(
+    target: typeof activeTarget
+  ): number | null {
+    if (!target) return null;
+    if (target.feed_agent_id) return Number(target.feed_agent_id);
+
+    const byCode = feedAgents.find(
+      (fa) => fa.agent_code && fa.agent_code.trim() === target.doc_id.trim()
+    );
+    if (byCode) return byCode.id;
+
+    const byName = feedAgents.find(
+      (fa) =>
+        fa.agent_name.trim().toLowerCase() ===
+        target.agent_name.trim().toLowerCase()
+    );
+    if (byName) return byName.id;
+
+    const inUpazila = feedAgents.find((fa) => fa.upazila === target.upazila);
+    return inUpazila ? inUpazila.id : null;
+  }
+
   function getCollaboratedFarmersForTarget(target: typeof activeTarget) {
     if (!target) return [];
 
@@ -592,13 +703,14 @@ export default function DocTrackingPage() {
     if (target.feed_agent_id) {
       matchedFeedAgentIds.push(Number(target.feed_agent_id));
     } else {
-      const nameMatches = feedAgents.filter(
+      const codeOrNameMatches = feedAgents.filter(
         (fa) =>
+          (fa.agent_code && fa.agent_code.trim() === target.doc_id.trim()) ||
           fa.agent_name.trim().toLowerCase() ===
-          target.agent_name.trim().toLowerCase()
+            target.agent_name.trim().toLowerCase()
       );
-      if (nameMatches.length > 0) {
-        matchedFeedAgentIds = nameMatches.map((fa) => fa.id);
+      if (codeOrNameMatches.length > 0) {
+        matchedFeedAgentIds = codeOrNameMatches.map((fa) => fa.id);
       }
     }
 
@@ -613,7 +725,7 @@ export default function DocTrackingPage() {
   }
 
   // ==================================================
-  // ADD, EDIT & DELETE FARMER TRACKING
+  // ADD, EDIT & DELETE FARMER TRACKING (WITH VET VISIT SYNC)
   // ==================================================
   function canModifyTracking(tr: DocTracking): boolean {
     if (isManagerOrAdmin) return true;
@@ -634,6 +746,7 @@ export default function DocTrackingPage() {
     doc_id: string;
     agent_name: string;
     upazila: string;
+    district: string;
     feed_agent_id?: number | null;
     pcd: string;
     h_date: string;
@@ -650,6 +763,10 @@ export default function DocTrackingPage() {
       companyNames[0] ||
       "";
 
+    const { category: autoCat, breed: autoBreed } = mapPcdToCategoryAndBreed(
+      params.pcd
+    );
+
     setEditingTracking(null);
     setActiveTarget(params);
     setSelectedFarmerId("");
@@ -658,6 +775,8 @@ export default function DocTrackingPage() {
       address: "",
       mobile: "",
       qty: String(params.remainingQty),
+      category: autoCat,
+      breed: autoBreed,
       feed_company: defaultFeedComp,
       remark: "",
     });
@@ -674,23 +793,30 @@ export default function DocTrackingPage() {
       return;
     }
 
+    const { category: autoCat, breed: autoBreed } = mapPcdToCategoryAndBreed(
+      tr.pcd
+    );
+
     setEditingTracking(tr);
     setActiveTarget({
       doc_id: agent.doc_id,
       agent_name: agent.agent_name,
       upazila: agent.upazila,
+      district: agent.district,
       feed_agent_id: agent.feed_agent_id,
       pcd: tr.pcd,
       h_date: tr.h_date,
       supply_id: tr.supply_id || undefined,
       remainingQty: currentUntrackedQty + Number(tr.qty || 0),
     });
-    setSelectedFarmerId("");
+    setSelectedFarmerId(tr.farmer_id ? String(tr.farmer_id) : "");
     setTrackForm({
       farmer_name: tr.farmer_name || "",
       address: tr.address || "",
       mobile: tr.mobile || "",
       qty: String(tr.qty || ""),
+      category: tr.category || autoCat,
+      breed: tr.breed || autoBreed,
       feed_company: tr.feed_company || companyNames[0] || "",
       remark: tr.remark || "",
     });
@@ -745,25 +871,124 @@ export default function DocTrackingPage() {
     setErrorMsg("");
 
     try {
+      const finalCategory = trackForm.category || "Broiler";
+      const finalBreed = trackForm.breed || "Arber Acress";
+
       if (editingTracking) {
         if (!canModifyTracking(editingTracking)) {
           throw new Error("Permission denied to edit this tracking.");
         }
 
+        const updateData: Record<string, any> = {
+          farmer_name: trackForm.farmer_name.trim(),
+          address: trackForm.address.trim(),
+          mobile: trackForm.mobile.trim(),
+          qty: numQty,
+          feed_company: trackForm.feed_company,
+          remark: trackForm.remark.trim(),
+          category: finalCategory,
+          breed: finalBreed,
+        };
+
         const { error } = await supabase
           .from("doc_trackings")
-          .update({
-            farmer_name: trackForm.farmer_name.trim(),
-            address: trackForm.address.trim(),
-            mobile: trackForm.mobile.trim(),
-            qty: numQty,
-            feed_company: trackForm.feed_company,
-            remark: trackForm.remark.trim(),
-          })
+          .update(updateData)
           .eq("id", editingTracking.id);
 
-        if (error) throw error;
+        if (error) {
+          delete updateData.category;
+          delete updateData.breed;
+          const { error: retryErr } = await supabase
+            .from("doc_trackings")
+            .update(updateData)
+            .eq("id", editingTracking.id);
+          if (retryErr) throw retryErr;
+        }
       } else {
+        // 1. Sync Farmer & Vet Visit (Direct Collaboration with Farmer Status & Vet Visits)
+        const targetFeedAgentId = getCollaboratedFeedAgentId(activeTarget);
+        const chosenCompObj =
+          companiesList.find(
+            (c) =>
+              c.company_name?.trim().toLowerCase() ===
+              trackForm.feed_company.trim().toLowerCase()
+          ) ||
+          companiesList.find((c) =>
+            c.company_name?.toLowerCase().includes("nourish")
+          ) ||
+          companiesList[0];
+
+        const targetCompId = chosenCompObj?.id || 1;
+        let targetFarmerId = selectedFarmerId ? Number(selectedFarmerId) : null;
+
+        if (!targetFarmerId) {
+          const existingFarmer = farmersList.find(
+            (f) =>
+              f.farmer_name?.trim().toLowerCase() ===
+                trackForm.farmer_name.trim().toLowerCase() &&
+              (!targetFeedAgentId ||
+                Number(f.agent_id) === Number(targetFeedAgentId))
+          );
+
+          if (existingFarmer) {
+            targetFarmerId = existingFarmer.id;
+          } else if (targetFeedAgentId) {
+            const newFarmerPayload: Record<string, any> = {
+              company_id: targetCompId,
+              agent_id: targetFeedAgentId,
+              farmer_name: trackForm.farmer_name.trim(),
+              mobile: trackForm.mobile.trim(),
+              village: trackForm.address.trim(),
+              upazila: activeTarget.upazila,
+              district: activeTarget.district || "Mymensingh",
+              farm_category: "Poultry",
+              farm_type: finalCategory,
+              status: "Running",
+              last_feed_company: trackForm.feed_company,
+            };
+
+            const { data: createdFarmer, error: createFarmerErr } =
+              await supabase
+                .from("farmers")
+                .insert([newFarmerPayload])
+                .select()
+                .single();
+
+            if (!createFarmerErr && createdFarmer) {
+              targetFarmerId = createdFarmer.id;
+            } else {
+              delete newFarmerPayload.last_feed_company;
+              const { data: retryFarmer } = await supabase
+                .from("farmers")
+                .insert([newFarmerPayload])
+                .select()
+                .single();
+              if (retryFarmer) targetFarmerId = retryFarmer.id;
+            }
+          }
+        }
+
+        if (targetFarmerId) {
+          const farmerUpdatePayload: Record<string, any> = {
+            status: "Running",
+            farm_type: finalCategory,
+            last_feed_company: trackForm.feed_company,
+          };
+          const { error: fUpdErr } = await supabase
+            .from("farmers")
+            .update(farmerUpdatePayload)
+            .eq("id", targetFarmerId);
+
+          if (fUpdErr) {
+            delete farmerUpdatePayload.last_feed_company;
+            await supabase
+              .from("farmers")
+              .update(farmerUpdatePayload)
+              .eq("id", targetFarmerId);
+          }
+        }
+
+        // Insert into `doc_trackings`
         const insertPayload: Record<string, any> = {
           supply_id: activeTarget.supply_id || null,
           doc_id: activeTarget.doc_id,
@@ -775,20 +1000,80 @@ export default function DocTrackingPage() {
           qty: numQty,
           feed_company: trackForm.feed_company,
           remark: trackForm.remark.trim(),
+          category: finalCategory,
+          breed: finalBreed,
+          farmer_id: targetFarmerId || null,
           created_by: currentUserId || null,
           tracked_by_name: currentUserName,
         };
 
-        const { error } = await supabase
+        const { error: trkInsErr } = await supabase
           .from("doc_trackings")
           .insert([insertPayload]);
 
-        if (error) {
+        if (trkInsErr) {
+          delete insertPayload.category;
+          delete insertPayload.breed;
+          delete insertPayload.farmer_id;
           delete insertPayload.tracked_by_name;
           const { error: retryErr } = await supabase
             .from("doc_trackings")
             .insert([insertPayload]);
           if (retryErr) throw retryErr;
+        }
+
+        // Insert Running Batch into `vet_visits` (with (1), (2) indicator if already running)
+        if (targetFarmerId && targetFeedAgentId) {
+          const { data: runningBatches } = await supabase
+            .from("vet_visits")
+            .select("id, batch_label")
+            .eq("farmer_id", String(targetFarmerId))
+            .in("status", ["Activated", "Running"]);
+
+          const runningCount = runningBatches?.length || 0;
+          const baseFarmerName = trackForm.farmer_name.trim();
+          const batchLabel =
+            runningCount > 0
+              ? `${baseFarmerName} (${runningCount + 1})`
+              : baseFarmerName;
+
+          if (
+            runningCount === 1 &&
+            runningBatches?.[0] &&
+            !runningBatches[0].batch_label?.includes("(")
+          ) {
+            await supabase
+              .from("vet_visits")
+              .update({ batch_label: `${baseFarmerName} (1)` })
+              .eq("id", runningBatches[0].id);
+          }
+
+          const nourishHatcheryName =
+            companyNames.find((c) => c.toLowerCase().includes("nourish")) ||
+            "Nourish";
+
+          const visitPayload: Record<string, any> = {
+            farmer_id: String(targetFarmerId),
+            agent_id: String(targetFeedAgentId),
+            company_id: String(targetCompId),
+            category: finalCategory,
+            hatch_date: activeTarget.h_date,
+            hatchery: nourishHatcheryName,
+            breed: finalBreed,
+            box_no: "",
+            t_birds: numQty,
+            status: "Activated",
+            batch_label: batchLabel,
+          };
+
+          const { error: vErr } = await supabase
+            .from("vet_visits")
+            .insert([visitPayload]);
+
+          if (vErr) {
+            delete visitPayload.batch_label;
+            await supabase.from("vet_visits").insert([visitPayload]);
+          }
         }
       }
 
@@ -1092,98 +1377,6 @@ export default function DocTrackingPage() {
       return { wch: Math.max(maxLen + 5, 12) };
     });
 
-    worksheet["!rows"] = exportRows.map((_, idx) => ({
-      hpt: idx === 0 ? 26 : 20,
-    }));
-    worksheet["!rows"].unshift({ hpt: 28 });
-
-    const range = XLSX.utils.decode_range(worksheet["!ref"] || "A1:M1");
-    const totalRowIndex = range.e.r;
-
-    const borderStyle = {
-      top: { style: "thin", color: { rgb: "CBD5E1" } },
-      bottom: { style: "thin", color: { rgb: "CBD5E1" } },
-      left: { style: "thin", color: { rgb: "CBD5E1" } },
-      right: { style: "thin", color: { rgb: "CBD5E1" } },
-    };
-
-    for (let R = range.s.r; R <= range.e.r; ++R) {
-      for (let C = range.s.c; C <= range.e.c; ++C) {
-        const cellRef = XLSX.utils.encode_cell({ r: R, c: C });
-        if (!worksheet[cellRef]) continue;
-
-        const isHeader = R === 0;
-        const isTotalRow = R === totalRowIndex;
-        const isCenterCol = [0, 1, 5, 8, 10].includes(C);
-        const isNumberCol = [4, 9].includes(C);
-
-        if (isHeader) {
-          worksheet[cellRef].s = {
-            fill: { fgColor: { rgb: "334155" } },
-            font: {
-              name: "Calibri",
-              sz: 11,
-              bold: true,
-              color: { rgb: "FFFFFF" },
-            },
-            alignment: {
-              horizontal: "center",
-              vertical: "center",
-              wrapText: true,
-            },
-            border: borderStyle,
-          };
-        } else if (isTotalRow) {
-          worksheet[cellRef].s = {
-            fill: { fgColor: { rgb: "F1F5F9" } },
-            font: {
-              name: "Calibri",
-              sz: 11,
-              bold: true,
-              color: { rgb: "0F172A" },
-            },
-            alignment: {
-              horizontal: isNumberCol
-                ? "right"
-                : isCenterCol
-                ? "center"
-                : "left",
-              vertical: "center",
-            },
-            border: {
-              top: { style: "medium", color: { rgb: "475569" } },
-              bottom: { style: "double", color: { rgb: "475569" } },
-              left: { style: "thin", color: { rgb: "CBD5E1" } },
-              right: { style: "thin", color: { rgb: "CBD5E1" } },
-            },
-          };
-        } else {
-          const isEvenRow = R % 2 === 0;
-          const isUntracked = worksheet[cellRef].v === "Untracked";
-
-          worksheet[cellRef].s = {
-            fill: { fgColor: { rgb: isEvenRow ? "F8FAFC" : "FFFFFF" } },
-            font: {
-              name: "Calibri",
-              sz: 10.5,
-              bold: C === 1 || isNumberCol || isUntracked,
-              color: { rgb: isUntracked ? "D97706" : "1E293B" },
-            },
-            alignment: {
-              horizontal: isNumberCol
-                ? "right"
-                : isCenterCol
-                ? "center"
-                : "left",
-              vertical: "center",
-              wrapText: true,
-            },
-            border: borderStyle,
-          };
-        }
-      }
-    }
-
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "DOC_Tracking");
     XLSX.writeFile(
@@ -1194,7 +1387,7 @@ export default function DocTrackingPage() {
   }
 
   // ==================================================
-  // TRACKED REPORT POPUP CALCULATIONS (DYNAMIC COMPANIES)
+  // TRACKED REPORT POPUP CALCULATIONS
   // ==================================================
   const reportSupplies = supplies.filter((s) => {
     if (!matchingAgentDocIds.has(s.doc_id)) return false;
@@ -1230,7 +1423,6 @@ export default function DocTrackingPage() {
       ? ((repTotalUntracked / repTotalDoc) * 100).toFixed(1)
       : "0.0";
 
-  // Combine companies from `companies` table + any company names present in trackings
   const allReportCompanies = Array.from(
     new Set([
       ...companyNames,
@@ -1373,7 +1565,6 @@ export default function DocTrackingPage() {
             isManagerOrAdmin ? "lg:grid-cols-7" : "lg:grid-cols-5"
           } gap-2 items-center`}
         >
-          {/* From Date */}
           <div className="flex items-center border border-slate-300 rounded-lg px-2 py-1 bg-white focus-within:border-emerald-500">
             <span className="text-[10px] font-semibold text-slate-400 mr-1.5 shrink-0">
               From:
@@ -1393,7 +1584,6 @@ export default function DocTrackingPage() {
             />
           </div>
 
-          {/* To Date */}
           <div className="flex items-center border border-slate-300 rounded-lg px-2 py-1 bg-white focus-within:border-emerald-500">
             <span className="text-[10px] font-semibold text-slate-400 mr-1.5 shrink-0">
               To:
@@ -1413,7 +1603,6 @@ export default function DocTrackingPage() {
             />
           </div>
 
-          {/* Month Filter */}
           <select
             value={monthFilter}
             onChange={(e) => handleMonthChange(e.target.value)}
@@ -1427,7 +1616,6 @@ export default function DocTrackingPage() {
             ))}
           </select>
 
-          {/* DOC Type Filter */}
           <select
             value={pcdFilter}
             onChange={(e) => setPcdFilter(e.target.value)}
@@ -1441,7 +1629,6 @@ export default function DocTrackingPage() {
             ))}
           </select>
 
-          {/* Upazila Filter (Super Admin & Manager) */}
           {isManagerOrAdmin && (
             <select
               value={upazilaFilter}
@@ -1457,7 +1644,6 @@ export default function DocTrackingPage() {
             </select>
           )}
 
-          {/* Officer Filter (Super Admin & Manager) */}
           {isManagerOrAdmin && (
             <select
               value={officerFilter}
@@ -1475,7 +1661,6 @@ export default function DocTrackingPage() {
             </select>
           )}
 
-          {/* Quick Agent Search + Small Reset Icon */}
           <div className="col-span-2 sm:col-span-1 flex items-center gap-1.5">
             <input
               type="text"
@@ -1495,9 +1680,7 @@ export default function DocTrackingPage() {
         </div>
       </div>
 
-      {/* ==================================================
-          ALERTS
-      ================================================== */}
+      {/* ALERTS */}
       {errorMsg && (
         <div className="flex items-center justify-between bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded-xl text-xs">
           <span>{errorMsg}</span>
@@ -1516,9 +1699,7 @@ export default function DocTrackingPage() {
         </div>
       )}
 
-      {/* ==================================================
-          AGENT-WISE CARDS
-      ================================================== */}
+      {/* AGENT-WISE CARDS */}
       {loading ? (
         <div className="bg-white border border-slate-200 rounded-2xl py-10 text-center text-slate-500 text-xs sm:text-sm">
           <FaSpinner className="animate-spin inline mr-2" />
@@ -1548,7 +1729,6 @@ export default function DocTrackingPage() {
                 key={agent.id}
                 className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden"
               >
-                {/* LIGHT ASH / GRAY CARD HEADER */}
                 <div className="bg-slate-100 border-b border-slate-200 px-4 py-2.5 flex items-center gap-2.5">
                   <span className="px-2.5 py-0.5 rounded-md bg-slate-200/80 border border-slate-300 text-slate-800 font-bold text-xs">
                     {agent.doc_id}
@@ -1558,7 +1738,6 @@ export default function DocTrackingPage() {
                   </h2>
                 </div>
 
-                {/* DOC TYPE SECTIONS INSIDE AGENT CARD */}
                 <div className="p-3 sm:p-4 space-y-4 divide-y divide-slate-100">
                   {agentDocTypes.map((docType) => {
                     const typeSupplyRows = agentSupplies.filter(
@@ -1598,14 +1777,19 @@ export default function DocTrackingPage() {
 
                     const primaryDate =
                       typeSupplyRows[0]?.h_date || fromDate || todayStr;
+                    const mappedInfo = mapPcdToCategoryAndBreed(docType);
 
                     return (
                       <div key={docType} className="pt-3 first:pt-0 space-y-2.5">
-                        {/* DOC Type Label & Add Tracking Button */}
                         <div className="flex items-center justify-between gap-2">
-                          <span className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 font-bold text-xs">
-                            DOC Type: {docType}
-                          </span>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 font-bold text-xs">
+                              DOC Type: {docType}
+                            </span>
+                            <span className="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-semibold">
+                              {mappedInfo.category} • {mappedInfo.breed}
+                            </span>
+                          </div>
 
                           <button
                             type="button"
@@ -1618,6 +1802,7 @@ export default function DocTrackingPage() {
                                 doc_id: agent.doc_id,
                                 agent_name: agent.agent_name,
                                 upazila: agent.upazila,
+                                district: agent.district,
                                 feed_agent_id: agent.feed_agent_id,
                                 pcd: docType,
                                 h_date: primaryDate,
@@ -1704,6 +1889,9 @@ export default function DocTrackingPage() {
                                     <th className="py-1.5 px-2 text-left">
                                       Mobile
                                     </th>
+                                    <th className="py-1.5 px-2 text-left">
+                                      Category & Breed
+                                    </th>
                                     <th className="py-1.5 px-2 text-right">
                                       DOC Qty
                                     </th>
@@ -1724,6 +1912,9 @@ export default function DocTrackingPage() {
                                 <tbody className="divide-y divide-emerald-100">
                                   {typeTrackRows.map((tr) => {
                                     const allowedToEdit = canModifyTracking(tr);
+                                    const autoInfo = mapPcdToCategoryAndBreed(
+                                      tr.pcd
+                                    );
                                     return (
                                       <tr key={tr.id}>
                                         <td className="py-1.5 px-2 font-semibold text-slate-800">
@@ -1734,6 +1925,10 @@ export default function DocTrackingPage() {
                                         </td>
                                         <td className="py-1.5 px-2 text-slate-600">
                                           {tr.mobile || "-"}
+                                        </td>
+                                        <td className="py-1.5 px-2 text-slate-700 font-medium">
+                                          {tr.category || autoInfo.category} •{" "}
+                                          {tr.breed || autoInfo.breed}
                                         </td>
                                         <td className="py-1.5 px-2 text-right font-bold text-emerald-700">
                                           {Number(tr.qty).toLocaleString()}
@@ -1792,7 +1987,6 @@ export default function DocTrackingPage() {
                           </div>
                         )}
 
-                        {/* COMPACT FOOTER SUMMARY FOR THIS DOC TYPE */}
                         <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs">
                           <span className="font-medium text-slate-700">
                             <strong>{docType}</strong> Total:{" "}
@@ -1821,7 +2015,7 @@ export default function DocTrackingPage() {
       )}
 
       {/* ==================================================
-          MODAL 1: ADD / EDIT FARMER TRACKING (CLEAN POPUP WITH DROPDOWN ABOVE FARMER NAME)
+          MODAL 1: ADD / EDIT FARMER TRACKING
       ================================================== */}
       {isTrackModalOpen && activeTarget && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
@@ -1923,6 +2117,53 @@ export default function DocTrackingPage() {
                     }
                     className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none focus:border-emerald-500"
                   />
+                </div>
+              </div>
+
+              {/* Farm Category & Breed Auto-filled from PCD */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Farm Category *
+                  </label>
+                  <select
+                    value={trackForm.category}
+                    onChange={(e) => {
+                      const cat = e.target.value;
+                      const breeds = BREEDS_BY_CATEGORY[cat] || [];
+                      setTrackForm({
+                        ...trackForm,
+                        category: cat,
+                        breed: breeds[0] || "",
+                      });
+                    }}
+                    className="w-full border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm bg-white outline-none focus:border-emerald-500"
+                  >
+                    {FARM_CATEGORIES.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Breed ({activeTarget.pcd}) *
+                  </label>
+                  <select
+                    value={trackForm.breed}
+                    onChange={(e) =>
+                      setTrackForm({ ...trackForm, breed: e.target.value })
+                    }
+                    className="w-full border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm bg-white outline-none focus:border-emerald-500"
+                  >
+                    {(BREEDS_BY_CATEGORY[trackForm.category] || []).map((b) => (
+                      <option key={b} value={b}>
+                        {b}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
 
@@ -2052,33 +2293,27 @@ export default function DocTrackingPage() {
               </div>
 
               <div className="border border-slate-200 rounded-xl max-h-48 overflow-y-auto p-2 space-y-1 bg-slate-50">
-                {allPcdTypes.length === 0 ? (
-                  <p className="text-xs text-slate-400 text-center py-3">
-                    No DOC Types available.
-                  </p>
-                ) : (
-                  allPcdTypes.map((type) => {
-                    const checked = exportSelectedTypes.includes(type);
-                    return (
-                      <label
-                        key={type}
-                        className={`flex items-center gap-2.5 px-3 py-2 rounded-lg cursor-pointer text-xs font-medium transition ${
-                          checked
-                            ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
-                            : "hover:bg-white text-slate-700"
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleExportDocType(type)}
-                          className="w-4 h-4 rounded text-emerald-600"
-                        />
-                        <span>DOC Type: {type}</span>
-                      </label>
-                    );
-                  })
-                )}
+                {allPcdTypes.map((type) => {
+                  const checked = exportSelectedTypes.includes(type);
+                  return (
+                    <label
+                      key={type}
+                      className={`flex items-center gap-2.5 px-3 py-2 rounded-lg cursor-pointer text-xs font-medium transition ${
+                        checked
+                          ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
+                          : "hover:bg-white text-slate-700"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleExportDocType(type)}
+                        className="w-4 h-4 rounded text-emerald-600"
+                      />
+                      <span>DOC Type: {type}</span>
+                    </label>
+                  );
+                })}
               </div>
 
               <div className="flex gap-2 pt-2">

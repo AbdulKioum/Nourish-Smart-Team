@@ -1,27 +1,25 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { supabase } from "../../lib/supabase";
 import {
-  Users,
-  UserCheck,
-  Building2,
-  Calendar,
-  MapPin,
-  PieChart,
-  ChevronDown,
-} from "lucide-react";
+  FaClipboardList,
+  FaUserCheck,
+  FaStethoscope,
+  FaChartBar,
+  FaUserFriends,
+  FaUsers,
+  FaCalendarAlt,
+} from "react-icons/fa";
 
-function parseList(val: any): string[] {
-  if (!val) return [];
-  if (Array.isArray(val))
-    return val.map((s) => String(s).trim()).filter(Boolean);
-  if (typeof val === "string") {
+function parseArray(field: any): string[] {
+  if (!field) return [];
+  if (Array.isArray(field)) return field;
+  if (typeof field === "string") {
     try {
-      const parsed = JSON.parse(val);
-      if (Array.isArray(parsed)) {
-        return parsed.map((s) => String(s).trim()).filter(Boolean);
-      }
+      const parsed = JSON.parse(field);
+      if (Array.isArray(parsed)) return parsed;
     } catch {
-      return val
+      return field
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
@@ -30,579 +28,300 @@ function parseList(val: any): string[] {
   return [];
 }
 
-function formatMonthName(ym: string) {
-  const [year, month] = ym.split("-");
-  const date = new Date(Number(year), Number(month) - 1, 1);
-  return date.toLocaleString("en-US", { month: "short", year: "numeric" });
-}
-
-export default function DashboardPage() {
+export default function Dashboard() {
   const [loading, setLoading] = useState(true);
-
-  const now = new Date();
-  const runningYm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(
-    2,
-    "0"
-  )}`;
-
-  // Default selected month is always the Running Month on open/reload
-  const [selectedYm, setSelectedYm] = useState<string>(runningYm);
-  const [availableMonths, setAvailableMonths] = useState<string[]>([runningYm]);
-
-  // Scoped raw DOC arrays so changing the month dropdown updates stats instantly
-  const [scopedDocSupplies, setScopedDocSupplies] = useState<any[]>([]);
-  const [scopedDocTrackings, setScopedDocTrackings] = useState<any[]>([]);
-
-  const [baseStats, setBaseStats] = useState({
-    totalAgents: 0,
-    totalFarmers: 0,
-  });
-
-  const [companyStats, setCompanyStats] = useState<any[]>([]);
-  const [upazilaStats, setUpazilaStats] = useState<any[]>([]);
-  const [monthlyDocStats, setMonthlyDocStats] = useState<any[]>([]);
+  const [supplies, setSupplies] = useState<any[]>([]);
+  const [trackings, setTrackings] = useState<any[]>([]);
+  const [selectedMonth, setSelectedMonth] = useState<string>("all");
+  const [visibleMonthsCount, setVisibleMonthsCount] = useState<number>(2);
 
   useEffect(() => {
-    loadDashboard();
+    loadDashboardData();
   }, []);
 
-  async function loadDashboard() {
+  async function loadDashboardData() {
     setLoading(true);
     try {
       const {
         data: { user },
       } = await supabase.auth.getUser();
 
-      let role = "officer";
-      let uDistricts: string[] = [];
       let uUpazilas: string[] = [];
+      let role = "officer";
 
       if (user) {
         const { data: profile } = await supabase
           .from("users")
-          .select("role, districts, upazilas")
+          .select("role, upazilas")
           .eq("id", user.id)
           .single();
 
         if (profile) {
           role = profile.role || "officer";
-          uDistricts = parseList(profile.districts);
-          uUpazilas = parseList(profile.upazilas);
+          uUpazilas = parseArray(profile.upazilas);
         }
       }
 
-      const normUpazilas = uUpazilas.map((u) => u.toLowerCase());
-      const normDistricts = uDistricts.map((d) => d.toLowerCase());
+      const isFullAccess = role === "super_admin" || role === "manager";
 
-      const isAllowedArea = (item: any) => {
-        const itemUpa = String(item?.upazila || "").trim().toLowerCase();
-        const itemDist = String(item?.district || "").trim().toLowerCase();
-
-        if (normUpazilas.length > 0) {
-          return normUpazilas.includes(itemUpa);
-        }
-        if (normDistricts.length > 0) {
-          return normDistricts.includes(itemDist);
-        }
-        return role === "super_admin" || role === "manager";
-      };
-
-      const [
-        { data: companiesData },
-        { data: agentsData },
-        { data: farmersData },
-        { data: docAgentsData },
-        { data: docSuppliesData },
-        { data: docTrackingsData },
-      ] = await Promise.all([
-        supabase.from("companies").select("id, company_name, logo_url"),
+      const [{ data: supData }, { data: trkData }] = await Promise.all([
         supabase
-          .from("agents")
-          .select("id, company_id, agent_name, district, upazila"),
-        supabase
-          .from("farmers")
-          .select("id, company_id, district, upazila, farm_category, status"),
-        supabase.from("doc_agents").select("doc_id, district, upazila"),
-        supabase.from("doc_supplies").select("*"),
+          .from("doc_supplies")
+          .select("*")
+          .order("h_date", { ascending: false }),
         supabase.from("doc_trackings").select("*"),
       ]);
 
-      const companies = companiesData || [];
-      const agents = (agentsData || []).filter(isAllowedArea);
-      const farmers = (farmersData || []).filter(isAllowedArea);
-      const docAgents = (docAgentsData || []).filter(isAllowedArea);
+      if (isFullAccess || uUpazilas.length === 0) {
+        setSupplies(supData || []);
+        setTrackings(trkData || []);
+      } else {
+        const { data: agData } = await supabase
+          .from("doc_agents")
+          .select("doc_id, upazila")
+          .in("upazila", uUpazilas);
 
-      const allowedDocIds = new Set(
-        docAgents.map((da: any) => String(da.doc_id).trim())
-      );
+        const allowedDocIds = new Set((agData || []).map((a) => a.doc_id));
+        const filteredSup = (supData || []).filter((s) =>
+          allowedDocIds.has(s.doc_id)
+        );
+        const filteredTrk = (trkData || []).filter((t) =>
+          allowedDocIds.has(t.doc_id)
+        );
 
-      const hasAreaRestriction =
-        normUpazilas.length > 0 ||
-        normDistricts.length > 0 ||
-        (role !== "super_admin" && role !== "manager");
-
-      const docSupplies = hasAreaRestriction
-        ? (docSuppliesData || []).filter((s: any) =>
-            allowedDocIds.has(String(s.doc_id).trim())
-          )
-        : docSuppliesData || [];
-
-      const docTrackings = hasAreaRestriction
-        ? (docTrackingsData || []).filter((t: any) =>
-            allowedDocIds.has(String(t.doc_id).trim())
-          )
-        : docTrackingsData || [];
-
-      setScopedDocSupplies(docSupplies);
-      setScopedDocTrackings(docTrackings);
-
-      setBaseStats({
-        totalAgents: agents.length,
-        totalFarmers: farmers.length,
-      });
-
-      // Collect all months present in database + Running Month
-      const monthSet = new Set<string>([runningYm]);
-      docSupplies.forEach((s: any) => {
-        if (s.h_date) monthSet.add(String(s.h_date).slice(0, 7));
-      });
-      docTrackings.forEach((t: any) => {
-        if (t.h_date) monthSet.add(String(t.h_date).slice(0, 7));
-      });
-
-      const sortedMonths = Array.from(monthSet).sort().reverse();
-      setAvailableMonths(sortedMonths);
-
-      // 1. Company-wise Agents & Farmers
-      const compMap: Record<string, any> = {};
-      companies.forEach((c) => {
-        compMap[String(c.id)] = {
-          id: c.id,
-          companyName: c.company_name,
-          logoUrl: c.logo_url,
-          agents: 0,
-          farmers: 0,
-          poultry: 0,
-          cattle: 0,
-          fish: 0,
-        };
-      });
-
-      agents.forEach((a) => {
-        const cid = String(a.company_id);
-        if (compMap[cid]) compMap[cid].agents += 1;
-      });
-
-      farmers.forEach((f) => {
-        const cid = String(f.company_id);
-        if (compMap[cid]) {
-          compMap[cid].farmers += 1;
-          if (f.farm_category === "Poultry") compMap[cid].poultry += 1;
-          if (f.farm_category === "Cattle") compMap[cid].cattle += 1;
-          if (f.farm_category === "Fish") compMap[cid].fish += 1;
-        }
-      });
-
-      const compArray = Object.values(compMap)
-        .filter((c: any) => c.agents > 0 || c.farmers > 0)
-        .sort((a: any, b: any) => b.farmers - a.farmers || b.agents - a.agents);
-
-      setCompanyStats(compArray);
-
-      // 2. District & Upazila-wise Farmers
-      const upaMap: Record<string, any> = {};
-      const ensureUpa = (district: string, upazila: string) => {
-        const key = `${district || "Unknown"}__${upazila || "Unknown"}`;
-        if (!upaMap[key]) {
-          upaMap[key] = {
-            district: district || "-",
-            upazila: upazila || "-",
-            agents: 0,
-            farmers: 0,
-          };
-        }
-        return upaMap[key];
-      };
-
-      agents.forEach((a) => {
-        if (!a.upazila && !a.district) return;
-        ensureUpa(a.district, a.upazila).agents += 1;
-      });
-
-      farmers.forEach((f) => {
-        if (!f.upazila && !f.district) return;
-        ensureUpa(f.district, f.upazila).farmers += 1;
-      });
-
-      const upaArray = Object.values(upaMap).sort(
-        (a: any, b: any) =>
-          b.farmers - a.farmers || a.upazila.localeCompare(b.upazila)
-      );
-      setUpazilaStats(upaArray);
-
-      // 3. Total DOC by Months
-      const monthMap: Record<string, any> = {};
-      docSupplies.forEach((s: any) => {
-        if (!s.h_date) return;
-        const ym = String(s.h_date).slice(0, 7);
-        if (!monthMap[ym]) {
-          monthMap[ym] = {
-            ym,
-            label: formatMonthName(ym),
-            totalDoc: 0,
-            trackedDoc: 0,
-          };
-        }
-        monthMap[ym].totalDoc += Number(s.qty || 0);
-      });
-
-      docTrackings.forEach((t: any) => {
-        if (!t.h_date) return;
-        const ym = String(t.h_date).slice(0, 7);
-        if (!monthMap[ym]) {
-          monthMap[ym] = {
-            ym,
-            label: formatMonthName(ym),
-            totalDoc: 0,
-            trackedDoc: 0,
-          };
-        }
-        monthMap[ym].trackedDoc += Number(t.qty || 0);
-      });
-
-      const monthArray = Object.values(monthMap)
-        .sort((a: any, b: any) => b.ym.localeCompare(a.ym))
-        .map((m: any) => {
-          const untracked = Math.max(0, m.totalDoc - m.trackedDoc);
-          const pct =
-            m.totalDoc > 0
-              ? ((m.trackedDoc / m.totalDoc) * 100).toFixed(1)
-              : "0.0";
-          return { ...m, untracked, pct };
-        });
-
-      setMonthlyDocStats(monthArray);
+        setSupplies(filteredSup);
+        setTrackings(filteredTrk);
+      }
+    } catch (err) {
+      console.error("Failed to load dashboard data:", err);
     } finally {
       setLoading(false);
     }
   }
 
-  // Calculate DOC supply & tracked for the currently selected month in dropdown
-  const selectedMonthDocSupply = scopedDocSupplies
-    .filter((s: any) => String(s.h_date || "").startsWith(selectedYm))
-    .reduce((sum: number, s: any) => sum + Number(s.qty || 0), 0);
+  // Group DOC Supplies & Trackings by Month (YYYY-MM)
+  const monthlyMap: Record<
+    string,
+    {
+      totalQty: number;
+      trackedQty: number;
+      untrackedQty: number;
+      batchesCount: number;
+    }
+  > = {};
 
-  const selectedMonthDocTracked = scopedDocTrackings
-    .filter((t: any) => String(t.h_date || "").startsWith(selectedYm))
-    .reduce((sum: number, t: any) => sum + Number(t.qty || 0), 0);
+  supplies.forEach((s) => {
+    const ym = String(s.h_date || "").slice(0, 7);
+    if (!ym || ym.length !== 7) return;
+    if (!monthlyMap[ym]) {
+      monthlyMap[ym] = {
+        totalQty: 0,
+        trackedQty: 0,
+        untrackedQty: 0,
+        batchesCount: 0,
+      };
+    }
+    monthlyMap[ym].totalQty += Number(s.qty || 0);
+    monthlyMap[ym].batchesCount += 1;
+  });
 
-  const selectedMonthDocPct =
-    selectedMonthDocSupply > 0
-      ? ((selectedMonthDocTracked / selectedMonthDocSupply) * 100).toFixed(1)
-      : "0.0";
+  trackings.forEach((t) => {
+    const ym = String(t.h_date || "").slice(0, 7);
+    if (!ym || !monthlyMap[ym]) return;
+    monthlyMap[ym].trackedQty += Number(t.qty || 0);
+  });
 
-  const selectedMonthLabel = formatMonthName(selectedYm);
+  Object.keys(monthlyMap).forEach((ym) => {
+    const m = monthlyMap[ym];
+    m.untrackedQty = Math.max(0, m.totalQty - m.trackedQty);
+  });
+
+  const allMonths = Object.keys(monthlyMap).sort().reverse();
+
+  const filteredMonths =
+    selectedMonth === "all"
+      ? allMonths
+      : allMonths.filter((m) => m === selectedMonth);
+
+  const displayedMonths = filteredMonths.slice(0, visibleMonthsCount);
+
+  function formatMonthName(ym: string) {
+    const [y, m] = ym.split("-");
+    const date = new Date(Number(y), Number(m) - 1, 1);
+    return date.toLocaleString("en-US", { month: "short", year: "numeric" });
+  }
+
+  const navCards = [
+    {
+      title: "DOC Tracking",
+      path: "/doc-tracking",
+      icon: (
+        <FaClipboardList className="text-emerald-600 text-2xl sm:text-3xl" />
+      ),
+      bg: "bg-emerald-50 hover:bg-emerald-100 border-emerald-200",
+      textColor: "text-emerald-900",
+    },
+    {
+      title: "Farmer Status",
+      path: "/farmer-status",
+      icon: <FaUserCheck className="text-blue-600 text-2xl sm:text-3xl" />,
+      bg: "bg-blue-50 hover:bg-blue-100 border-blue-200",
+      textColor: "text-blue-900",
+    },
+    {
+      title: "Vet Visits",
+      path: "/visits",
+      icon: <FaStethoscope className="text-indigo-600 text-2xl sm:text-3xl" />,
+      bg: "bg-indigo-50 hover:bg-indigo-100 border-indigo-200",
+      textColor: "text-indigo-900",
+    },
+    {
+      title: "Reports",
+      path: "/reports",
+      icon: <FaChartBar className="text-amber-600 text-2xl sm:text-3xl" />,
+      bg: "bg-amber-50 hover:bg-amber-100 border-amber-200",
+      textColor: "text-amber-900",
+    },
+    {
+      title: "Farmers",
+      path: "/farmers",
+      icon: <FaUserFriends className="text-teal-600 text-2xl sm:text-3xl" />,
+      bg: "bg-teal-50 hover:bg-teal-100 border-teal-200",
+      textColor: "text-teal-900",
+    },
+    {
+      title: "Agents",
+      path: "/agents",
+      icon: <FaUsers className="text-purple-600 text-2xl sm:text-3xl" />,
+      bg: "bg-purple-50 hover:bg-purple-100 border-purple-200",
+      textColor: "text-purple-900",
+    },
+  ];
 
   return (
-    <div className="p-3 sm:p-5 max-w-7xl mx-auto space-y-4">
-      {/* ==================================================
-          INTERACTIVE MONTH SELECTOR DROPDOWN AT TOP RIGHT
-      ================================================== */}
-      <div className="flex items-center justify-end">
-        <div className="relative inline-flex items-center bg-white border border-slate-200 hover:border-emerald-400 rounded-full px-3.5 py-1.5 shadow-sm transition">
-          <Calendar size={14} className="text-emerald-600 mr-1.5 shrink-0" />
-          <span className="text-xs font-medium text-slate-500 mr-1">
-            Month:
-          </span>
-          <select
-            value={selectedYm}
-            onChange={(e) => setSelectedYm(e.target.value)}
-            className="appearance-none bg-transparent pr-5 text-xs font-bold text-slate-800 outline-none cursor-pointer"
+    <div className="p-3 sm:p-6 max-w-7xl mx-auto space-y-5">
+      {/* 6 CARDS (2 COLUMNS EVEN ON MOBILE) */}
+      <div className="grid grid-cols-2 gap-3 sm:gap-5">
+        {navCards.map((card) => (
+          <Link
+            key={card.path}
+            to={card.path}
+            className={`border rounded-2xl p-3 sm:p-5 shadow-sm transition transform hover:-translate-y-0.5 flex flex-col sm:flex-row items-center sm:items-center gap-2 sm:gap-4 text-center sm:text-left ${card.bg}`}
           >
-            {availableMonths.map((ym) => (
+            <div className="p-4 sm:p-3.5 bg-white rounded-xl shadow-sm shrink-0">
+              {card.icon}
+            </div>
+            <div className="min-w-0 flex-1">
+              <h2
+                className={`text-xs sm:text-lg font-bold tracking-tight ${card.textColor}`}
+              >
+                {card.title}
+              </h2>
+            </div>
+          </Link>
+        ))}
+      </div>
+
+      {/* TOTAL DOC BY MONTHS TABLE FORMAT (COMPACT MOBILE FIT) */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-3 sm:p-5 shadow-sm space-y-3">
+        <div className="flex items-center justify-between gap-2 border-b pb-2.5">
+          <div className="flex items-center gap-2">
+            <FaCalendarAlt className="text-emerald-600 text-base sm:text-lg" />
+            <h3 className="text-sm sm:text-lg font-bold text-slate-800">
+              Total DOC by Months
+            </h3>
+          </div>
+
+          <select
+            value={selectedMonth}
+            onChange={(e) => {
+              setSelectedMonth(e.target.value);
+              setVisibleMonthsCount(2);
+            }}
+            className="border border-slate-300 rounded-lg px-2.5 py-1 text-[11px] sm:text-xs bg-white outline-none focus:border-emerald-500 font-semibold text-slate-700"
+          >
+            <option value="all">All Months</option>
+            {allMonths.map((ym) => (
               <option key={ym} value={ym}>
                 {formatMonthName(ym)}
-                {ym === runningYm ? " (Running)" : ""}
               </option>
             ))}
           </select>
-          <ChevronDown
-            size={13}
-            className="text-slate-400 pointer-events-none absolute right-3"
-          />
-        </div>
-      </div>
-
-      {/* ==================================================
-          1. MINIMAL TOP KPI CARDS (DYNAMIC BY SELECTED MONTH)
-      ================================================== */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-xs font-medium text-slate-500">Total Agents</p>
-            <p className="text-2xl sm:text-3xl font-bold text-slate-800 mt-1">
-              {baseStats.totalAgents.toLocaleString()}
-            </p>
-          </div>
-          <div className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
-            <Users size={20} />
-          </div>
         </div>
 
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-xs font-medium text-slate-500">Total Farmers</p>
-            <p className="text-2xl sm:text-3xl font-bold text-slate-800 mt-1">
-              {baseStats.totalFarmers.toLocaleString()}
-            </p>
+        {loading ? (
+          <div className="py-8 text-center text-xs text-slate-500">
+            Loading monthly DOC data...
           </div>
-          <div className="w-11 h-11 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
-            <UserCheck size={20} />
+        ) : displayedMonths.length === 0 ? (
+          <div className="py-8 text-center text-xs text-slate-400">
+            No monthly DOC records found.
           </div>
-        </div>
-
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-xs font-medium text-slate-500">
-              DOC ({selectedMonthLabel})
-            </p>
-            <p className="text-2xl sm:text-3xl font-bold text-slate-800 mt-1">
-              {selectedMonthDocSupply.toLocaleString()}
-            </p>
-          </div>
-          <div className="w-11 h-11 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
-            <Calendar size={20} />
-          </div>
-        </div>
-
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-xs font-medium text-slate-500">
-              Tracked ({selectedMonthLabel})
-            </p>
-            <p className="text-2xl sm:text-3xl font-bold text-emerald-700 mt-1">
-              {selectedMonthDocPct}%
-            </p>
-            <p className="text-[11px] text-slate-400 font-medium mt-0.5">
-              Qty: {selectedMonthDocTracked.toLocaleString()}
-            </p>
-          </div>
-          <div className="w-11 h-11 rounded-xl bg-teal-50 text-teal-600 flex items-center justify-center shrink-0">
-            <PieChart size={20} />
-          </div>
-        </div>
-      </div>
-
-      {/* ==================================================
-          2. COMPANY-WISE AGENT & FARMER TABLE
-      ================================================== */}
-      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-        <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2 bg-slate-50/60">
-          <Building2 size={16} className="text-emerald-600" />
-          <h2 className="text-sm font-bold text-slate-800">
-            Company-wise Agents & Farmers
-          </h2>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs sm:text-sm">
-            <thead>
-              <tr className="border-b border-slate-200 text-slate-500 bg-slate-50/40">
-                <th className="px-4 py-2.5 font-semibold">Company</th>
-                <th className="px-3 py-2.5 text-center font-semibold">
-                  Agents
-                </th>
-                <th className="px-3 py-2.5 text-center font-semibold">
-                  Total Farmers
-                </th>
-                <th className="px-3 py-2.5 text-center font-semibold">
-                  🐔 Poultry
-                </th>
-                <th className="px-3 py-2.5 text-center font-semibold">
-                  🐄 Cattle
-                </th>
-                <th className="px-3 py-2.5 text-center font-semibold">
-                  🐟 Fish
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {loading ? (
-                <tr>
-                  <td colSpan={6} className="py-8 text-center text-slate-400">
-                    Loading...
-                  </td>
-                </tr>
-              ) : companyStats.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="py-8 text-center text-slate-400">
-                    No records found in your assigned area.
-                  </td>
-                </tr>
-              ) : (
-                companyStats.map((c) => (
-                  <tr key={c.id} className="hover:bg-slate-50/80 transition">
-                    <td className="px-4 py-2.5 font-semibold text-slate-800">
-                      <div className="flex items-center gap-2.5">
-                        {c.logoUrl ? (
-                          <img
-                            src={c.logoUrl}
-                            alt={c.companyName}
-                            className="w-6 h-6 object-contain rounded border border-slate-200 bg-white p-0.5 shrink-0"
-                          />
-                        ) : (
-                          <div className="w-6 h-6 rounded bg-emerald-50 text-emerald-700 flex items-center justify-center font-bold text-xs shrink-0">
-                            {c.companyName?.charAt(0)}
-                          </div>
-                        )}
-                        <span>{c.companyName}</span>
-                      </div>
-                    </td>
-                    <td className="px-3 py-2.5 text-center font-bold text-blue-600">
-                      {c.agents}
-                    </td>
-                    <td className="px-3 py-2.5 text-center font-bold text-emerald-700">
-                      {c.farmers}
-                    </td>
-                    <td className="px-3 py-2.5 text-center text-slate-600">
-                      {c.poultry}
-                    </td>
-                    <td className="px-3 py-2.5 text-center text-slate-600">
-                      {c.cattle}
-                    </td>
-                    <td className="px-3 py-2.5 text-center text-slate-600">
-                      {c.fish}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* ==================================================
-          3. UPAZILA-WISE FARMERS & 4. TOTAL DOC BY MONTHS
-      ================================================== */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5">
-        {/* Upazila-wise Farmers */}
-        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2 bg-slate-50/60">
-            <MapPin size={16} className="text-blue-600" />
-            <h2 className="text-sm font-bold text-slate-800">
-              Assigned Upazila-wise Agents & Farmers
-            </h2>
-          </div>
-
-          <div className="overflow-x-auto max-h-80">
-            <table className="w-full text-left border-collapse text-xs sm:text-sm">
-              <thead className="sticky top-0 bg-slate-50 border-b border-slate-200 text-slate-500">
-                <tr>
-                  <th className="px-4 py-2.5 font-semibold">District</th>
-                  <th className="px-4 py-2.5 font-semibold">Upazila</th>
-                  <th className="px-3 py-2.5 text-center font-semibold">
-                    Agents
-                  </th>
-                  <th className="px-3 py-2.5 text-center font-semibold">
-                    Farmers
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {upazilaStats.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="py-8 text-center text-slate-400">
-                      No upazila data found.
-                    </td>
-                  </tr>
-                ) : (
-                  upazilaStats.map((u, i) => (
-                    <tr key={i} className="hover:bg-slate-50/80 transition">
-                      <td className="px-4 py-2.5 text-slate-600">
-                        {u.district}
-                      </td>
-                      <td className="px-4 py-2.5 font-semibold text-slate-800">
-                        {u.upazila}
-                      </td>
-                      <td className="px-3 py-2.5 text-center font-semibold text-blue-600">
-                        {u.agents}
-                      </td>
-                      <td className="px-3 py-2.5 text-center font-bold text-emerald-700">
-                        {u.farmers}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Total DOC by Months */}
-        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2 bg-slate-50/60">
-            <Calendar size={16} className="text-amber-600" />
-            <h2 className="text-sm font-bold text-slate-800">
-              Total DOC by Months
-            </h2>
-          </div>
-
-          <div className="overflow-x-auto max-h-80">
-            <table className="w-full text-left border-collapse text-xs sm:text-sm">
-              <thead className="sticky top-0 bg-slate-50 border-b border-slate-200 text-slate-500">
-                <tr>
-                  <th className="px-4 py-2.5 font-semibold">Month</th>
-                  <th className="px-3 py-2.5 text-right font-semibold">
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-[11px] sm:text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-slate-500 bg-slate-50">
+                  <th className="py-2 px-2 sm:px-3 font-bold">Month</th>
+                  <th className="py-2 px-2 sm:px-3 font-bold text-right">
                     Total DOC
                   </th>
-                  <th className="px-3 py-2.5 text-right font-semibold">
+                  <th className="py-2 px-2 sm:px-3 font-bold text-right">
                     Tracked
                   </th>
-                  <th className="px-4 py-2.5 text-right font-semibold">
+                  <th className="py-2 px-2 sm:px-3 font-bold text-right">
                     Untracked
                   </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {monthlyDocStats.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="py-8 text-center text-slate-400">
-                      No DOC data found for your assigned upazila.
-                    </td>
-                  </tr>
-                ) : (
-                  monthlyDocStats.map((m) => {
-                    const isSelected = m.ym === selectedYm;
-                    return (
-                      <tr
-                        key={m.ym}
-                        onClick={() => setSelectedYm(m.ym)}
-                        className={`cursor-pointer transition ${
-                          isSelected
-                            ? "bg-emerald-50/80 font-semibold"
-                            : "hover:bg-slate-50/80"
-                        }`}
-                      >
-                        <td className="px-4 py-2.5 font-semibold text-slate-800">
-                          {m.label}
-                        </td>
-                        <td className="px-3 py-2.5 text-right font-bold text-slate-800">
-                          {m.totalDoc.toLocaleString()}
-                        </td>
-                        <td className="px-3 py-2.5 text-right font-semibold text-emerald-700">
-                          {m.trackedDoc.toLocaleString()} ({m.pct}%)
-                        </td>
-                        <td className="px-4 py-2.5 text-right font-medium text-amber-700">
-                          {m.untracked.toLocaleString()}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
+                {displayedMonths.map((ym) => {
+                  const data = monthlyMap[ym];
+                  const trkPct =
+                    data.totalQty > 0
+                      ? ((data.trackedQty / data.totalQty) * 100).toFixed(1)
+                      : "0.0";
+                  const untrkPct =
+                    data.totalQty > 0
+                      ? ((data.untrackedQty / data.totalQty) * 100).toFixed(1)
+                      : "0.0";
+
+                  return (
+                    <tr key={ym} className="hover:bg-slate-50/50">
+                      <td className="py-2.5 px-2 sm:px-3 font-bold text-slate-800 whitespace-nowrap">
+                        {formatMonthName(ym)}
+                      </td>
+                      <td className="py-2.5 px-2 sm:px-3 text-right font-extrabold text-slate-900 whitespace-nowrap">
+                        {data.totalQty.toLocaleString()}
+                      </td>
+                      <td className="py-2.5 px-2 sm:px-3 text-right font-bold text-emerald-600 whitespace-nowrap">
+                        {data.trackedQty.toLocaleString()} ({trkPct}%)
+                      </td>
+                      <td className="py-2.5 px-2 sm:px-3 text-right font-bold text-amber-600 whitespace-nowrap">
+                        {data.untrackedQty.toLocaleString()} ({untrkPct}%)
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
-        </div>
+        )}
+
+        {/* Load More Button (Shows 2 initially, then adds 5 more) */}
+        {!loading &&
+          selectedMonth === "all" &&
+          visibleMonthsCount < allMonths.length && (
+            <div className="text-center pt-1">
+              <button
+                type="button"
+                onClick={() => setVisibleMonthsCount((prev) => prev + 5)}
+                className="px-4 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold shadow-sm transition"
+              >
+                Load More ({allMonths.length - visibleMonthsCount} remaining)
+              </button>
+            </div>
+          )}
       </div>
     </div>
   );

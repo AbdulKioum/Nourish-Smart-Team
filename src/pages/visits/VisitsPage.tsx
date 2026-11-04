@@ -1663,7 +1663,7 @@ ${currentUserProfile.region}`;
                                 <div className="space-y-0.5 flex-1">
                                   {/* Last Given Vaccine */}
                                   {visit.last_vaccine_name ? (
-                                    <div className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
+                                    <div className="text-[11px] text-emerald-800  px-1.5 py-0.5 rounded">
                                       <b>Last:</b> {visit.last_vaccine_name}{" "}
                                       {visit.last_vaccine_date
                                         ? `(${formatDmy(visit.last_vaccine_date)})`
@@ -1677,7 +1677,7 @@ ${currentUserProfile.region}`;
 
                                   {/* Next Scheduled Vaccine */}
                                   {vacInfo.upcoming && (
-                                    <div className="text-[11px] text-slate-600 mt-0.5">
+                                    <div className="text-[11px] text-slate-600 bg-emerald-100 border border-emerald-200 mt-0.5">
                                       <b>Next:</b> {vacInfo.upcoming.vaccine_name} (Day {vacInfo.upcoming.age_days} • {formatDmy(vacInfo.upcomingDateStr)})
                                     </div>
                                   )}

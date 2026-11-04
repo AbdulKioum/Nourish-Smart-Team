@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from "react";
-
 import {
   getUsers,
   createUser,
@@ -7,9 +6,7 @@ import {
   deleteUser,
   updateUserRole,
 } from "../../services/usersService";
-
 import { supabase } from "../../lib/supabase";
-
 import {
   FaUserPlus,
   FaEdit,
@@ -21,16 +18,14 @@ import {
   FaMapMarkerAlt,
 } from "react-icons/fa";
 
-// ==================================================
-// TYPES
-// ==================================================
-
 interface UserRecord {
   id: string;
   email: string;
   full_name: string;
   role: string;
   status: string;
+  designation?: string;
+  region?: string;
   districts?: string[];
   upazilas?: string[];
   created_at?: string;
@@ -49,10 +44,6 @@ interface UpazilaItem {
   district?: string;
 }
 
-// ==================================================
-// COMPONENT
-// ==================================================
-
 export default function UsersPage() {
   const [users, setUsers] = useState<UserRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -63,7 +54,6 @@ export default function UsersPage() {
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currentEmail, setCurrentEmail] = useState("");
 
-  // DISTRICTS & UPAZILAS STATE
   const [districtsList, setDistrictsList] = useState<DistrictItem[]>([]);
   const [upazilasList, setUpazilasList] = useState<UpazilaItem[]>([]);
   const [loadingLocations, setLoadingLocations] = useState(false);
@@ -71,20 +61,19 @@ export default function UsersPage() {
   const [isDistrictDropdownOpen, setIsDistrictDropdownOpen] = useState(false);
   const [isUpazilaDropdownOpen, setIsUpazilaDropdownOpen] = useState(false);
 
-  // SEARCH / FILTER
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
 
-  // MODAL
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<UserRecord | null>(null);
 
-  // FORM (Default role set to 'officer')
   const [formData, setFormData] = useState<{
     email: string;
     password: string;
     full_name: string;
+    designation: string;
+    region: string;
     role: string;
     status: string;
     districts: string[];
@@ -93,6 +82,8 @@ export default function UsersPage() {
     email: "",
     password: "",
     full_name: "",
+    designation: "Customer Service Officer",
+    region: "Mymensingh Zone",
     role: "officer",
     status: "active",
     districts: [],
@@ -259,6 +250,8 @@ export default function UsersPage() {
       email: "",
       password: "",
       full_name: "",
+      designation: "Customer Service Officer",
+      region: "Mymensingh Zone",
       role: "officer",
       status: "active",
       districts: [],
@@ -282,6 +275,8 @@ export default function UsersPage() {
       email: user.email || "",
       password: "",
       full_name: user.full_name || "",
+      designation: user.designation || "Customer Service Officer",
+      region: user.region || "Mymensingh Zone",
       role: validRole,
       status: user.status || "active",
       districts: parseArrayField(user.districts),
@@ -309,12 +304,27 @@ export default function UsersPage() {
     try {
       if (editingUser) {
         await updateUser(editingUser.id, {
-          name: formData.full_name,
+          name: formData.full_name.trim(),
           role: formData.role,
           status: formData.status,
           districts: formData.districts,
           upazilas: formData.upazilas,
         });
+
+        // Also directly update designation, region, full_name in `users` table
+        await supabase
+          .from("users")
+          .update({
+            full_name: formData.full_name.trim(),
+            designation: formData.designation.trim(),
+            region: formData.region.trim(),
+            role: formData.role,
+            status: formData.status,
+            districts: formData.districts,
+            upazilas: formData.upazilas,
+          })
+          .eq("id", editingUser.id);
+
         setSuccessMsg("User updated successfully.");
       } else {
         if (!formData.full_name.trim())
@@ -324,7 +334,7 @@ export default function UsersPage() {
         if (formData.password.length < 6)
           throw new Error("Password must be at least 6 characters long.");
 
-        await createUser({
+        const created: any = await createUser({
           name: formData.full_name.trim(),
           email: formData.email.trim(),
           password: formData.password,
@@ -333,6 +343,26 @@ export default function UsersPage() {
           districts: formData.districts,
           upazilas: formData.upazilas,
         });
+
+        const newId = created?.id || created?.user?.id;
+        if (newId) {
+          await supabase
+            .from("users")
+            .update({
+              designation: formData.designation.trim(),
+              region: formData.region.trim(),
+            })
+            .eq("id", newId);
+        } else {
+          await supabase
+            .from("users")
+            .update({
+              designation: formData.designation.trim(),
+              region: formData.region.trim(),
+            })
+            .eq("email", formData.email.trim());
+        }
+
         setSuccessMsg("User created successfully.");
       }
 
@@ -405,6 +435,8 @@ export default function UsersPage() {
       !searchText ||
       user.full_name?.toLowerCase().includes(searchText) ||
       user.email?.toLowerCase().includes(searchText) ||
+      user.designation?.toLowerCase().includes(searchText) ||
+      user.region?.toLowerCase().includes(searchText) ||
       userDistricts.includes(searchText) ||
       userUpazilas.includes(searchText);
 
@@ -448,9 +480,7 @@ export default function UsersPage() {
 
   return (
     <div className="p-3 sm:p-4 md:p-6 max-w-7xl mx-auto overflow-x-hidden">
-      {/* ==================================================
-          HEADER + COMPACT STATS INLINE
-      ================================================== */}
+      {/* HEADER */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
         <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
           <div className="w-9 h-9 sm:w-10 sm:h-10 shrink-0 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center">
@@ -461,7 +491,6 @@ export default function UsersPage() {
             User Management
           </h1>
 
-          {/* Compact Inline Stats Badges */}
           <div className="flex items-center gap-1.5 ml-0 sm:ml-2">
             <span className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 text-xs font-medium">
               Total: <strong className="font-bold">{users.length}</strong>
@@ -486,9 +515,7 @@ export default function UsersPage() {
         </button>
       </div>
 
-      {/* ==================================================
-          ALERTS
-      ================================================== */}
+      {/* ALERTS */}
       {errorMsg && (
         <div className="mb-3 flex items-center justify-between gap-3 bg-red-50 border border-red-200 text-red-700 px-3.5 py-2.5 rounded-xl text-xs sm:text-sm">
           <span className="break-words">{errorMsg}</span>
@@ -507,24 +534,20 @@ export default function UsersPage() {
         </div>
       )}
 
-      {/* ==================================================
-          SEARCH / FILTER
-      ================================================== */}
+      {/* SEARCH / FILTER */}
       <div className="bg-white border border-slate-200 rounded-2xl p-3 mb-4 shadow-sm">
         <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
-          {/* Search */}
           <div className="relative col-span-2 md:col-span-1">
             <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs sm:text-sm" />
             <input
               type="text"
-              placeholder="Search name, email, area..."
+              placeholder="Search name, email, designation, area..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full border border-slate-300 rounded-xl pl-8 pr-3 py-2 text-xs sm:text-sm outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-500"
             />
           </div>
 
-          {/* Role (Only 3 Roles) */}
           <select
             value={roleFilter}
             onChange={(e) => setRoleFilter(e.target.value)}
@@ -536,7 +559,6 @@ export default function UsersPage() {
             <option value="officer">Officer</option>
           </select>
 
-          {/* Status */}
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
@@ -549,9 +571,7 @@ export default function UsersPage() {
         </div>
       </div>
 
-      {/* ==================================================
-          MOBILE CARD VIEW (Visible on Mobile < md)
-      ================================================== */}
+      {/* MOBILE CARD VIEW */}
       <div className="block md:hidden space-y-3">
         {loading ? (
           <div className="bg-white border border-slate-200 rounded-2xl py-10 text-center text-slate-500 text-sm">
@@ -574,7 +594,6 @@ export default function UsersPage() {
                 key={user.id}
                 className="bg-white border border-slate-200 rounded-2xl p-3.5 shadow-sm space-y-3"
               >
-                {/* Top Row: User Info + Status Badge */}
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-center gap-2.5 min-w-0">
                     <div className="w-9 h-9 shrink-0 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm">
@@ -596,10 +615,16 @@ export default function UsersPage() {
                       <div className="text-xs text-slate-500 truncate">
                         {user.email}
                       </div>
+                      {(user.designation || user.region) && (
+                        <div className="text-[11px] text-emerald-700 font-medium truncate">
+                          {[user.designation, user.region]
+                            .filter(Boolean)
+                            .join(" • ")}
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  {/* Role & Status Badges */}
                   <div className="flex flex-col items-end gap-1 shrink-0">
                     <span
                       className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${getRoleBadge(
@@ -620,7 +645,6 @@ export default function UsersPage() {
                   </div>
                 </div>
 
-                {/* Assigned Areas */}
                 <div className="bg-slate-50 rounded-xl p-2.5 border border-slate-100">
                   <p className="text-[10px] font-semibold text-slate-400 uppercase mb-1">
                     Assigned Area
@@ -659,45 +683,6 @@ export default function UsersPage() {
                   )}
                 </div>
 
-                {/* Quick Role & Status Selectors */}
-                {!isCurrentUser && (
-                  <div className="grid grid-cols-2 gap-2 pt-1">
-                    <div>
-                      <label className="block text-[10px] text-slate-400 mb-0.5">
-                        Quick Role
-                      </label>
-                      <select
-                        value={user.role}
-                        onChange={(e) =>
-                          handleRoleChange(user.id, e.target.value)
-                        }
-                        className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white"
-                      >
-                        <option value="super_admin">Super Admin</option>
-                        <option value="manager">Manager</option>
-                        <option value="officer">Officer</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-[10px] text-slate-400 mb-0.5">
-                        Quick Status
-                      </label>
-                      <select
-                        value={user.status}
-                        onChange={(e) =>
-                          handleStatusChange(user.id, e.target.value)
-                        }
-                        className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white"
-                      >
-                        <option value="active">Active</option>
-                        <option value="inactive">Inactive</option>
-                      </select>
-                    </div>
-                  </div>
-                )}
-
-                {/* Bottom Actions */}
                 <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
                   <button
                     onClick={() => handleOpenEditModal(user)}
@@ -726,16 +711,14 @@ export default function UsersPage() {
         )}
       </div>
 
-      {/* ==================================================
-          DESKTOP TABLE VIEW (Hidden on Mobile, Visible >= md)
-      ================================================== */}
+      {/* DESKTOP TABLE VIEW */}
       <div className="hidden md:block bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="min-w-full">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
                 <th className="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase">
-                  User
+                  User & Designation
                 </th>
                 <th className="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase">
                   Assigned Area
@@ -778,7 +761,6 @@ export default function UsersPage() {
 
                   return (
                     <tr key={user.id} className="hover:bg-slate-50 transition">
-                      {/* USER */}
                       <td className="px-5 py-4">
                         <div className="flex items-center gap-3">
                           <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold">
@@ -796,14 +778,20 @@ export default function UsersPage() {
                                 </span>
                               )}
                             </div>
-                            <div className="text-sm text-slate-500">
+                            <div className="text-xs text-slate-500">
                               {user.email}
                             </div>
+                            {(user.designation || user.region) && (
+                              <div className="text-xs text-emerald-700 font-medium mt-0.5">
+                                {[user.designation, user.region]
+                                  .filter(Boolean)
+                                  .join(" • ")}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </td>
 
-                      {/* ASSIGNED AREA */}
                       <td className="px-5 py-4">
                         {userDistricts.length === 0 &&
                         userUpazilas.length === 0 ? (
@@ -841,7 +829,6 @@ export default function UsersPage() {
                         )}
                       </td>
 
-                      {/* ROLE (Only 3 Roles) */}
                       <td className="px-5 py-4">
                         <div className="flex items-center gap-2">
                           <span
@@ -868,7 +855,6 @@ export default function UsersPage() {
                         </div>
                       </td>
 
-                      {/* STATUS */}
                       <td className="px-5 py-4">
                         <div className="flex items-center gap-2">
                           <span
@@ -896,7 +882,6 @@ export default function UsersPage() {
                         </div>
                       </td>
 
-                      {/* ACTIONS */}
                       <td className="px-5 py-4 text-right">
                         <div className="flex justify-end gap-2">
                           <button
@@ -930,19 +915,14 @@ export default function UsersPage() {
         </div>
       </div>
 
-      {/* ==================================================
-          CREATE / EDIT MODAL
-      ================================================== */}
+      {/* CREATE / EDIT MODAL */}
       {isModalOpen && (
         <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full max-w-lg max-h-[92vh] sm:max-h-[90vh] flex flex-col overflow-hidden">
-            {/* STICKY MODAL HEADER */}
             <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 sm:py-4 border-b border-slate-200 bg-white shrink-0">
-              <div>
-                <h2 className="text-base sm:text-lg font-bold text-slate-800">
-                  {editingUser ? "Edit User" : "Add New User"}
-                </h2>
-              </div>
+              <h2 className="text-base sm:text-lg font-bold text-slate-800">
+                {editingUser ? "Edit User Details & Area" : "Add New User"}
+              </h2>
 
               <button
                 type="button"
@@ -954,15 +934,13 @@ export default function UsersPage() {
               </button>
             </div>
 
-            {/* SCROLLABLE FORM BODY */}
             <form
               onSubmit={handleSave}
               className="p-4 sm:p-6 space-y-4 overflow-y-auto flex-1"
             >
-              {/* FULL NAME */}
               <div>
                 <label className="block text-xs sm:text-sm font-medium text-slate-700 mb-1">
-                  Full Name
+                  Full Name *
                 </label>
                 <input
                   type="text"
@@ -972,11 +950,42 @@ export default function UsersPage() {
                     setFormData({ ...formData, full_name: e.target.value })
                   }
                   placeholder="Enter full name"
-                  className="w-full border border-slate-300 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                  className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none focus:border-emerald-500"
                 />
               </div>
 
-              {/* EMAIL */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs sm:text-sm font-medium text-slate-700 mb-1">
+                    Designation
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.designation}
+                    onChange={(e) =>
+                      setFormData({ ...formData, designation: e.target.value })
+                    }
+                    placeholder="e.g. Customer Service Officer"
+                    className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs sm:text-sm font-medium text-slate-700 mb-1">
+                    Region / Zone
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.region}
+                    onChange={(e) =>
+                      setFormData({ ...formData, region: e.target.value })
+                    }
+                    placeholder="e.g. Mymensingh Zone"
+                    className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
               <div>
                 <label className="block text-xs sm:text-sm font-medium text-slate-700 mb-1">
                   Email
@@ -990,15 +999,14 @@ export default function UsersPage() {
                     setFormData({ ...formData, email: e.target.value })
                   }
                   placeholder="user@example.com"
-                  className="w-full border border-slate-300 rounded-xl px-3 py-2.5 text-sm outline-none disabled:bg-slate-100 disabled:text-slate-500 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                  className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none disabled:bg-slate-100 disabled:text-slate-500"
                 />
               </div>
 
-              {/* PASSWORD */}
               {!editingUser && (
                 <div>
                   <label className="block text-xs sm:text-sm font-medium text-slate-700 mb-1">
-                    Password
+                    Password *
                   </label>
                   <input
                     type="password"
@@ -1009,12 +1017,11 @@ export default function UsersPage() {
                       setFormData({ ...formData, password: e.target.value })
                     }
                     placeholder="Minimum 6 characters"
-                    className="w-full border border-slate-300 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none focus:border-emerald-500"
                   />
                 </div>
               )}
 
-              {/* ROLE & STATUS GRID (Only 3 Roles) */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs sm:text-sm font-medium text-slate-700 mb-1">
@@ -1025,7 +1032,7 @@ export default function UsersPage() {
                     onChange={(e) =>
                       setFormData({ ...formData, role: e.target.value })
                     }
-                    className="w-full border border-slate-300 rounded-xl px-3 py-2.5 text-sm outline-none bg-white focus:border-emerald-500"
+                    className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none bg-white"
                   >
                     <option value="super_admin">Super Admin</option>
                     <option value="manager">Manager</option>
@@ -1042,7 +1049,7 @@ export default function UsersPage() {
                     onChange={(e) =>
                       setFormData({ ...formData, status: e.target.value })
                     }
-                    className="w-full border border-slate-300 rounded-xl px-3 py-2.5 text-sm outline-none bg-white focus:border-emerald-500"
+                    className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none bg-white"
                   >
                     <option value="active">Active</option>
                     <option value="inactive">Inactive</option>
@@ -1099,7 +1106,7 @@ export default function UsersPage() {
                   onClick={() =>
                     setIsDistrictDropdownOpen(!isDistrictDropdownOpen)
                   }
-                  className="w-full flex items-center justify-between border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-left bg-white hover:bg-slate-50"
+                  className="w-full flex items-center justify-between border border-slate-300 rounded-xl px-3 py-2 text-sm text-left bg-white hover:bg-slate-50"
                 >
                   <span className="text-slate-600">
                     {formData.districts.length === 0
@@ -1116,10 +1123,6 @@ export default function UsersPage() {
                     {loadingLocations ? (
                       <div className="col-span-2 text-xs text-slate-400 py-2 text-center">
                         Loading districts...
-                      </div>
-                    ) : districtsList.length === 0 ? (
-                      <div className="col-span-2 text-xs text-slate-400 py-2 text-center">
-                        No districts found.
                       </div>
                     ) : (
                       districtsList.map((district) => {
@@ -1200,7 +1203,7 @@ export default function UsersPage() {
                   onClick={() =>
                     setIsUpazilaDropdownOpen(!isUpazilaDropdownOpen)
                   }
-                  className="w-full flex items-center justify-between border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-left bg-white hover:bg-slate-50 disabled:bg-slate-100"
+                  className="w-full flex items-center justify-between border border-slate-300 rounded-xl px-3 py-2 text-sm text-left bg-white hover:bg-slate-50 disabled:bg-slate-100"
                 >
                   <span className="text-slate-600">
                     {formData.districts.length === 0
@@ -1216,48 +1219,31 @@ export default function UsersPage() {
 
                 {isUpazilaDropdownOpen && formData.districts.length > 0 && (
                   <div className="mt-1 border border-slate-200 rounded-xl max-h-44 overflow-y-auto bg-slate-50 p-2 grid grid-cols-1 sm:grid-cols-2 gap-1">
-                    {availableUpazilas.length === 0 ? (
-                      <div className="col-span-2 text-xs text-slate-400 py-2 text-center">
-                        No upazilas found.
-                      </div>
-                    ) : (
-                      availableUpazilas.map((upazila) => {
-                        const checked = formData.upazilas.includes(
-                          upazila.name
-                        );
-                        return (
-                          <label
-                            key={upazila.id}
-                            className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer text-xs sm:text-sm transition ${
-                              checked
-                                ? "bg-emerald-50 text-emerald-700 font-medium"
-                                : "hover:bg-white text-slate-700"
-                            }`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() =>
-                                handleToggleUpazila(upazila.name)
-                              }
-                              className="w-4 h-4 rounded border-slate-300 text-emerald-600"
-                            />
-                            <span className="truncate">{upazila.name}</span>
-                          </label>
-                        );
-                      })
-                    )}
+                    {availableUpazilas.map((upazila) => {
+                      const checked = formData.upazilas.includes(upazila.name);
+                      return (
+                        <label
+                          key={upazila.id}
+                          className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer text-xs sm:text-sm transition ${
+                            checked
+                              ? "bg-emerald-50 text-emerald-700 font-medium"
+                              : "hover:bg-white text-slate-700"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => handleToggleUpazila(upazila.name)}
+                            className="w-4 h-4 rounded border-slate-300 text-emerald-600"
+                          />
+                          <span className="truncate">{upazila.name}</span>
+                        </label>
+                      );
+                    })}
                   </div>
                 )}
               </div>
 
-              {errorMsg && (
-                <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-3 py-2.5 text-xs sm:text-sm">
-                  {errorMsg}
-                </div>
-              )}
-
-              {/* STICKY BOTTOM BUTTONS */}
               <div className="flex gap-2.5 pt-3 border-t border-slate-100 sticky bottom-0 bg-white">
                 <button
                   type="button"

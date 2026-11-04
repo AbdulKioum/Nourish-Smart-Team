@@ -51,10 +51,14 @@ export default function Sidebar({
   const location = useLocation();
 
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [savingMeta, setSavingMeta] = useState(false);
   const [profileDetails, setProfileDetails] = useState({
+    id: "",
     fullName: userName || "User",
     email: "",
     role: role || "officer",
+    designation: "Customer Service Officer",
+    region: "Mymensingh Zone",
     districts: [] as string[],
     upazilas: [] as string[],
   });
@@ -68,11 +72,14 @@ export default function Sidebar({
 
       const { data } = await supabase
         .from("users")
-        .select("full_name, email, role, districts, upazilas")
+        .select(
+          "full_name, email, role, designation, region, districts, upazilas"
+        )
         .eq("id", user.id)
         .single();
 
       setProfileDetails({
+        id: user.id,
         fullName:
           data?.full_name ||
           userName ||
@@ -80,6 +87,8 @@ export default function Sidebar({
           "User",
         email: data?.email || user.email || "",
         role: data?.role || role || "officer",
+        designation: data?.designation || "CSO",
+        region: data?.region || "Mymensingh Region",
         districts: parseList(data?.districts),
         upazilas: parseList(data?.upazilas),
       });
@@ -88,12 +97,25 @@ export default function Sidebar({
     loadUserProfile();
   }, [userName, role]);
 
+  async function handleSaveProfileMeta() {
+    if (!profileDetails.id) return;
+    setSavingMeta(true);
+    await supabase
+      .from("users")
+      .update({
+        designation: profileDetails.designation,
+        region: profileDetails.region,
+      })
+      .eq("id", profileDetails.id);
+    setSavingMeta(false);
+    setShowProfileModal(false);
+  }
+
   async function handleLogout() {
     await supabase.auth.signOut();
     window.location.href = "/login";
   }
 
-  // Menu link-e click korle sidebar auto close hobe
   function handleMenuClick() {
     setSidebarOpen(false);
   }
@@ -107,7 +129,6 @@ export default function Sidebar({
 
   return (
     <>
-      {/* Backdrop Overlay */}
       {sidebarOpen && (
         <div
           onClick={() => setSidebarOpen(false)}
@@ -115,13 +136,11 @@ export default function Sidebar({
         />
       )}
 
-      {/* Slide-out Left Drawer */}
       <aside
         className={`fixed top-0 left-0 z-50 h-full w-64 max-w-[80vw] bg-white border-r border-slate-200 shadow-2xl flex flex-col transform transition-transform duration-300 ease-in-out ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        {/* Top Header: Logo & Close Button */}
         <div className="flex items-center justify-between px-4 h-14 sm:h-16 border-b border-slate-100 shrink-0">
           <div className="flex items-center gap-2.5">
             <img
@@ -143,15 +162,12 @@ export default function Sidebar({
           </button>
         </div>
 
-        {/* Navigation Links */}
         <nav className="flex-1 overflow-y-auto flex flex-col gap-1 px-3 py-3">
-          {/* Dashboard */}
           <Link to="/" onClick={handleMenuClick} className={menuClass("/")}>
             <FaHome className="text-base shrink-0" />
             <span>Dashboard</span>
           </Link>
 
-          {/* Management Section */}
           <div className="mt-3 mb-1 px-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">
             Management
           </div>
@@ -210,7 +226,6 @@ export default function Sidebar({
             <span>DOC Tracking</span>
           </Link>
 
-          {/* Field Operations */}
           <div className="mt-3 mb-1 px-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">
             Field Operations
           </div>
@@ -242,7 +257,6 @@ export default function Sidebar({
             <span>Vet Visits</span>
           </Link>
 
-          {/* Analytics Section */}
           <div className="mt-3 mb-1 px-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">
             Analytics
           </div>
@@ -256,7 +270,6 @@ export default function Sidebar({
             <span>Reports</span>
           </Link>
 
-          {/* Administration Section (Only for super_admin) */}
           {role === "super_admin" && (
             <>
               <div className="mt-3 mb-1 px-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">
@@ -275,7 +288,6 @@ export default function Sidebar({
           )}
         </nav>
 
-        {/* Bottom Footer: Clickable User Profile & Logout */}
         <div className="mt-auto border-t border-slate-200 p-3.5 bg-slate-50/70 space-y-3 shrink-0">
           <button
             type="button"
@@ -339,6 +351,42 @@ export default function Sidebar({
                 </div>
               </div>
 
+              <div className="grid grid-cols-1 gap-2">
+                <div>
+                  <label className="text-slate-500 font-semibold uppercase text-[10px] block mb-1">
+                    Designation
+                  </label>
+                  <input
+                    type="text"
+                    value={profileDetails.designation}
+                    onChange={(e) =>
+                      setProfileDetails({
+                        ...profileDetails,
+                        designation: e.target.value,
+                      })
+                    }
+                    className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-slate-500 font-semibold uppercase text-[10px] block mb-1">
+                    Region / Zone
+                  </label>
+                  <input
+                    type="text"
+                    value={profileDetails.region}
+                    onChange={(e) =>
+                      setProfileDetails({
+                        ...profileDetails,
+                        region: e.target.value,
+                      })
+                    }
+                    className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
               <div>
                 <div className="text-slate-400 font-semibold uppercase text-[10px] mb-1">
                   Assigned Districts
@@ -384,12 +432,19 @@ export default function Sidebar({
               </div>
             </div>
 
-            <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-100 flex justify-end">
+            <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-100 flex justify-end gap-2">
               <button
                 onClick={() => setShowProfileModal(false)}
-                className="px-4 py-1.5 rounded-lg bg-slate-800 text-white text-xs font-semibold"
+                className="px-3.5 py-1.5 rounded-lg border border-slate-300 text-slate-700 text-xs font-semibold"
               >
                 Close
+              </button>
+              <button
+                onClick={handleSaveProfileMeta}
+                disabled={savingMeta}
+                className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold"
+              >
+                {savingMeta ? "Saving..." : "Save"}
               </button>
             </div>
           </div>

@@ -1,15 +1,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
-import {
-  ChevronDown,
-  ChevronUp,
-  History,
-  Plus,
-  RotateCcw,
-  Search,
-  X,
-  CheckSquare,
-} from "lucide-react";
+import ExcelJS from "exceljs";
+import { saveAs } from "file-saver";
 
 export const CATEGORIES = [
   "Broiler",
@@ -22,7 +14,7 @@ export const CATEGORIES = [
 ];
 
 export const BREEDS_BY_CATEGORY: Record<string, string[]> = {
-  Broiler: ["Arber Acress", "Ross", "Cobb 500", "Indian River", "Hubbard"],
+  Broiler: ["Arber Acress", "Ross", "Cobb 500", "Indian River", "Hubbard", "Hubbard EP"],
   Layer: [
     "Shaver Star Cross 579 Brown",
     "Bovans White",
@@ -45,6 +37,7 @@ export const BREEDS_BY_CATEGORY: Record<string, string[]> = {
     "Dominant",
     "Hubbard Premium",
     "Sasso",
+    "Color Bird/Sasso",
     "Tetra HB",
     "Bornali",
     "Bornali Plus",
@@ -56,6 +49,28 @@ export const BREEDS_BY_CATEGORY: Record<string, string[]> = {
   Quail: ["Japanese Quail", "Bobwhite Quail"],
   Cattle: ["Holstein Friesian", "Sahiwal", "Sindhi", "Deshi", "Crossbred"],
   Fish: ["Pangus", "Tilapia", "Koi", "Pabda", "Gulsha", "Carp", "Mixed"],
+};
+
+export const FEED_TYPES_BY_CATEGORY: Record<string, string[]> = {
+  Broiler: ["Broiler Pre Starter", "Starter", "Grower", "Finisher"],
+  Layer: [
+    "Broiler Pre Starter",
+    "Starter",
+    "Sonali Starter",
+    "Layer Starter",
+    "Grower",
+    "Layer Layer 1",
+    "Layer Layer 2",
+    "Corporate Layer",
+    "Layer Concentrated",
+  ],
+  Sonali: [
+    "Sonali Starter",
+    "Grower",
+    "Finisher",
+    "Broiler Pre Starter",
+    "Starter",
+  ],
 };
 
 type StatusTab =
@@ -89,6 +104,13 @@ function getDaysSince(dateStr?: string | null): number | null {
   return Math.floor(diff / (1000 * 60 * 60 * 24));
 }
 
+function calcAgeDays(hatchDate?: string, visitDate?: string): number {
+  if (!hatchDate) return 0;
+  const hd = new Date(hatchDate);
+  const vd = visitDate ? new Date(visitDate) : new Date();
+  return Math.max(0, Math.floor((vd.getTime() - hd.getTime()) / 86400000));
+}
+
 export default function FarmerStatusPage() {
   const [companies, setCompanies] = useState<any[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<string>("all");
@@ -101,13 +123,14 @@ export default function FarmerStatusPage() {
 
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
   const [enrichedFarmers, setEnrichedFarmers] = useState<any[]>([]);
+  const [allVisitsMap, setAllVisitsMap] = useState<Record<string, any>>({});
+  const [broilerStds, setBroilerStds] = useState<Record<number, any>>({});
+  const [layerStds, setLayerStds] = useState<Record<number, any>>({});
   const [loading, setLoading] = useState(true);
 
-  // Multiple Selection State
   const [selectedFarmerIds, setSelectedFarmerIds] = useState<string[]>([]);
   const [isBulkMode, setIsBulkMode] = useState(false);
 
-  // Activate / Add Batch Modal State
   const [showModal, setShowModal] = useState(false);
   const [selectedFarmer, setSelectedFarmer] = useState<any>(null);
   const [form, setForm] = useState({
@@ -119,14 +142,14 @@ export default function FarmerStatusPage() {
     t_birds: "",
   });
 
-  // History Modal State
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [historyFarmer, setHistoryFarmer] = useState<any>(null);
   const [historyData, setHistoryData] = useState<{
     before: any[];
     after: any[];
     layer: any[];
-  }>({ before: [], after: [], layer: [] });
+    feedLogs: any[];
+  }>({ before: [], after: [], layer: [], feedLogs: [] });
 
   useEffect(() => {
     loadAllStatusData();
@@ -140,6 +163,8 @@ export default function FarmerStatusPage() {
         { data: agData },
         { data: frmData },
         { data: visitData },
+        { data: bStdData },
+        { data: lStdData },
       ] = await Promise.all([
         supabase.from("companies").select("*").order("company_name"),
         supabase.from("agents").select("*").order("agent_name"),
@@ -148,7 +173,21 @@ export default function FarmerStatusPage() {
           .from("vet_visits")
           .select("*")
           .order("created_at", { ascending: false }),
+        supabase.from("broiler_standards").select("*"),
+        supabase.from("layer_standards").select("*"),
       ]);
+
+      const bMap: Record<number, any> = {};
+      (bStdData || []).forEach((s: any) => (bMap[Number(s.age_days)] = s));
+      setBroilerStds(bMap);
+
+      const lMap: Record<number, any> = {};
+      (lStdData || []).forEach((s: any) => (lMap[Number(s.age_weeks)] = s));
+      setLayerStds(lMap);
+
+      const vMap: Record<string, any> = {};
+      (visitData || []).forEach((v: any) => (vMap[String(v.id)] = v));
+      setAllVisitsMap(vMap);
 
       const allCompanies = compData || [];
       const allAgents = agData || [];
@@ -218,6 +257,7 @@ export default function FarmerStatusPage() {
           runningCount: runningVisits.length,
           runningVisits,
           latestRunning,
+          latestVisit: latestRunning || latestClosed || null,
           agentName: agentObj?.agent_name || "Unassigned Agent",
           companyName: compObj?.company_name || "-",
           nourishTag: f.nourish_status || "",
@@ -346,6 +386,217 @@ export default function FarmerStatusPage() {
     }, {})
   );
 
+  // Excel Export for Filtered Farmer Status List
+  async function exportFilteredFarmersExcel() {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("Farmer Status");
+
+    sheet.addRow([
+      "SL",
+      "Company",
+      "Agent",
+      "Farmer Name",
+      "Mobile",
+      "Address",
+      "Category",
+      "Status",
+      "Date",
+      "Nourish Conversion",
+    ]);
+
+    sheet.getRow(1).eachCell((c) => {
+      c.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "0F172A" },
+      };
+      c.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    });
+
+    tableFilteredFarmers.forEach((f, idx) => {
+      sheet.addRow([
+        idx + 1,
+        f.companyName,
+        f.agentName,
+        f.farmer_name,
+        f.mobile || "-",
+        [f.village, f.upazila].filter(Boolean).join(", "),
+        f.category,
+        f.computedStatus,
+        f.statusDate || "-",
+        f.nourishTag
+          ? `${f.nourishTag}${
+              f.nourishTagDate ? ` (${f.nourishTagDate})` : ""
+            }`
+          : "-",
+      ]);
+    });
+
+    sheet.columns.forEach((col) => (col.width = 20));
+    const buf = await workbook.xlsx.writeBuffer();
+    saveAs(
+      new Blob([buf]),
+      `Farmer_Status_${selectedStatusFilter}_${new Date()
+        .toISOString()
+        .slice(0, 10)}.xlsx`
+    );
+  }
+
+  // Excel Export for Single Farmer History Modal
+  async function exportSingleFarmerHistoryExcel() {
+    if (!historyFarmer) return;
+    const workbook = new ExcelJS.Workbook();
+    const isLayer = (historyFarmer.category || "").toLowerCase() === "layer";
+
+    if (isLayer) {
+      const sheet = workbook.addWorksheet("Layer History");
+      sheet.addRow([
+        "Visit Date",
+        "H.Date",
+        "T.Birds",
+        "Age (Wks)",
+        "Weight (g)",
+        "Std Wt (g)",
+        "Feed (g/b/d)",
+        "Std Feed (g)",
+        "Egg Prod (%)",
+        "Std Egg (%)",
+        "Egg Wt (g)",
+        "Std Egg Wt",
+        "Feed Company",
+        "Feed Type",
+        "Remarks",
+      ]);
+      historyData.layer.forEach((r: any) => {
+        const v = allVisitsMap[String(r.vet_visit_id)] || historyFarmer.latestVisit;
+        const hDate = v?.hatch_date || "";
+        const tBirds = v?.t_birds || 0;
+        const ageWks = Math.max(1, Math.floor(calcAgeDays(hDate, r.visit_date) / 7));
+        const std = layerStds[ageWks];
+        sheet.addRow([
+          r.visit_date || "-",
+          hDate || "-",
+          tBirds,
+          ageWks,
+          r.b_weight_g,
+          std?.weight || "-",
+          r.feed_intake_g,
+          std?.feed_bird_day || "-",
+          r.egg_production,
+          std?.egg_production || "-",
+          r.egg_weight,
+          std?.egg_weight || "-",
+          r.feed_company || "-",
+          r.feed_type || "-",
+          r.remarks || "-",
+        ]);
+      });
+    } else {
+      const bSheet = workbook.addWorksheet("Before Sale History");
+      bSheet.addRow([
+        "Visit Date",
+        "H.Date",
+        "T.Birds",
+        "Age (Days)",
+        "Mortality",
+        "Weight (g)",
+        "Std Wt (g)",
+        "Feed (Kg)",
+        "Feed (g/b)",
+        "Std Feed (g)",
+        "FCR (w/o M)",
+        "Std FCR",
+        "FCR (With M)",
+        "Feed Company",
+        "Feed Type",
+        "Remarks",
+      ]);
+      historyData.before.forEach((r: any) => {
+        const v = allVisitsMap[String(r.vet_visit_id)] || historyFarmer.latestVisit;
+        const hDate = v?.hatch_date || "";
+        const tBirds = v?.t_birds || 0;
+        const ageDays = calcAgeDays(hDate, r.visit_date);
+        const std = broilerStds[ageDays];
+        bSheet.addRow([
+          r.visit_date || "-",
+          hDate || "-",
+          tBirds,
+          ageDays,
+          r.mortality_pcs,
+          r.weight_gm_b,
+          std?.weight || "-",
+          r.feed_t_kg,
+          r.feed_gm_b,
+          std?.feed_intake || "-",
+          r.fcr_w_out_m,
+          std?.fcr || "-",
+          r.fcr_with_m,
+          r.feed_company || "-",
+          r.feed_type || "-",
+          r.remarks || "-",
+        ]);
+      });
+
+      const aSheet = workbook.addWorksheet("After Sale History");
+      aSheet.addRow([
+        "Sale Date",
+        "H.Date",
+        "T.Birds",
+        "Age (Days)",
+        "Mortality",
+        "Weight (g)",
+        "Std Wt (g)",
+        "Total Feed (Kg)",
+        "Feed/Bird (g)",
+        "Std Feed (g)",
+        "FCR (w/o M)",
+        "Std FCR",
+        "FCR (With M)",
+        "Feed Mill",
+        "Feed Type",
+        "Remarks",
+      ]);
+      historyData.after.forEach((r: any) => {
+        const v = allVisitsMap[String(r.vet_visit_id)] || historyFarmer.latestVisit;
+        const hDate = v?.hatch_date || "";
+        const tBirds = Number(v?.t_birds || 0);
+        const ageDays = calcAgeDays(hDate, r.visit_date);
+        const std = broilerStds[ageDays];
+        const feedGmB =
+          r.feed_gm_b ||
+          (tBirds > 0
+            ? ((Number(r.feed_consumption_kg || 0) * 1000) / tBirds).toFixed(1)
+            : "-");
+        aSheet.addRow([
+          r.visit_date || "-",
+          hDate || "-",
+          tBirds,
+          ageDays,
+          r.mortality,
+          r.weight,
+          std?.weight || "-",
+          r.feed_consumption_kg,
+          feedGmB,
+          std?.feed_intake || "-",
+          r.fcr_w_out_m,
+          std?.fcr || "-",
+          r.fcr_with_m,
+          r.feed_mill || "-",
+          r.feed || "-",
+          r.remarks || "-",
+        ]);
+      });
+    }
+
+    const buf = await workbook.xlsx.writeBuffer();
+    saveAs(
+      new Blob([buf]),
+      `History_${historyFarmer.farmer_name}_${new Date()
+        .toISOString()
+        .slice(0, 10)}.xlsx`
+    );
+  }
+
   function toggleFarmerCheckbox(id: string) {
     setSelectedFarmerIds((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
@@ -375,10 +626,7 @@ export default function FarmerStatusPage() {
   }
 
   function handleOpenBulkActivate() {
-    if (selectedFarmerIds.length === 0) {
-      alert("Please select at least one farmer using the checkboxes.");
-      return;
-    }
+    if (selectedFarmerIds.length === 0) return;
     const defaultHatchery =
       companies.find((c) => String(c.id) === String(selectedCompany))
         ?.company_name ||
@@ -416,7 +664,6 @@ export default function FarmerStatusPage() {
       for (const target of targets) {
         const nextBatchNum = (target.runningCount || 0) + 1;
         const baseName = target.farmer_name || "Farmer";
-        // If farmer already has a running batch, label with 1, 2, etc.
         const batchLabel =
           nextBatchNum > 1 ? `${baseName} (${nextBatchNum})` : baseName;
 
@@ -440,7 +687,6 @@ export default function FarmerStatusPage() {
           .update(farmerUpdatePayload)
           .eq("id", target.id);
 
-        // If a 2nd batch is added while 1st batch is still unlabeled, label 1st batch as (1)
         if (
           nextBatchNum === 2 &&
           target.runningVisits?.[0] &&
@@ -479,11 +725,7 @@ export default function FarmerStatusPage() {
         }
       }
 
-      alert(
-        isBulkMode
-          ? `${targets.length} Farmers activated & moved to Running Vet Visits!`
-          : `Farmer activated & moved to Running Vet Visits!`
-      );
+      alert("Activated & moved to Running Vet Visits!");
       setShowModal(false);
       setSelectedFarmerIds([]);
       loadAllStatusData();
@@ -496,7 +738,7 @@ export default function FarmerStatusPage() {
     setHistoryFarmer(farmer);
     setShowHistoryModal(true);
 
-    const [{ data: bData }, { data: aData }, { data: lData }] =
+    const [{ data: bData }, { data: aData }, { data: lData }, { data: fLogs }] =
       await Promise.all([
         supabase
           .from("before_sale_reports")
@@ -513,12 +755,18 @@ export default function FarmerStatusPage() {
           .select("*")
           .eq("farmer_id", String(farmer.id))
           .order("visit_date", { ascending: false }),
+        supabase
+          .from("farmer_feed_logs")
+          .select("*")
+          .eq("farmer_id", String(farmer.id))
+          .order("change_date", { ascending: false }),
       ]);
 
     setHistoryData({
       before: bData || [],
       after: aData || [],
       layer: lData || [],
+      feedLogs: fLogs || [],
     });
   }
 
@@ -529,31 +777,39 @@ export default function FarmerStatusPage() {
 
   return (
     <div className="p-3 sm:p-5 max-w-7xl mx-auto space-y-4">
-      {/* Header + Bulk Activate Button */}
+      {/* Header + Export & Bulk Activate */}
       <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-slate-300 rounded-xl px-4 py-2.5 shadow-sm">
         <div className="flex items-center gap-3">
           <h1 className="text-base sm:text-lg font-bold text-slate-800">
-            Farmer Status Management
+            Farmer Status
           </h1>
           <span className="text-xs font-semibold bg-slate-100 border border-slate-200 px-2.5 py-0.5 rounded-lg text-slate-700">
-            Showing: <strong>{tableFilteredFarmers.length}</strong>
+            Total: <strong>{tableFilteredFarmers.length}</strong>
           </span>
         </div>
 
-        {selectedFarmerIds.length > 0 && (
+        <div className="flex items-center gap-2">
+          {selectedFarmerIds.length > 0 && (
+            <button
+              type="button"
+              onClick={handleOpenBulkActivate}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm transition"
+            >
+              Activate Selected ({selectedFarmerIds.length})
+            </button>
+          )}
           <button
             type="button"
-            onClick={handleOpenBulkActivate}
-            className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-bold shadow-sm transition"
+            onClick={exportFilteredFarmersExcel}
+            className="bg-slate-800 hover:bg-slate-900 text-white px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition"
           >
-            <CheckSquare size={14} />
-            Activate Selected ({selectedFarmerIds.length})
+            Export Excel
           </button>
-        )}
+        </div>
       </div>
 
       {/* ==================================================
-          1. COMPACT SUMMARY CARDS WITH "DETAILS" TOGGLE
+          1. ULTRA-MINIMAL SUMMARY CARDS (NO EXTRA ICONS OR "FILTER" TEXT)
       ================================================== */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
         {summaryCards.map((card) => {
@@ -563,14 +819,12 @@ export default function FarmerStatusPage() {
           return (
             <div
               key={card.key}
-              className={`rounded-xl border p-2.5 shadow-sm transition flex flex-col justify-between ${
+              onClick={() => setSelectedStatusFilter(card.key)}
+              className={`rounded-xl border p-3 shadow-sm cursor-pointer transition flex flex-col justify-between ${
                 card.color
               } ${isSelected ? "ring-2 ring-emerald-600" : ""}`}
             >
-              <div
-                onClick={() => setSelectedStatusFilter(card.key)}
-                className="cursor-pointer flex items-center justify-between gap-1"
-              >
+              <div className="flex items-center justify-between gap-1">
                 <span className="text-xs font-bold leading-tight">
                   {card.title}
                 </span>
@@ -581,32 +835,24 @@ export default function FarmerStatusPage() {
                 </span>
               </div>
 
-              <div className="mt-2 pt-1.5 border-t border-black/10 flex items-center justify-between text-[11px]">
+              <div className="mt-2 pt-1 border-t border-black/10 flex justify-end">
                 <button
                   type="button"
-                  onClick={() => setSelectedStatusFilter(card.key)}
-                  className="hover:underline font-medium opacity-80"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setExpandedCard(isExpanded ? null : card.key);
+                  }}
+                  className="text-[11px] font-semibold hover:underline opacity-85"
                 >
-                  {isSelected ? "✓ Filtered" : "Filter"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setExpandedCard(isExpanded ? null : card.key)
-                  }
-                  className="inline-flex items-center gap-0.5 font-bold hover:underline"
-                >
-                  Details{" "}
-                  {isExpanded ? (
-                    <ChevronUp size={12} />
-                  ) : (
-                    <ChevronDown size={12} />
-                  )}
+                  {isExpanded ? "Hide Details" : "Details"}
                 </button>
               </div>
 
               {isExpanded && (
-                <div className="mt-2 pt-2 border-t border-black/10 space-y-1 text-[11px] bg-white/90 rounded-lg p-2 text-slate-800">
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  className="mt-2 pt-2 border-t border-black/10 space-y-1 text-[11px] bg-white/95 rounded-lg p-2 text-slate-800"
+                >
                   {CATEGORIES.map((cat) => (
                     <div
                       key={cat}
@@ -634,19 +880,13 @@ export default function FarmerStatusPage() {
       ================================================== */}
       <div className="bg-white border border-slate-300 rounded-xl p-2.5 shadow-sm">
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 items-center">
-          <div className="col-span-2 sm:col-span-1 relative">
-            <Search
-              size={13}
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"
-            />
-            <input
-              type="text"
-              placeholder="Search farmer, mobile..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 pl-8 pr-2.5 py-1.5 text-xs outline-none focus:border-emerald-500"
-            />
-          </div>
+          <input
+            type="text"
+            placeholder="Search farmer, mobile..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="col-span-2 sm:col-span-1 w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs outline-none focus:border-emerald-500"
+          />
 
           <select
             value={selectedCompany}
@@ -715,15 +955,15 @@ export default function FarmerStatusPage() {
               setSearchQuery("");
               setSelectedFarmerIds([]);
             }}
-            className="inline-flex items-center justify-center gap-1 rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 transition"
+            className="rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 transition"
           >
-            <RotateCcw size={13} /> Reset
+            Reset
           </button>
         </div>
       </div>
 
       {/* ==================================================
-          3. AGENT-WISE MINIMAL BORDERED FARMER TABLE
+          3. AGENT-WISE MINIMAL BORDERED FARMER TABLE (NOURISH CONVERSION MERGED INTO STATUS)
       ================================================== */}
       {loading ? (
         <div className="bg-white border border-slate-300 rounded-xl p-8 text-center text-xs text-slate-500">
@@ -778,9 +1018,6 @@ export default function FarmerStatusPage() {
                       <th className="border border-slate-300 px-2.5 py-1.5 text-left">
                         Status & Date
                       </th>
-                      <th className="border border-slate-300 px-2.5 py-1.5 text-left">
-                        Nourish Conversion
-                      </th>
                       <th className="border border-slate-300 px-2.5 py-1.5 text-center">
                         History
                       </th>
@@ -813,7 +1050,7 @@ export default function FarmerStatusPage() {
                             {farmer.farmer_name}
                             {farmer.runningCount > 1 && (
                               <span className="ml-1.5 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px]">
-                                {farmer.runningCount} Batches Running
+                                {farmer.runningCount} Batches
                               </span>
                             )}
                           </td>
@@ -829,9 +1066,9 @@ export default function FarmerStatusPage() {
                             {farmer.category}
                           </td>
                           <td className="border border-slate-300 px-2.5 py-1.5">
-                            <div className="flex flex-col gap-0.5">
+                            <div className="flex flex-wrap items-center gap-1.5">
                               <span
-                                className={`inline-block w-fit px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                                className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-bold ${
                                   farmer.computedStatus === "Running"
                                     ? "bg-emerald-100 text-emerald-800"
                                     : farmer.computedStatus === "Active"
@@ -841,55 +1078,48 @@ export default function FarmerStatusPage() {
                               >
                                 {farmer.computedStatus}
                               </span>
-                              {farmer.statusDate && (
-                                <span className="text-[10px] text-slate-500">
-                                  {farmer.computedStatus === "Running"
-                                    ? `H.Date: ${farmer.statusDate}`
-                                    : `Sale/Cull: ${farmer.statusDate}`}
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="border border-slate-300 px-2.5 py-1.5">
-                            {farmer.nourishTag ? (
-                              <div>
+
+                              {farmer.nourishTag && (
                                 <span
-                                  className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${
+                                  className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold ${
                                     farmer.nourishTag === "Convert to Nourish"
-                                      ? "bg-teal-100 text-teal-800"
-                                      : "bg-red-100 text-red-800"
+                                      ? "bg-teal-100 text-teal-800 border border-teal-300"
+                                      : "bg-red-100 text-red-800 border border-red-300"
                                   }`}
                                 >
                                   {farmer.nourishTag}
+                                  {farmer.nourishTagDate
+                                    ? ` (${farmer.nourishTagDate})`
+                                    : ""}
                                 </span>
-                                {farmer.nourishTagDate && (
-                                  <div className="text-[10px] text-slate-500">
-                                    Date: {farmer.nourishTagDate}
-                                  </div>
-                                )}
+                              )}
+                            </div>
+
+                            {farmer.statusDate && (
+                              <div className="text-[10px] text-slate-500 mt-0.5">
+                                {farmer.computedStatus === "Running"
+                                  ? `H.Date: ${farmer.statusDate}`
+                                  : `Sale/Cull: ${farmer.statusDate}`}
                               </div>
-                            ) : (
-                              <span className="text-slate-400">-</span>
                             )}
                           </td>
                           <td className="border border-slate-300 px-2.5 py-1.5 text-center">
                             <button
                               type="button"
                               onClick={() => handleOpenHistory(farmer)}
-                              className="inline-flex items-center gap-1 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 px-2 py-1 rounded text-[11px] font-semibold"
+                              className="bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 px-2.5 py-1 rounded text-[11px] font-semibold"
                             >
-                              <History size={11} /> History
+                              History
                             </button>
                           </td>
                           <td className="border border-slate-300 px-2.5 py-1.5 text-center whitespace-nowrap">
                             <button
                               type="button"
                               onClick={() => handleOpenSingleActivate(farmer)}
-                              className="inline-flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded text-[11px] font-semibold shadow-sm"
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded text-[11px] font-semibold shadow-sm"
                             >
-                              <Plus size={11} />
                               {farmer.computedStatus === "Running"
-                                ? "Add Batch"
+                                ? "+ Add Batch"
                                 : "Activate"}
                             </button>
                           </td>
@@ -905,7 +1135,7 @@ export default function FarmerStatusPage() {
       )}
 
       {/* ==================================================
-          4. ACTIVATE / ADD BATCH MODAL (SINGLE OR BULK)
+          4. ACTIVATE / ADD BATCH MODAL
       ================================================== */}
       {showModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-3">
@@ -914,22 +1144,19 @@ export default function FarmerStatusPage() {
               <div>
                 <h3 className="text-sm sm:text-base font-bold text-slate-800">
                   {isBulkMode
-                    ? `Bulk Activate Farmers (${selectedFarmerIds.length} Selected)`
+                    ? `Bulk Activate Farmers (${selectedFarmerIds.length})`
                     : selectedFarmer?.runningCount > 0
                     ? `Add New Batch: ${selectedFarmer?.farmer_name} (${
                         selectedFarmer.runningCount + 1
                       })`
                     : `Activate Farmer: ${selectedFarmer?.farmer_name}`}
                 </h3>
-                {!isBulkMode && selectedFarmer && (
-                  <p className="text-[11px] text-slate-500">
-                    Agent: {selectedFarmer.agentName} (
-                    {selectedFarmer.companyName})
-                  </p>
-                )}
               </div>
-              <button onClick={() => setShowModal(false)}>
-                <X size={18} />
+              <button
+                onClick={() => setShowModal(false)}
+                className="text-slate-500 font-bold"
+              >
+                ✖
               </button>
             </div>
 
@@ -1065,29 +1292,69 @@ export default function FarmerStatusPage() {
       )}
 
       {/* ==================================================
-          5. HISTORY MODAL (CATEGORY-SPECIFIC CLEAN BORDERED TABLES)
+          5. HISTORY MODAL (WITH STANDARDS, FEED CONVERSION LOG & EXCEL EXPORT)
       ================================================== */}
       {showHistoryModal && historyFarmer && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-3">
-          <div className="bg-white rounded-xl p-5 w-full max-w-5xl max-h-[90vh] overflow-y-auto shadow-2xl border border-slate-300 space-y-5">
-            <div className="flex justify-between items-center border-b pb-3">
+          <div className="bg-white rounded-xl p-5 w-full max-w-6xl max-h-[92vh] overflow-y-auto shadow-2xl border border-slate-300 space-y-5">
+            <div className="flex flex-wrap justify-between items-center gap-2 border-b pb-3">
               <div>
                 <h3 className="text-base font-bold text-slate-800">
-                  Visit & Report History — {historyFarmer.farmer_name} (
-                  {historyFarmer.category})
+                  History — {historyFarmer.farmer_name} ({historyFarmer.category})
                 </h3>
                 <p className="text-xs text-slate-500">
                   Mobile: {historyFarmer.mobile || "-"} • Address:{" "}
                   {historyFarmer.village}, {historyFarmer.upazila}
                 </p>
               </div>
-              <button onClick={() => setShowHistoryModal(false)}>
-                <X size={18} />
-              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={exportSingleFarmerHistoryExcel}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold"
+                >
+                  Export History Excel
+                </button>
+                <button
+                  onClick={() => setShowHistoryModal(false)}
+                  className="px-2.5 py-1 rounded bg-slate-100 text-slate-600 font-bold"
+                >
+                  ✖
+                </button>
+              </div>
             </div>
 
+            {/* Feed Conversion Log Section (If Farmer ever changed feed company) */}
+            {(historyData.feedLogs.length > 0 || historyFarmer.nourishTag) && (
+              <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-3 space-y-1.5">
+                <h4 className="text-xs font-bold uppercase text-amber-900">
+                  Feed Conversion History
+                </h4>
+                {historyData.feedLogs.length > 0 ? (
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    {historyData.feedLogs.map((log: any) => (
+                      <span
+                        key={log.id}
+                        className="bg-white border border-amber-300 px-2.5 py-1 rounded-lg text-slate-800 font-medium"
+                      >
+                        <b>{log.change_date}:</b> {log.from_company || "Prev"} ➔{" "}
+                        <b className="text-emerald-700">{log.to_company}</b>{" "}
+                        {log.conversion_type ? `(${log.conversion_type})` : ""}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-xs text-slate-700 font-semibold">
+                    {historyFarmer.nourishTag} on{" "}
+                    {historyFarmer.nourishTagDate || "-"}
+                  </div>
+                )}
+              </div>
+            )}
+
             {(historyFarmer.category || "").toLowerCase() === "layer" ? (
-              /* ONLY LAYER PERFORMANCE HISTORY FOR LAYER FARMERS */
+              /* LAYER HISTORY TABLE WITH STANDARDS */
               <div>
                 <h4 className="text-xs font-bold uppercase text-indigo-800 mb-2">
                   Layer Performance History ({historyData.layer.length})
@@ -1100,22 +1367,28 @@ export default function FarmerStatusPage() {
                           Visit Date
                         </th>
                         <th className="border border-slate-300 px-2 py-1.5">
-                          B. Weight (g)
+                          H.Date
                         </th>
                         <th className="border border-slate-300 px-2 py-1.5">
-                          Feed Intake (g)
+                          T.B
                         </th>
                         <th className="border border-slate-300 px-2 py-1.5">
-                          Egg Prod (%)
+                          Age
                         </th>
                         <th className="border border-slate-300 px-2 py-1.5">
-                          Egg Wt (g)
+                          Wt / Std (g)
                         </th>
                         <th className="border border-slate-300 px-2 py-1.5">
-                          Feed Company
+                          Feed / Std (g/b/d)
                         </th>
                         <th className="border border-slate-300 px-2 py-1.5">
-                          Disease / Vaccine
+                          Egg% / Std%
+                        </th>
+                        <th className="border border-slate-300 px-2 py-1.5">
+                          Egg Wt / Std (g)
+                        </th>
+                        <th className="border border-slate-300 px-2 py-1.5">
+                          Feed & Type
                         </th>
                         <th className="border border-slate-300 px-2 py-1.5">
                           Remarks
@@ -1126,50 +1399,81 @@ export default function FarmerStatusPage() {
                       {historyData.layer.length === 0 ? (
                         <tr>
                           <td
-                            colSpan={8}
+                            colSpan={10}
                             className="border border-slate-300 py-4 text-center text-slate-400"
                           >
                             No layer performance reports found.
                           </td>
                         </tr>
                       ) : (
-                        historyData.layer.map((r: any, i: number) => (
-                          <tr key={i} className="hover:bg-slate-50">
-                            <td className="border border-slate-300 px-2 py-1">
-                              {r.visit_date || "-"}
-                            </td>
-                            <td className="border border-slate-300 px-2 py-1 text-center">
-                              {r.b_weight_g}
-                            </td>
-                            <td className="border border-slate-300 px-2 py-1 text-center">
-                              {r.feed_intake_g}
-                            </td>
-                            <td className="border border-slate-300 px-2 py-1 text-center font-bold text-indigo-700">
-                              {r.egg_production}%
-                            </td>
-                            <td className="border border-slate-300 px-2 py-1 text-center">
-                              {r.egg_weight}
-                            </td>
-                            <td className="border border-slate-300 px-2 py-1">
-                              {r.feed_company || "-"}
-                            </td>
-                            <td className="border border-slate-300 px-2 py-1">
-                              {[r.disease, r.vaccine]
-                                .filter(Boolean)
-                                .join(" / ") || "-"}
-                            </td>
-                            <td className="border border-slate-300 px-2 py-1">
-                              {r.remarks || "-"}
-                            </td>
-                          </tr>
-                        ))
+                        historyData.layer.map((r: any, i: number) => {
+                          const v =
+                            allVisitsMap[String(r.vet_visit_id)] ||
+                            historyFarmer.latestVisit;
+                          const hDate = v?.hatch_date || "-";
+                          const tBirds = v?.t_birds || "-";
+                          const ageDays = calcAgeDays(v?.hatch_date, r.visit_date);
+                          const ageWks = Math.max(1, Math.floor(ageDays / 7));
+                          const std = layerStds[ageWks];
+
+                          return (
+                            <tr key={i} className="hover:bg-slate-50">
+                              <td className="border border-slate-300 px-2 py-1">
+                                {r.visit_date || "-"}
+                              </td>
+                              <td className="border border-slate-300 px-2 py-1">
+                                {hDate}
+                              </td>
+                              <td className="border border-slate-300 px-2 py-1 text-center font-semibold">
+                                {tBirds}
+                              </td>
+                              <td className="border border-slate-300 px-2 py-1 text-center font-bold">
+                                {ageWks}w
+                              </td>
+                              <td className="border border-slate-300 px-2 py-1 text-center">
+                                <b>{r.b_weight_g}</b> /{" "}
+                                <span className="text-slate-500">
+                                  {std?.weight || "-"}
+                                </span>
+                              </td>
+                              <td className="border border-slate-300 px-2 py-1 text-center">
+                                <b>{r.feed_intake_g}</b> /{" "}
+                                <span className="text-slate-500">
+                                  {std?.feed_bird_day || "-"}
+                                </span>
+                              </td>
+                              <td className="border border-slate-300 px-2 py-1 text-center">
+                                <b className="text-indigo-700">
+                                  {r.egg_production}%
+                                </b>{" "}
+                                /{" "}
+                                <span className="text-slate-500">
+                                  {std?.egg_production || "-"}%
+                                </span>
+                              </td>
+                              <td className="border border-slate-300 px-2 py-1 text-center">
+                                <b>{r.egg_weight}</b> /{" "}
+                                <span className="text-slate-500">
+                                  {std?.egg_weight || "-"}
+                                </span>
+                              </td>
+                              <td className="border border-slate-300 px-2 py-1">
+                                {r.feed_company || "-"}{" "}
+                                {r.feed_type ? `(${r.feed_type})` : ""}
+                              </td>
+                              <td className="border border-slate-300 px-2 py-1">
+                                {r.remarks || "-"}
+                              </td>
+                            </tr>
+                          );
+                        })
                       )}
                     </tbody>
                   </table>
                 </div>
               </div>
             ) : (
-              /* ONLY BEFORE & AFTER SALE TABLES FOR BROILER / SONALI FARMERS */
+              /* BROILER / SONALI BEFORE & AFTER SALE TABLES WITH STANDARDS */
               <>
                 <div>
                   <h4 className="text-xs font-bold uppercase text-emerald-800 mb-2">
@@ -1183,28 +1487,34 @@ export default function FarmerStatusPage() {
                             Visit Date
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
-                            Mortality
+                            H.Date
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
-                            Weight (g)
+                            T.B
+                          </th>
+                          <th className="border border-slate-300 px-2 py-1.5">
+                            Age
+                          </th>
+                          <th className="border border-slate-300 px-2 py-1.5">
+                            Mort.
+                          </th>
+                          <th className="border border-slate-300 px-2 py-1.5">
+                            Wt / Std (g)
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
                             Feed (Kg)
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
-                            Feed (g/b)
+                            Feed/B / Std (g)
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
-                            FCR (w/o M)
+                            FCR(w/o) / Std
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
-                            FCR (With M)
+                            FCR(With M)
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
-                            Feed Company
-                          </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
-                            Feed Type
+                            Feed & Type
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
                             Remarks
@@ -1215,47 +1525,79 @@ export default function FarmerStatusPage() {
                         {historyData.before.length === 0 ? (
                           <tr>
                             <td
-                              colSpan={10}
+                              colSpan={12}
                               className="border border-slate-300 py-4 text-center text-slate-400"
                             >
                               No before sale reports found.
                             </td>
                           </tr>
                         ) : (
-                          historyData.before.map((r: any, i: number) => (
-                            <tr key={i} className="hover:bg-slate-50">
-                              <td className="border border-slate-300 px-2 py-1">
-                                {r.visit_date || "-"}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center">
-                                {r.mortality_pcs}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center">
-                                {r.weight_gm_b}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center">
-                                {r.feed_t_kg}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center">
-                                {r.feed_gm_b}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center font-semibold">
-                                {r.fcr_w_out_m}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center font-semibold">
-                                {r.fcr_with_m}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1">
-                                {r.feed_company || "-"}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1">
-                                {r.feed_type || "-"}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1">
-                                {r.remarks || "-"}
-                              </td>
-                            </tr>
-                          ))
+                          historyData.before.map((r: any, i: number) => {
+                            const v =
+                              allVisitsMap[String(r.vet_visit_id)] ||
+                              historyFarmer.latestVisit;
+                            const hDate = v?.hatch_date || "-";
+                            const tBirds = v?.t_birds || "-";
+                            const ageDays = calcAgeDays(
+                              v?.hatch_date,
+                              r.visit_date
+                            );
+                            const std = broilerStds[ageDays];
+
+                            return (
+                              <tr key={i} className="hover:bg-slate-50">
+                                <td className="border border-slate-300 px-2 py-1">
+                                  {r.visit_date || "-"}
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1">
+                                  {hDate}
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center font-semibold">
+                                  {tBirds}
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center font-bold">
+                                  {ageDays}d
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center">
+                                  {r.mortality_pcs}
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center">
+                                  <b>{r.weight_gm_b}</b> /{" "}
+                                  <span className="text-slate-500">
+                                    {std?.weight || "-"}
+                                  </span>
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center">
+                                  {r.feed_t_kg}
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center">
+                                  <b>{r.feed_gm_b}</b> /{" "}
+                                  <span className="text-slate-500">
+                                    {std?.feed_intake || "-"}
+                                  </span>
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center font-semibold">
+                                  <b className="text-emerald-700">
+                                    {r.fcr_w_out_m}
+                                  </b>{" "}
+                                  /{" "}
+                                  <span className="text-slate-500">
+                                    {std?.fcr || "-"}
+                                  </span>
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center font-semibold">
+                                  {r.fcr_with_m}
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1">
+                                  {r.feed_company || "-"}{" "}
+                                  {r.feed_type ? `(${r.feed_type})` : ""}
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1">
+                                  {r.remarks || "-"}
+                                </td>
+                              </tr>
+                            );
+                          })
                         )}
                       </tbody>
                     </table>
@@ -1271,28 +1613,37 @@ export default function FarmerStatusPage() {
                       <thead className="bg-slate-100">
                         <tr>
                           <th className="border border-slate-300 px-2 py-1.5">
-                            Sale / Visit Date
+                            Sale Date
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
-                            Mortality
+                            H.Date
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
-                            Avg Weight (g)
+                            T.B
+                          </th>
+                          <th className="border border-slate-300 px-2 py-1.5">
+                            Age
+                          </th>
+                          <th className="border border-slate-300 px-2 py-1.5">
+                            Mort.
+                          </th>
+                          <th className="border border-slate-300 px-2 py-1.5">
+                            Wt / Std (g)
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
                             Total Feed (Kg)
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
-                            FCR (w/o M)
+                            Feed/B / Std (g)
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
-                            FCR (With M)
+                            FCR(w/o) / Std
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
-                            Feed Mill
+                            FCR(With M)
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
-                            Feed
+                            Feed Mill & Type
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
                             Remarks
@@ -1303,44 +1654,88 @@ export default function FarmerStatusPage() {
                         {historyData.after.length === 0 ? (
                           <tr>
                             <td
-                              colSpan={9}
+                              colSpan={12}
                               className="border border-slate-300 py-4 text-center text-slate-400"
                             >
                               No after sale reports found.
                             </td>
                           </tr>
                         ) : (
-                          historyData.after.map((r: any, i: number) => (
-                            <tr key={i} className="hover:bg-slate-50">
-                              <td className="border border-slate-300 px-2 py-1">
-                                {r.visit_date || "-"}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center">
-                                {r.mortality}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center">
-                                {r.weight}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center">
-                                {r.feed_consumption_kg}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center font-semibold">
-                                {r.fcr_w_out_m}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center font-semibold">
-                                {r.fcr_with_m}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1">
-                                {r.feed_mill || "-"}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1">
-                                {r.feed || "-"}
-                              </td>
-                              <td className="border border-slate-300 px-2 py-1">
-                                {r.remarks || "-"}
-                              </td>
-                            </tr>
-                          ))
+                          historyData.after.map((r: any, i: number) => {
+                            const v =
+                              allVisitsMap[String(r.vet_visit_id)] ||
+                              historyFarmer.latestVisit;
+                            const hDate = v?.hatch_date || "-";
+                            const tBirds = Number(v?.t_birds || 0);
+                            const ageDays = calcAgeDays(
+                              v?.hatch_date,
+                              r.visit_date
+                            );
+                            const std = broilerStds[ageDays];
+                            const feedGmB =
+                              r.feed_gm_b ||
+                              (tBirds > 0
+                                ? (
+                                    (Number(r.feed_consumption_kg || 0) *
+                                      1000) /
+                                    tBirds
+                                  ).toFixed(1)
+                                : "-");
+
+                            return (
+                              <tr key={i} className="hover:bg-slate-50">
+                                <td className="border border-slate-300 px-2 py-1">
+                                  {r.visit_date || "-"}
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1">
+                                  {hDate}
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center font-semibold">
+                                  {tBirds || "-"}
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center font-bold">
+                                  {ageDays}d
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center">
+                                  {r.mortality}
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center">
+                                  <b>{r.weight}</b> /{" "}
+                                  <span className="text-slate-500">
+                                    {std?.weight || "-"}
+                                  </span>
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center">
+                                  {r.feed_consumption_kg}
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center">
+                                  <b>{feedGmB}</b> /{" "}
+                                  <span className="text-slate-500">
+                                    {std?.feed_intake || "-"}
+                                  </span>
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center font-semibold">
+                                  <b className="text-blue-700">
+                                    {r.fcr_w_out_m}
+                                  </b>{" "}
+                                  /{" "}
+                                  <span className="text-slate-500">
+                                    {std?.fcr || "-"}
+                                  </span>
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center font-semibold">
+                                  {r.fcr_with_m}
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1">
+                                  {r.feed_mill || "-"}{" "}
+                                  {r.feed ? `(${r.feed})` : ""}
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1">
+                                  {r.remarks || "-"}
+                                </td>
+                              </tr>
+                            );
+                          })
                         )}
                       </tbody>
                     </table>

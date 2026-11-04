@@ -25,8 +25,9 @@ const FARM_CATEGORIES = [
 ];
 
 const BREEDS_BY_CATEGORY: Record<string, string[]> = {
-  Broiler: ["Arber Acress", "Ross", "Cobb 500", "Indian River", "Hubbard"],
+  Broiler: ["Arbor Acress", "Ross", "Hubbard EP", "Cobb 500", "Indian River"],
   Layer: [
+    "Shaver star cross 579",
     "Shaver Star Cross 579 Brown",
     "Bovans White",
     "Bovans Brown",
@@ -42,6 +43,11 @@ const BREEDS_BY_CATEGORY: Record<string, string[]> = {
     "BB 300",
   ],
   Sonali: [
+    "Brown Cock",
+    "White Cock",
+    "Bornali plus",
+    "Color Bird/Sasso",
+    "Bornali",
     "Local",
     "Classic",
     "Hybrid",
@@ -49,11 +55,7 @@ const BREEDS_BY_CATEGORY: Record<string, string[]> = {
     "Hubbard Premium",
     "Sasso",
     "Tetra HB",
-    "Bornali",
-    "Bornali Plus",
     "Cock",
-    "Brown Cock",
-    "White Cock",
   ],
   Duck: ["Khaki Campbell", "Pekin", "Jinding", "Deshi Duck"],
   Quail: ["Japanese Quail", "Bobwhite Quail"],
@@ -61,30 +63,40 @@ const BREEDS_BY_CATEGORY: Record<string, string[]> = {
   Fish: ["Pangus", "Tilapia", "Koi", "Pabda", "Gulsha", "Carp", "Mixed"],
 };
 
-// PCD / DOC Type to Category & Breed Auto-Mapper
+// Exact PCD / DOC Type to Category & Full Breed Name Auto-Mapper
 function mapPcdToCategoryAndBreed(pcd: string): {
   category: string;
   breed: string;
 } {
   const code = String(pcd || "").trim().toUpperCase();
+
+  // Broiler Breeds
   if (code.startsWith("AA"))
-    return { category: "Broiler", breed: "Arber Acress" };
-  if (code.startsWith("HE")) return { category: "Broiler", breed: "Hubbard" };
-  if (code.startsWith("RO")) return { category: "Broiler", breed: "Ross" };
+    return { category: "Broiler", breed: "Arbor Acress" };
+  if (code.startsWith("RO"))
+    return { category: "Broiler", breed: "Ross" };
+  if (code.startsWith("EP") || code.startsWith("HE"))
+    return { category: "Broiler", breed: "Hubbard EP" };
 
-  if (code.startsWith("SA")) return { category: "Sonali", breed: "Sasso" };
-  if (code.startsWith("BP"))
-    return { category: "Sonali", breed: "Bornali Plus" };
-  if (code.startsWith("BR")) return { category: "Sonali", breed: "Bornali" };
-  if (code.startsWith("CB")) return { category: "Sonali", breed: "Brown Cock" };
-  if (code.startsWith("CW")) return { category: "Sonali", breed: "White Cock" };
-
+  // Layer Breeds
   if (code.startsWith("SH"))
-    return { category: "Layer", breed: "Shaver Star Cross 579 Brown" };
+    return { category: "Layer", breed: "Shaver star cross 579" };
   if (code.startsWith("BO"))
     return { category: "Layer", breed: "Bovans White" };
 
-  return { category: "Broiler", breed: "Arber Acress" };
+  // Sonali Breeds
+  if (code.startsWith("CB"))
+    return { category: "Sonali", breed: "Brown Cock" };
+  if (code.startsWith("CW"))
+    return { category: "Sonali", breed: "White Cock" };
+  if (code.startsWith("BP"))
+    return { category: "Sonali", breed: "Bornali plus" };
+  if (code.startsWith("HP") || code.startsWith("SA"))
+    return { category: "Sonali", breed: "Color Bird/Sasso" };
+  if (code.startsWith("BR"))
+    return { category: "Sonali", breed: "Bornali" };
+
+  return { category: "Broiler", breed: pcd };
 }
 
 interface DocAgent {
@@ -191,7 +203,6 @@ export default function DocTrackingPage() {
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
-  // Current User Info
   const [currentUserId, setCurrentUserId] = useState(
     cachedPageState?.userId || ""
   );
@@ -205,7 +216,6 @@ export default function DocTrackingPage() {
     cachedPageState?.assignedUpazilas || []
   );
 
-  // Data States
   const [agents, setAgents] = useState<DocAgent[]>(
     cachedPageState?.agents || []
   );
@@ -231,7 +241,6 @@ export default function DocTrackingPage() {
     cachedPageState?.companyNames || []
   );
 
-  // Compact Filters
   const todayStr = new Date().toISOString().split("T")[0];
   const [fromDate, setFromDate] = useState<string>(
     cachedPageState?.fromDate || ""
@@ -245,7 +254,6 @@ export default function DocTrackingPage() {
   const [officerFilter, setOfficerFilter] = useState<string>("");
   const [searchAgent, setSearchAgent] = useState<string>("");
 
-  // Add / Edit Tracking Modal State
   const [isTrackModalOpen, setIsTrackModalOpen] = useState(false);
   const [editingTracking, setEditingTracking] = useState<DocTracking | null>(
     null
@@ -270,16 +278,14 @@ export default function DocTrackingPage() {
     mobile: "",
     qty: "",
     category: "Broiler",
-    breed: "Arber Acress",
+    breed: "Arbor Acress",
     feed_company: "",
     remark: "",
   });
 
-  // Export Modal State
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [exportSelectedTypes, setExportSelectedTypes] = useState<string[]>([]);
 
-  // Tracked Report Modal State
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [reportFromDate, setReportFromDate] = useState(todayStr);
   const [reportToDate, setReportToDate] = useState(todayStr);
@@ -493,9 +499,6 @@ export default function DocTrackingPage() {
     };
   }
 
-  // ==================================================
-  // EXCEL HELPERS
-  // ==================================================
   function extractCleanDocId(rawVal: any): string {
     if (rawVal === null || rawVal === undefined) return "";
     return String(rawVal).replace(/<[^>]*>/g, "").trim();
@@ -671,9 +674,6 @@ export default function DocTrackingPage() {
     }
   }
 
-  // ==================================================
-  // COLLABORATED FEED AGENT & FARMERS LOOKUP
-  // ==================================================
   function getCollaboratedFeedAgentId(
     target: typeof activeTarget
   ): number | null {
@@ -724,9 +724,6 @@ export default function DocTrackingPage() {
     return farmersList.filter((f) => f.upazila === target.upazila);
   }
 
-  // ==================================================
-  // ADD, EDIT & DELETE FARMER TRACKING (WITH VET VISIT SYNC)
-  // ==================================================
   function canModifyTracking(tr: DocTracking): boolean {
     if (isManagerOrAdmin) return true;
     if (tr.created_by && currentUserId && tr.created_by === currentUserId) {
@@ -872,7 +869,7 @@ export default function DocTrackingPage() {
 
     try {
       const finalCategory = trackForm.category || "Broiler";
-      const finalBreed = trackForm.breed || "Arber Acress";
+      const finalBreed = trackForm.breed || "Arbor Acress";
 
       if (editingTracking) {
         if (!canModifyTracking(editingTracking)) {
@@ -905,7 +902,6 @@ export default function DocTrackingPage() {
           if (retryErr) throw retryErr;
         }
       } else {
-        // 1. Sync Farmer & Vet Visit (Direct Collaboration with Farmer Status & Vet Visits)
         const targetFeedAgentId = getCollaboratedFeedAgentId(activeTarget);
         const chosenCompObj =
           companiesList.find(
@@ -988,7 +984,6 @@ export default function DocTrackingPage() {
           }
         }
 
-        // Insert into `doc_trackings`
         const insertPayload: Record<string, any> = {
           supply_id: activeTarget.supply_id || null,
           doc_id: activeTarget.doc_id,
@@ -1022,7 +1017,6 @@ export default function DocTrackingPage() {
           if (retryErr) throw retryErr;
         }
 
-        // Insert Running Batch into `vet_visits` (with (1), (2) indicator if already running)
         if (targetFarmerId && targetFeedAgentId) {
           const { data: runningBatches } = await supabase
             .from("vet_visits")
@@ -1105,9 +1099,6 @@ export default function DocTrackingPage() {
     }
   }
 
-  // ==================================================
-  // FILTERED DATA & RESET
-  // ==================================================
   const allPcdTypes = Array.from(new Set(supplies.map((s) => s.pcd))).sort();
   const allUpazilas = Array.from(new Set(agents.map((a) => a.upazila))).sort();
 
@@ -1243,9 +1234,6 @@ export default function DocTrackingPage() {
       ? ((totalUntrackedQty / totalSupplyQty) * 100).toFixed(1)
       : "0.0";
 
-  // ==================================================
-  // MULTI-SELECT DOC TYPE EXCEL EXPORT
-  // ==================================================
   function openExportModal() {
     setExportSelectedTypes(pcdFilter ? [pcdFilter] : [...allPcdTypes]);
     setIsExportModalOpen(true);
@@ -1363,7 +1351,6 @@ export default function DocTrackingPage() {
     });
 
     const worksheet = XLSX.utils.json_to_sheet(exportRows);
-
     const headers = Object.keys(exportRows[0]);
     worksheet["!cols"] = headers.map((header) => {
       let maxLen = header.length;
@@ -1386,9 +1373,6 @@ export default function DocTrackingPage() {
     setIsExportModalOpen(false);
   }
 
-  // ==================================================
-  // TRACKED REPORT POPUP CALCULATIONS
-  // ==================================================
   const reportSupplies = supplies.filter((s) => {
     if (!matchingAgentDocIds.has(s.doc_id)) return false;
     const matchFrom = !reportFromDate || s.h_date >= reportFromDate;
@@ -1474,9 +1458,7 @@ export default function DocTrackingPage() {
 
   return (
     <div className="p-2.5 sm:p-4 max-w-7xl mx-auto space-y-3">
-      {/* ==================================================
-          COMPACT HEADER: STATS BADGES + ACTION BUTTONS
-      ================================================== */}
+      {/* HEADER */}
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2.5 bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 shadow-sm">
         <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
           <span className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 text-xs font-medium">
@@ -1556,16 +1538,14 @@ export default function DocTrackingPage() {
         </div>
       </div>
 
-      {/* ==================================================
-          COMPACT FILTER BAR WITH SMALL RESET ICON
-      ================================================== */}
+      {/* FILTER BAR */}
       <div className="bg-white border border-slate-200 rounded-xl p-2.5 shadow-sm">
         <div
           className={`grid grid-cols-2 sm:grid-cols-4 ${
             isManagerOrAdmin ? "lg:grid-cols-7" : "lg:grid-cols-5"
           } gap-2 items-center`}
         >
-          <div className="flex items-center border border-slate-300 rounded-lg px-2 py-1 bg-white focus-within:border-emerald-500">
+          <div className="flex items-center border border-slate-300 rounded-lg px-2 py-1 bg-white">
             <span className="text-[10px] font-semibold text-slate-400 mr-1.5 shrink-0">
               From:
             </span>
@@ -1584,7 +1564,7 @@ export default function DocTrackingPage() {
             />
           </div>
 
-          <div className="flex items-center border border-slate-300 rounded-lg px-2 py-1 bg-white focus-within:border-emerald-500">
+          <div className="flex items-center border border-slate-300 rounded-lg px-2 py-1 bg-white">
             <span className="text-[10px] font-semibold text-slate-400 mr-1.5 shrink-0">
               To:
             </span>
@@ -1606,7 +1586,7 @@ export default function DocTrackingPage() {
           <select
             value={monthFilter}
             onChange={(e) => handleMonthChange(e.target.value)}
-            className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white outline-none focus:border-emerald-500"
+            className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white outline-none"
           >
             <option value="">All Months</option>
             {allMonths.map((ym) => (
@@ -1619,7 +1599,7 @@ export default function DocTrackingPage() {
           <select
             value={pcdFilter}
             onChange={(e) => setPcdFilter(e.target.value)}
-            className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white outline-none focus:border-emerald-500"
+            className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white outline-none"
           >
             <option value="">All DOC Types</option>
             {allPcdTypes.map((pcd) => (
@@ -1633,7 +1613,7 @@ export default function DocTrackingPage() {
             <select
               value={upazilaFilter}
               onChange={(e) => setUpazilaFilter(e.target.value)}
-              className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white outline-none focus:border-emerald-500"
+              className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white outline-none"
             >
               <option value="">All Upazilas</option>
               {allUpazilas.map((u) => (
@@ -1648,7 +1628,7 @@ export default function DocTrackingPage() {
             <select
               value={officerFilter}
               onChange={(e) => setOfficerFilter(e.target.value)}
-              className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white outline-none focus:border-emerald-500"
+              className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white outline-none"
             >
               <option value="">All Officers</option>
               {officers
@@ -1667,7 +1647,7 @@ export default function DocTrackingPage() {
               placeholder="Search ID or Agent..."
               value={searchAgent}
               onChange={(e) => setSearchAgent(e.target.value)}
-              className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs outline-none focus:border-emerald-500"
+              className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs outline-none"
             />
             <button
               onClick={resetAllFilters}
@@ -1781,15 +1761,11 @@ export default function DocTrackingPage() {
 
                     return (
                       <div key={docType} className="pt-3 first:pt-0 space-y-2.5">
+                        {/* DOC Type Full Name in Heading Only (No extra badge beside it) */}
                         <div className="flex items-center justify-between gap-2">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 font-bold text-xs">
-                              DOC Type: {docType}
-                            </span>
-                            <span className="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-semibold">
-                              {mappedInfo.category} • {mappedInfo.breed}
-                            </span>
-                          </div>
+                          <span className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-slate-800 font-bold text-xs">
+                            DOC Type: {mappedInfo.breed}
+                          </span>
 
                           <button
                             type="button"
@@ -1827,7 +1803,7 @@ export default function DocTrackingPage() {
                           </button>
                         </div>
 
-                        {/* SUPPLY TABLE */}
+                        {/* SUPPLY TABLE (Keeps Short Code RO, EP, AA inside table) */}
                         <div className="overflow-x-auto border border-slate-200 rounded-xl">
                           <table className="min-w-full text-xs">
                             <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
@@ -1989,7 +1965,7 @@ export default function DocTrackingPage() {
 
                         <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs">
                           <span className="font-medium text-slate-700">
-                            <strong>{docType}</strong> Total:{" "}
+                            <strong>{mappedInfo.breed}</strong> Total:{" "}
                             <strong>{typeTotalQty.toLocaleString()}</strong>
                           </span>
 
@@ -2014,17 +1990,15 @@ export default function DocTrackingPage() {
         </div>
       )}
 
-      {/* ==================================================
-          MODAL 1: ADD / EDIT FARMER TRACKING
-      ================================================== */}
+      {/* MODAL 1: ADD / EDIT FARMER TRACKING */}
       {isTrackModalOpen && activeTarget && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full max-w-md max-h-[92vh] flex flex-col overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200 bg-slate-100">
               <div>
                 <h3 className="text-sm sm:text-base font-bold text-slate-800">
-                  {editingTracking ? "Edit Tracking" : "Add Tracking"} — DOC
-                  Type: {activeTarget.pcd}
+                  {editingTracking ? "Edit Tracking" : "Add Tracking"} —{" "}
+                  {mapPcdToCategoryAndBreed(activeTarget.pcd).breed}
                 </h3>
                 <p className="text-xs text-slate-600">
                   {activeTarget.doc_id} • {activeTarget.agent_name} (Remaining:{" "}
@@ -2046,7 +2020,6 @@ export default function DocTrackingPage() {
               onSubmit={handleSaveTracking}
               className="p-5 space-y-3.5 overflow-y-auto"
             >
-              {/* Select Farmer from List Dropdown right above Farmer Name */}
               <div>
                 <label className="block text-xs font-semibold text-emerald-700 mb-1">
                   Select Farmer from List (Optional)
@@ -2120,7 +2093,6 @@ export default function DocTrackingPage() {
                 </div>
               </div>
 
-              {/* Farm Category & Breed Auto-filled from PCD */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
@@ -2251,9 +2223,7 @@ export default function DocTrackingPage() {
         </div>
       )}
 
-      {/* ==================================================
-          MODAL 2: EXPORT EXCEL (Multi-Select DOC Type)
-      ================================================== */}
+      {/* MODAL 2: EXPORT EXCEL */}
       {isExportModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
@@ -2310,7 +2280,9 @@ export default function DocTrackingPage() {
                         onChange={() => toggleExportDocType(type)}
                         className="w-4 h-4 rounded text-emerald-600"
                       />
-                      <span>DOC Type: {type}</span>
+                      <span>
+                        {type} ({mapPcdToCategoryAndBreed(type).breed})
+                      </span>
                     </label>
                   );
                 })}
@@ -2339,9 +2311,7 @@ export default function DocTrackingPage() {
         </div>
       )}
 
-      {/* ==================================================
-          MODAL 3: TRACKED REPORT POPUP
-      ================================================== */}
+      {/* MODAL 3: TRACKED REPORT POPUP */}
       {isReportOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] flex flex-col overflow-hidden">
@@ -2398,7 +2368,7 @@ export default function DocTrackingPage() {
                     <option value="">All DOC Types</option>
                     {allPcdTypes.map((p) => (
                       <option key={p} value={p}>
-                        {p}
+                        {p} ({mapPcdToCategoryAndBreed(p).breed})
                       </option>
                     ))}
                   </select>
@@ -2498,7 +2468,7 @@ export default function DocTrackingPage() {
                       {pcdBreakdown.map((p) => (
                         <tr key={p.pcd} className="hover:bg-slate-50">
                           <td className="px-3.5 py-2 font-bold text-slate-800">
-                            {p.pcd}
+                            {p.pcd} ({mapPcdToCategoryAndBreed(p.pcd).breed})
                           </td>
                           <td className="px-3.5 py-2 text-right font-semibold">
                             {p.supQty.toLocaleString()}

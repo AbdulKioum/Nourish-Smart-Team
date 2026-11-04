@@ -324,7 +324,7 @@ export default function Navbar({
                   {Object.keys(layerByAgent).length > 0 && (
                     <div className="space-y-3 pt-2">
                       <h4 className="font-bold text-indigo-700 text-sm sm:text-base uppercase tracking-wider border-b pb-1">
-                        Layer Upcoming Vaccines
+                        Layer Upcoming Vaccines (in 3 days)
                       </h4>
 
                       {Object.entries(layerByAgent).map(([agentName, list]) => (

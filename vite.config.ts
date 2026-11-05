@@ -1,10 +1,13 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import { VitePWA } from "vite-plugin-pwa";
 
 export default defineConfig({
+  base: "./",
   plugins: [
     react(),
+    tailwindcss(), 
     VitePWA({
       registerType: "autoUpdate",
       includeAssets: ["logo smart team.png"],
@@ -33,7 +36,6 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Limit barhiye 6 MB (6 * 1024 * 1024 bytes) kore dewa holo
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
         cleanupOutdatedCaches: true,

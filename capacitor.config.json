@@ -1,0 +1,6 @@
+{
+  "appId": "com.nourish.smartteam",
+  "appName": "Smart Team",
+  "webDir": "dist",
+  "bundledWebRuntime": false
+}

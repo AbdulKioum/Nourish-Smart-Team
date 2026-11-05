@@ -1,48 +1,45 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
-import { VitePWA } from 'vite-plugin-pwa'
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import { VitePWA } from "vite-plugin-pwa";
 
 export default defineConfig({
   plugins: [
-    react(), 
-    tailwindcss(),
+    react(),
     VitePWA({
-      registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'masked-icon.svg'],
-      workbox: {
-         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-      },
+      registerType: "autoUpdate",
+      includeAssets: ["logo smart team.png"],
       manifest: {
-        name: 'Nourish Smart Team',
-        short_name: 'Nourish-Smart-Team',
-        description: 'Nourish Smart Team Poultry, Feed & Farming Management Application',
-        theme_color: '#059669',
-        background_color: '#ffffff',
-        display: 'standalone',
+        name: "Nourish Smart Team",
+        short_name: "Smart Team",
+        description: "Offline-First Poultry & Farm Management App",
+        theme_color: "#059669",
+        background_color: "#ffffff",
+        display: "standalone",
+        orientation: "portrait",
+        start_url: "/",
         icons: [
           {
-            src: '/icon-192.png',
-            sizes: '192x192',
-            type: 'image/png'
+            src: "/logo smart team.png",
+            sizes: "192x192",
+            type: "image/png",
+            purpose: "any maskable",
           },
           {
-            src: '/icon-512.png',
-            sizes: '512x512',
-            type: 'image/png'
+            src: "/logo smart team.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "any maskable",
           },
-          {
-            src: '/icon-512.png',
-            sizes: '512x512',
-            type: 'image/png',
-            purpose: 'any maskable'
-          }
-        ]
-      }
-    })
+        ],
+      },
+      workbox: {
+        // Limit barhiye 6 MB (6 * 1024 * 1024 bytes) kore dewa holo
+        maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
+        globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
+        cleanupOutdatedCaches: true,
+        clientsClaim: true,
+        skipWaiting: true,
+      },
+    }),
   ],
-  server: {
-    host: '0.0.0.0',
-    port: 5173
-  }
-})
+});

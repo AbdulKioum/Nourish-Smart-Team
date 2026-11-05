@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Smart Team</string>
+    <string name="title_activity_main">Smart Team</string>
+    <string name="package_name">com.nourish.smartteam</string>
+    <string name="custom_url_scheme">com.nourish.smartteam</string>
+</resources>

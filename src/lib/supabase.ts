@@ -17,6 +17,8 @@ export const SYNC_TABLES = [
   "users",
   "companies",
   "agents",
+  "sub_agents",
+  "retailers",
   "farmers",
   "doc_agents",
   "doc_supplies",
@@ -28,15 +30,14 @@ export const SYNC_TABLES = [
 export interface SyncMutation {
   id: string;
   table: string;
-  action: "insert" | "update" | "delete";
+  action: "insert" | "update" | "delete" | "upsert";
   payload?: any;
-  filters?: { type: "eq" | "in"; col: string; val: any }[];
+  filters?: { type: string; col: string; val: any }[];
   timestamp: number;
 }
 
 const QUEUE_KEY = "fams_offline_mutation_queue";
 
-// 1. Pull all tables from Supabase to Local IndexedDB
 export async function pullAllTablesToLocal(): Promise<boolean> {
   if (!navigator.onLine) return false;
   try {
@@ -57,7 +58,6 @@ export async function pullAllTablesToLocal(): Promise<boolean> {
   }
 }
 
-// 2. Push pending offline inputs to Supabase when online
 let isSyncingQueue = false;
 export async function processMutationQueue(): Promise<void> {
   if (!navigator.onLine || isSyncingQueue) return;
@@ -76,7 +76,7 @@ export async function processMutationQueue(): Promise<void> {
       try {
         let query: any = rawSupabase.from(item.table);
 
-        if (item.action === "insert") {
+        if (item.action === "insert" || item.action === "upsert") {
           const rows = Array.isArray(item.payload)
             ? item.payload
             : [item.payload];
@@ -87,7 +87,10 @@ export async function processMutationQueue(): Promise<void> {
             }
             return copy;
           });
-          query = query.insert(cleanRows);
+          query =
+            item.action === "upsert"
+              ? query.upsert(cleanRows)
+              : query.insert(cleanRows);
         } else if (item.action === "update") {
           const copy = { ...item.payload };
           delete copy.id;
@@ -106,8 +109,6 @@ export async function processMutationQueue(): Promise<void> {
 
         const { error } = await query;
         if (error) {
-          console.error(`Sync error on ${item.table}:`, error);
-          // Network error hole abar queue te rakhbo
           if (
             error.message?.includes("fetch") ||
             error.message?.includes("network")
@@ -115,7 +116,7 @@ export async function processMutationQueue(): Promise<void> {
             remainingQueue.push(item);
           }
         }
-      } catch (err) {
+      } catch {
         remainingQueue.push(item);
       }
     }
@@ -144,23 +145,28 @@ async function addToMutationQueue(
   window.dispatchEvent(new CustomEvent("fams-queue-updated"));
 }
 
-// 3. Offline-First Query Builder (Intercepts .from().select()/.insert()/.update()/.delete())
 class OfflineQueryBuilder {
   private table: string;
-  private action: "select" | "insert" | "update" | "delete" = "select";
+  private action: "select" | "insert" | "update" | "delete" | "upsert" = "select";
   private selectQuery = "*";
+  private selectOpts: any = undefined;
   private payload: any = null;
-  private filters: { type: "eq" | "in" | "gte" | "lte"; col: string; val: any }[] = [];
-  private orderBy: { col: string; ascending: boolean } | null = null;
+  private upsertOpts: any = undefined;
+  private filters: { type: string; col: string; val: any }[] = [];
+  private orderBys: { col: string; ascending: boolean }[] = [];
+  private limitCount: number | null = null;
+  private rangeBounds: { from: number; to: number } | null = null;
   private isSingle = false;
+  private isMaybeSingle = false;
 
   constructor(table: string) {
     this.table = table;
   }
 
-  select(columns = "*") {
+  select(columns = "*", opts?: any) {
     if (this.action === "select") {
       this.selectQuery = columns;
+      this.selectOpts = opts;
     }
     return this;
   }
@@ -168,6 +174,13 @@ class OfflineQueryBuilder {
   insert(values: any) {
     this.action = "insert";
     this.payload = values;
+    return this;
+  }
+
+  upsert(values: any, opts?: any) {
+    this.action = "upsert";
+    this.payload = values;
+    this.upsertOpts = opts;
     return this;
   }
 
@@ -187,8 +200,33 @@ class OfflineQueryBuilder {
     return this;
   }
 
+  neq(col: string, val: any) {
+    this.filters.push({ type: "neq", col, val });
+    return this;
+  }
+
   in(col: string, val: any[]) {
     this.filters.push({ type: "in", col, val });
+    return this;
+  }
+
+  ilike(col: string, val: string) {
+    this.filters.push({ type: "ilike", col, val });
+    return this;
+  }
+
+  like(col: string, val: string) {
+    this.filters.push({ type: "ilike", col, val });
+    return this;
+  }
+
+  is(col: string, val: any) {
+    this.filters.push({ type: "is", col, val });
+    return this;
+  }
+
+  gt(col: string, val: any) {
+    this.filters.push({ type: "gt", col, val });
     return this;
   }
 
@@ -197,18 +235,50 @@ class OfflineQueryBuilder {
     return this;
   }
 
+  lt(col: string, val: any) {
+    this.filters.push({ type: "lt", col, val });
+    return this;
+  }
+
   lte(col: string, val: any) {
     this.filters.push({ type: "lte", col, val });
     return this;
   }
 
+  or(filterStr: string) {
+    this.filters.push({ type: "or", col: "", val: filterStr });
+    return this;
+  }
+
+  match(queryObj: Record<string, any>) {
+    Object.entries(queryObj).forEach(([k, v]) => {
+      this.filters.push({ type: "eq", col: k, val: v });
+    });
+    return this;
+  }
+
   order(col: string, opts?: { ascending?: boolean }) {
-    this.orderBy = { col, ascending: opts?.ascending ?? true };
+    this.orderBys.push({ col, ascending: opts?.ascending ?? true });
+    return this;
+  }
+
+  limit(count: number) {
+    this.limitCount = count;
+    return this;
+  }
+
+  range(from: number, to: number) {
+    this.rangeBounds = { from, to };
     return this;
   }
 
   single() {
     this.isSingle = true;
+    return this;
+  }
+
+  maybeSingle() {
+    this.isMaybeSingle = true;
     return this;
   }
 
@@ -222,30 +292,81 @@ class OfflineQueryBuilder {
   private matchesFilters(row: any): boolean {
     for (const f of this.filters) {
       const rowVal = row[f.col];
-      if (f.type === "eq" && String(rowVal) !== String(f.val)) return false;
+      if (f.type === "eq" && String(rowVal ?? "") !== String(f.val ?? ""))
+        return false;
+      if (f.type === "neq" && String(rowVal ?? "") === String(f.val ?? ""))
+        return false;
+      if (f.type === "is" && rowVal !== f.val) return false;
       if (f.type === "in") {
         const strArr = (f.val || []).map(String);
         if (!strArr.includes(String(rowVal))) return false;
       }
-      if (f.type === "gte" && rowVal < f.val) return false;
-      if (f.type === "lte" && rowVal > f.val) return false;
+      if (f.type === "ilike") {
+        const cleanPattern = String(f.val || "")
+          .replace(/%/g, "")
+          .toLowerCase();
+        if (
+          !String(rowVal || "")
+            .toLowerCase()
+            .includes(cleanPattern)
+        )
+          return false;
+      }
+      if (f.type === "gt" && !(rowVal > f.val)) return false;
+      if (f.type === "gte" && !(rowVal >= f.val)) return false;
+      if (f.type === "lt" && !(rowVal < f.val)) return false;
+      if (f.type === "lte" && !(rowVal <= f.val)) return false;
     }
     return true;
   }
 
   private async attachRelations(rows: any[]): Promise<any[]> {
+    let result = [...rows];
     if (this.selectQuery.includes("companies(")) {
       const companies: any[] = (await get("table_companies")) || [];
       const compMap = new Map(companies.map((c) => [String(c.id), c]));
-      return rows.map((r) => ({
+      result = result.map((r) => ({
         ...r,
         companies: compMap.get(String(r.company_id)) || null,
       }));
     }
-    return rows;
+    if (this.selectQuery.includes("agents(")) {
+      const agents: any[] = (await get("table_agents")) || [];
+      const agMap = new Map(agents.map((a) => [String(a.id), a]));
+      result = result.map((r) => ({
+        ...r,
+        agents: agMap.get(String(r.agent_id)) || null,
+      }));
+    }
+    if (this.selectQuery.includes("farmers(")) {
+      const farmers: any[] = (await get("table_farmers")) || [];
+      const frmMap = new Map(farmers.map((f) => [String(f.id), f]));
+      result = result.map((r) => ({
+        ...r,
+        farmers: frmMap.get(String(r.farmer_id)) || null,
+      }));
+    }
+    return result;
   }
 
-  private async execute(): Promise<{ data: any; error: any }> {
+  private applyFiltersToSupabaseQuery(q: any) {
+    let query = q;
+    for (const f of this.filters) {
+      if (f.type === "eq") query = query.eq(f.col, f.val);
+      else if (f.type === "neq") query = query.neq(f.col, f.val);
+      else if (f.type === "in") query = query.in(f.col, f.val);
+      else if (f.type === "ilike") query = query.ilike(f.col, f.val);
+      else if (f.type === "is") query = query.is(f.col, f.val);
+      else if (f.type === "gt") query = query.gt(f.col, f.val);
+      else if (f.type === "gte") query = query.gte(f.col, f.val);
+      else if (f.type === "lt") query = query.lt(f.col, f.val);
+      else if (f.type === "lte") query = query.lte(f.col, f.val);
+      else if (f.type === "or") query = query.or(f.val);
+    }
+    return query;
+  }
+
+  private async execute(): Promise<{ data: any; error: any; count?: number | null }> {
     const storageKey = `table_${this.table}`;
 
     // =====================================
@@ -254,35 +375,35 @@ class OfflineQueryBuilder {
     if (this.action === "select") {
       if (navigator.onLine) {
         try {
-          let q: any = rawSupabase.from(this.table).select(this.selectQuery);
-          for (const f of this.filters) {
-            if (f.type === "eq") q = q.eq(f.col, f.val);
-            if (f.type === "in") q = q.in(f.col, f.val);
-            if (f.type === "gte") q = q.gte(f.col, f.val);
-            if (f.type === "lte") q = q.lte(f.col, f.val);
-          }
-          if (this.orderBy) {
-            q = q.order(this.orderBy.col, {
-              ascending: this.orderBy.ascending,
-            });
-          }
-          if (this.isSingle) {
-            q = q.single();
-          }
+          let q: any = rawSupabase
+            .from(this.table)
+            .select(this.selectQuery, this.selectOpts);
+          q = this.applyFiltersToSupabaseQuery(q);
 
-          const { data, error } = await q;
-          if (!error && data !== null) {
+          for (const ob of this.orderBys) {
+            q = q.order(ob.col, { ascending: ob.ascending });
+          }
+          if (this.limitCount !== null) q = q.limit(this.limitCount);
+          if (this.rangeBounds)
+            q = q.range(this.rangeBounds.from, this.rangeBounds.to);
+          if (this.isSingle) q = q.single();
+          if (this.isMaybeSingle) q = q.maybeSingle();
+
+          const res = await q;
+          if (!res.error) {
             if (
               this.filters.length === 0 &&
               !this.isSingle &&
-              Array.isArray(data)
+              !this.isMaybeSingle &&
+              this.limitCount === null &&
+              Array.isArray(res.data)
             ) {
-              await set(storageKey, data);
+              await set(storageKey, res.data);
             }
-            return { data, error: null };
+            return res;
           }
         } catch {
-          // Net drops mid-request -> Fall back to Local IndexedDB
+          // Network failure -> fall back to IndexedDB
         }
       }
 
@@ -291,8 +412,8 @@ class OfflineQueryBuilder {
       localRows = localRows.filter((r) => this.matchesFilters(r));
       localRows = await this.attachRelations(localRows);
 
-      if (this.orderBy) {
-        const { col, ascending } = this.orderBy;
+      for (const ob of this.orderBys) {
+        const { col, ascending } = ob;
         localRows.sort((a, b) => {
           const valA = a[col] ?? "";
           const valB = b[col] ?? "";
@@ -302,35 +423,38 @@ class OfflineQueryBuilder {
         });
       }
 
-      if (this.isSingle) {
+      if (this.rangeBounds) {
+        localRows = localRows.slice(
+          this.rangeBounds.from,
+          this.rangeBounds.to + 1
+        );
+      } else if (this.limitCount !== null) {
+        localRows = localRows.slice(0, this.limitCount);
+      }
+
+      if (this.isSingle || this.isMaybeSingle) {
         return { data: localRows[0] || null, error: null };
       }
-      return { data: localRows, error: null };
+      return { data: localRows, error: null, count: localRows.length };
     }
 
     // =====================================
-    // WRITE (INSERT / UPDATE / DELETE)
+    // WRITE (INSERT / UPDATE / DELETE / UPSERT)
     // =====================================
     if (navigator.onLine) {
       try {
         let q: any = rawSupabase.from(this.table);
         if (this.action === "insert") q = q.insert(this.payload).select();
-        if (this.action === "update") {
-          q = q.update(this.payload);
-          for (const f of this.filters) {
-            if (f.type === "eq") q = q.eq(f.col, f.val);
-            if (f.type === "in") q = q.in(f.col, f.val);
-          }
-          q = q.select();
+        else if (this.action === "upsert")
+          q = q.upsert(this.payload, this.upsertOpts).select();
+        else if (this.action === "update") {
+          q = this.applyFiltersToSupabaseQuery(q.update(this.payload)).select();
+        } else if (this.action === "delete") {
+          q = this.applyFiltersToSupabaseQuery(q.delete());
         }
-        if (this.action === "delete") {
-          q = q.delete();
-          for (const f of this.filters) {
-            if (f.type === "eq") q = q.eq(f.col, f.val);
-            if (f.type === "in") q = q.in(f.col, f.val);
-          }
-        }
+
         if (this.isSingle && this.action !== "delete") q = q.single();
+        if (this.isMaybeSingle && this.action !== "delete") q = q.maybeSingle();
 
         const { data, error } = await q;
         if (!error) {
@@ -338,24 +462,23 @@ class OfflineQueryBuilder {
           return { data, error: null };
         }
       } catch {
-        // Failed online write -> Proceed to offline local write & queue
+        // Offline fallback below
       }
     }
 
-    // OFFLINE WRITE TO LOCAL STORAGE + QUEUE
     const mutatedData = await this.applyLocalMutation();
     await addToMutationQueue({
       table: this.table,
       action: this.action,
       payload: this.payload,
-      filters: this.filters.filter(
-        (f): f is { type: "eq" | "in"; col: string; val: any } =>
-          f.type === "eq" || f.type === "in"
-      ),
+      filters: this.filters,
     });
 
     return {
-      data: this.isSingle ? mutatedData[0] || null : mutatedData,
+      data:
+        this.isSingle || this.isMaybeSingle
+          ? mutatedData[0] || null
+          : mutatedData,
       error: null,
     };
   }
@@ -365,7 +488,7 @@ class OfflineQueryBuilder {
     let localRows: any[] = (await get(storageKey)) || [];
     let affected: any[] = [];
 
-    if (this.action === "insert") {
+    if (this.action === "insert" || this.action === "upsert") {
       if (serverData) {
         const sRows = Array.isArray(serverData) ? serverData : [serverData];
         localRows = [...sRows, ...localRows];
@@ -378,7 +501,10 @@ class OfflineQueryBuilder {
           ...item,
           id:
             item.id ??
-            (this.table === "farmers" || this.table === "agents"
+            (this.table === "farmers" ||
+            this.table === "agents" ||
+            this.table === "sub_agents" ||
+            this.table === "retailers"
               ? Math.floor(Date.now() / 1000) + Math.floor(Math.random() * 1000)
               : `local_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`),
           created_at: item.created_at || new Date().toISOString(),
@@ -404,7 +530,6 @@ class OfflineQueryBuilder {
   }
 }
 
-// Offline-aware Auth Wrapper
 const offlineAuth = new Proxy(rawSupabase.auth, {
   get(target, prop, receiver) {
     if (prop === "getUser") {

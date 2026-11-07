@@ -3,10 +3,11 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { FaBell, FaBars, FaTimes } from "react-icons/fa";
 import { supabase } from "../../lib/supabase";
 
-function getAgeDays(hatchDateStr?: string): number {
+function getAgeDays(hatchDateStr?: string, refDateStr?: string): number {
   if (!hatchDateStr) return 0;
   const hatchDate = new Date(hatchDateStr);
-  const diffTime = new Date().getTime() - hatchDate.getTime();
+  const refDate = refDateStr ? new Date(refDateStr) : new Date();
+  const diffTime = refDate.getTime() - hatchDate.getTime();
   return Math.max(0, Math.floor(diffTime / (1000 * 60 * 60 * 24)));
 }
 
@@ -44,6 +45,8 @@ export default function Navbar({
   const [runningVisits, setRunningVisits] = useState<any[]>([]);
   const [, setAgentsMap] = useState<Record<string, any>>({});
   const [vaccinesList, setVaccinesList] = useState<any[]>([]);
+  const [lowWeightList, setLowWeightList] = useState<any[]>([]);
+  const [lowEggList, setLowEggList] = useState<any[]>([]);
 
   const pageTitle =
     location.pathname === "/"
@@ -107,8 +110,13 @@ export default function Navbar({
 
       let visits = (vData || []).map((v) => ({
         ...v,
-        agents: agDict[String(v.agent_id)] || { agent_name: "Unknown Agent", upazila: "" },
-        farmers: frmDict[String(v.farmer_id)] || { farmer_name: "Unknown Farmer" },
+        agents: agDict[String(v.agent_id)] || {
+          agent_name: "Unknown Agent",
+          upazila: "",
+        },
+        farmers: frmDict[String(v.farmer_id)] || {
+          farmer_name: "Unknown Farmer",
+        },
       }));
 
       // Filter by assigned upazila if restricted
@@ -117,6 +125,138 @@ export default function Navbar({
       }
 
       setRunningVisits(visits);
+
+      // ---- Below-standard lists (based on each batch's LAST visit report) ----
+      const visitIds = visits.map((v) => String(v.id));
+      if (visitIds.length > 0) {
+        const [
+          { data: bRep },
+          { data: lRep },
+          { data: bStd },
+          { data: lStd },
+        ] = await Promise.all([
+          supabase
+            .from("before_sale_reports")
+            .select(
+              "vet_visit_id, visit_date, weight_gm_b, feed_gm_b, feed_t_kg"
+            )
+            .in("vet_visit_id", visitIds)
+            .order("visit_date", { ascending: false }),
+          supabase
+            .from("layer_reports")
+            .select(
+              "vet_visit_id, visit_date, egg_production, feed_intake_g, feed_total_kg"
+            )
+            .in("vet_visit_id", visitIds)
+            .order("visit_date", { ascending: false }),
+          supabase.from("broiler_standards").select("*"),
+          supabase.from("layer_standards").select("*"),
+        ]);
+
+        const bStdMap: Record<number, any> = {};
+        (bStd || []).forEach((s: any) => (bStdMap[Number(s.age_days)] = s));
+
+        const lStdMap: Record<string, any> = {};
+        (lStd || []).forEach((s: any) => {
+          const breedKey = String(s.breed || "shaver star cross 579 brown")
+            .trim()
+            .toLowerCase();
+          lStdMap[`${breedKey}_${Number(s.age_weeks)}`] = s;
+          if (!lStdMap[`any_${Number(s.age_weeks)}`]) {
+            lStdMap[`any_${Number(s.age_weeks)}`] = s;
+          }
+        });
+
+        const lastB: Record<string, any> = {};
+        (bRep || []).forEach((r: any) => {
+          const k = String(r.vet_visit_id);
+          if (!lastB[k]) lastB[k] = r; // already sorted desc
+        });
+        const lastL: Record<string, any> = {};
+        (lRep || []).forEach((r: any) => {
+          const k = String(r.vet_visit_id);
+          if (!lastL[k]) lastL[k] = r;
+        });
+
+        const lowW: any[] = [];
+        const lowE: any[] = [];
+        visits.forEach((v) => {
+          const cat = (v.category || "Broiler").toLowerCase();
+          if (cat === "broiler") {
+            const rep = lastB[String(v.id)];
+            if (!rep) return;
+            const ageAtVisit = getAgeDays(v.hatch_date, rep.visit_date);
+            const std = bStdMap[ageAtVisit];
+            const stdWt = Number(std?.weight || 0);
+            const actual = Number(rep.weight_gm_b || 0);
+
+            const tBirds = Number(v.t_birds || 0);
+            const actualFeed =
+              Number(rep.feed_gm_b || 0) ||
+              (tBirds > 0 && Number(rep.feed_t_kg || 0) > 0
+                ? Number(
+                    ((Number(rep.feed_t_kg) * 1000) / tBirds).toFixed(1)
+                  )
+                : 0);
+            const stdFeed = Number(std?.feed_intake || 0);
+
+            if (stdWt > 0 && actual > 0 && actual < stdWt) {
+              lowW.push({
+                ...v,
+                lastVisitDate: rep.visit_date,
+                ageAtVisit,
+                actual,
+                stdWt,
+                lessBy: stdWt - actual,
+                actualFeed,
+                stdFeed,
+              });
+            }
+          } else if (cat === "layer") {
+            const rep = lastL[String(v.id)];
+            if (!rep) return;
+            const ageDays = getAgeDays(v.hatch_date, rep.visit_date);
+            const wks = Math.min(100, Math.max(1, Math.floor(ageDays / 7)));
+            const isBovans = String(v.breed || "")
+              .toLowerCase()
+              .includes("bovans");
+            const key = isBovans
+              ? "bovans white"
+              : "shaver star cross 579 brown";
+            const std = lStdMap[`${key}_${wks}`] || lStdMap[`any_${wks}`];
+            const stdEgg = Number(std?.egg_production || 0);
+            const actual = Number(rep.egg_production || 0);
+
+            const tBirds = Number(v.t_birds || 0);
+            const actualFeed =
+              Number(rep.feed_intake_g || 0) ||
+              (tBirds > 0 && Number(rep.feed_total_kg || 0) > 0
+                ? Number(
+                    ((Number(rep.feed_total_kg) * 1000) / tBirds).toFixed(1)
+                  )
+                : 0);
+            const stdFeed = Number(std?.feed_bird_day || 0);
+
+            if (stdEgg > 0 && actual < stdEgg) {
+              lowE.push({
+                ...v,
+                lastVisitDate: rep.visit_date,
+                ageWeeks: wks,
+                actual,
+                stdEgg,
+                lessBy: stdEgg - actual,
+                actualFeed,
+                stdFeed,
+              });
+            }
+          }
+        });
+        setLowWeightList(lowW);
+        setLowEggList(lowE);
+      } else {
+        setLowWeightList([]);
+        setLowEggList([]);
+      }
     } catch (err) {
       console.error("Failed to load notifications:", err);
     } finally {
@@ -157,7 +297,23 @@ export default function Navbar({
     });
   });
 
-  const totalAlertsCount = broilerSellAlerts.length + layerVaccineAlerts.length;
+  const totalAlertsCount =
+    broilerSellAlerts.length +
+    layerVaccineAlerts.length +
+    lowWeightList.length +
+    lowEggList.length;
+
+  function groupByAgent(list: any[]) {
+    const out: Record<string, any[]> = {};
+    list.forEach((v) => {
+      const n = v.agents?.agent_name || "Unassigned Agent";
+      if (!out[n]) out[n] = [];
+      out[n].push(v);
+    });
+    return out;
+  }
+  const lowWeightByAgent = groupByAgent(lowWeightList);
+  const lowEggByAgent = groupByAgent(lowEggList);
 
   // Group Broiler Sell Alerts by Agent
   const broilerByAgent: Record<string, any[]> = {};
@@ -267,7 +423,8 @@ export default function Navbar({
                           className="bg-slate-50 border border-slate-200 rounded-xl overflow-hidden shadow-sm"
                         >
                           <div className="bg-slate-100 px-4 py-2 font-bold text-slate-800 border-b border-slate-200">
-                            Agent: <span className="text-emerald-700">{agentName}</span>
+                            Agent:{" "}
+                            <span className="text-emerald-700">{agentName}</span>
                           </div>
                           <div className="overflow-x-auto">
                             <table className="w-full text-left border-collapse">
@@ -276,17 +433,25 @@ export default function Navbar({
                                   <th className="px-4 py-2">Farmer Name</th>
                                   <th className="px-4 py-2">Category</th>
                                   <th className="px-4 py-2">Hatch Date</th>
-                                  <th className="px-4 py-2 font-bold text-red-600">Age</th>
-                                  <th className="px-4 py-2 text-right">Action</th>
+                                  <th className="px-4 py-2 font-bold text-red-600">
+                                    Age
+                                  </th>
+                                  <th className="px-4 py-2 text-right">
+                                    Action
+                                  </th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100">
                                 {list.map((v) => {
                                   const age = getAgeDays(v.hatch_date);
                                   return (
-                                    <tr key={v.id} className="hover:bg-slate-100/50">
+                                    <tr
+                                      key={v.id}
+                                      className="hover:bg-slate-100/50"
+                                    >
                                       <td className="px-4 py-2.5 font-bold text-slate-800">
-                                        {v.batch_label || v.farmers?.farmer_name}
+                                        {v.batch_label ||
+                                          v.farmers?.farmer_name}
                                       </td>
                                       <td className="px-4 py-2.5 font-semibold text-slate-700">
                                         {v.category || "Broiler"}
@@ -302,7 +467,9 @@ export default function Navbar({
                                           type="button"
                                           onClick={() => {
                                             setIsModalOpen(false);
-                                            navigate("/visits");
+                                            navigate(
+                                              `/visits?focus=${v.id}&action=after_sale`
+                                            );
                                           }}
                                           className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-xs font-bold shadow-sm transition"
                                         >
@@ -333,7 +500,8 @@ export default function Navbar({
                           className="bg-indigo-50/30 border border-indigo-200 rounded-xl overflow-hidden shadow-sm"
                         >
                           <div className="bg-indigo-50 px-4 py-2 font-bold text-indigo-900 border-b border-indigo-200">
-                            Agent: <span className="text-emerald-700">{agentName}</span>
+                            Agent:{" "}
+                            <span className="text-emerald-700">{agentName}</span>
                           </div>
                           <div className="overflow-x-auto">
                             <table className="w-full text-left border-collapse">
@@ -343,16 +511,22 @@ export default function Navbar({
                                   <th className="px-4 py-2">Current Age</th>
                                   <th className="px-4 py-2">Vaccine Name</th>
                                   <th className="px-4 py-2">Route</th>
-                                  <th className="px-4 py-2 text-right">Due Schedule</th>
+                                  <th className="px-4 py-2 text-right">
+                                    Due Schedule
+                                  </th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-indigo-100">
                                 {list.map((v, i) => {
                                   const ageDays = getAgeDays(v.hatch_date);
                                   return (
-                                    <tr key={i} className="hover:bg-indigo-50/40">
+                                    <tr
+                                      key={i}
+                                      className="hover:bg-indigo-50/40"
+                                    >
                                       <td className="px-4 py-2.5 font-bold text-slate-800">
-                                        {v.batch_label || v.farmers?.farmer_name}
+                                        {v.batch_label ||
+                                          v.farmers?.farmer_name}
                                       </td>
                                       <td className="px-4 py-2.5 font-semibold text-slate-700">
                                         {ageDays} Days
@@ -364,7 +538,11 @@ export default function Navbar({
                                         {v.vaccineDue.route}
                                       </td>
                                       <td className="px-4 py-2.5 text-right font-bold text-amber-700">
-                                        Day {v.vaccineDue.age_days} ({v.daysLeft === 0 ? "Today" : `in ${v.daysLeft} days`})
+                                        Day {v.vaccineDue.age_days} (
+                                        {v.daysLeft === 0
+                                          ? "Today"
+                                          : `in ${v.daysLeft} days`}
+                                        )
                                       </td>
                                     </tr>
                                   );
@@ -374,6 +552,178 @@ export default function Navbar({
                           </div>
                         </div>
                       ))}
+                    </div>
+                  )}
+
+                  {/* SECTION 3: BROILER BELOW STANDARD WEIGHT (LAST VISIT) */}
+                  {Object.keys(lowWeightByAgent).length > 0 && (
+                    <div className="space-y-3 pt-2">
+                      <h4 className="font-bold text-orange-700 text-sm sm:text-base uppercase tracking-wider border-b pb-1">
+                        Broiler — Below Standard Weight
+                      </h4>
+                      {Object.entries(lowWeightByAgent).map(
+                        ([agentName, list]) => (
+                          <div
+                            key={agentName}
+                            className="bg-orange-50/30 border border-orange-200 rounded-xl overflow-hidden shadow-sm"
+                          >
+                            <div className="bg-orange-50 px-4 py-2 font-bold text-orange-900 border-b border-orange-200">
+                              Agent:{" "}
+                              <span className="text-emerald-700">
+                                {agentName}
+                              </span>
+                            </div>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-left border-collapse">
+                                <thead>
+                                  <tr className="bg-orange-50/50 border-b border-orange-200 text-orange-900">
+                                    <th className="px-3 py-2">Farmer</th>
+                                    <th className="px-3 py-2">Last Visit</th>
+                                    <th className="px-3 py-2">Age</th>
+                                    <th className="px-3 py-2 text-right">
+                                      Feed Intake (g/b)
+                                    </th>
+                                    <th className="px-3 py-2 text-right">
+                                      Std Feed (g/b)
+                                    </th>
+                                    <th className="px-3 py-2 text-right">
+                                      Weight
+                                    </th>
+                                    <th className="px-3 py-2 text-right">
+                                      Std Wt
+                                    </th>
+                                    <th className="px-3 py-2 text-right font-bold text-red-600">
+                                      Less than Std
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-orange-100">
+                                  {list.map((v) => (
+                                    <tr
+                                      key={v.id}
+                                      className="hover:bg-orange-50/40"
+                                    >
+                                      <td className="px-3 py-2 font-bold text-slate-800">
+                                        {v.batch_label ||
+                                          v.farmers?.farmer_name}
+                                      </td>
+                                      <td className="px-3 py-2 text-slate-600 whitespace-nowrap">
+                                        {v.lastVisitDate || "-"}
+                                      </td>
+                                      <td className="px-3 py-2 text-slate-700">
+                                        {v.ageAtVisit}d
+                                      </td>
+                                      <td className="px-3 py-2 text-right font-semibold text-slate-800">
+                                        {v.actualFeed > 0
+                                          ? `${v.actualFeed} g`
+                                          : "-"}
+                                      </td>
+                                      <td className="px-3 py-2 text-right text-slate-600">
+                                        {v.stdFeed > 0 ? `${v.stdFeed} g` : "-"}
+                                      </td>
+                                      <td className="px-3 py-2 text-right font-semibold">
+                                        {v.actual} g
+                                      </td>
+                                      <td className="px-3 py-2 text-right text-slate-600">
+                                        {v.stdWt} g
+                                      </td>
+                                      <td className="px-3 py-2 text-right font-bold text-red-600">
+                                        -{v.lessBy.toFixed(0)} g
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )
+                      )}
+                    </div>
+                  )}
+
+                  {/* SECTION 4: LAYER BELOW STANDARD EGG PRODUCTION (LAST VISIT) */}
+                  {Object.keys(lowEggByAgent).length > 0 && (
+                    <div className="space-y-3 pt-2">
+                      <h4 className="font-bold text-yellow-700 text-sm sm:text-base uppercase tracking-wider border-b pb-1">
+                        Layer — Below Standard Egg Production
+                      </h4>
+                      {Object.entries(lowEggByAgent).map(
+                        ([agentName, list]) => (
+                          <div
+                            key={agentName}
+                            className="bg-yellow-50/30 border border-yellow-200 rounded-xl overflow-hidden shadow-sm"
+                          >
+                            <div className="bg-yellow-50 px-4 py-2 font-bold text-yellow-900 border-b border-yellow-200">
+                              Agent:{" "}
+                              <span className="text-emerald-700">
+                                {agentName}
+                              </span>
+                            </div>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-left border-collapse">
+                                <thead>
+                                  <tr className="bg-yellow-50/50 border-b border-yellow-200 text-yellow-900">
+                                    <th className="px-3 py-2">Farmer</th>
+                                    <th className="px-3 py-2">Last Visit</th>
+                                    <th className="px-3 py-2">Age</th>
+                                    <th className="px-3 py-2 text-right">
+                                      Feed Intake (g/b)
+                                    </th>
+                                    <th className="px-3 py-2 text-right">
+                                      Std Feed (g/b)
+                                    </th>
+                                    <th className="px-3 py-2 text-right">
+                                      Egg %
+                                    </th>
+                                    <th className="px-3 py-2 text-right">
+                                      Std %
+                                    </th>
+                                    <th className="px-3 py-2 text-right font-bold text-red-600">
+                                      Less than Std
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-yellow-100">
+                                  {list.map((v) => (
+                                    <tr
+                                      key={v.id}
+                                      className="hover:bg-yellow-50/40"
+                                    >
+                                      <td className="px-3 py-2 font-bold text-slate-800">
+                                        {v.batch_label ||
+                                          v.farmers?.farmer_name}
+                                      </td>
+                                      <td className="px-3 py-2 text-slate-600 whitespace-nowrap">
+                                        {v.lastVisitDate || "-"}
+                                      </td>
+                                      <td className="px-3 py-2 text-slate-700">
+                                        {v.ageWeeks} wks
+                                      </td>
+                                      <td className="px-3 py-2 text-right font-semibold text-slate-800">
+                                        {v.actualFeed > 0
+                                          ? `${v.actualFeed} g`
+                                          : "-"}
+                                      </td>
+                                      <td className="px-3 py-2 text-right text-slate-600">
+                                        {v.stdFeed > 0 ? `${v.stdFeed} g` : "-"}
+                                      </td>
+                                      <td className="px-3 py-2 text-right font-semibold">
+                                        {v.actual}%
+                                      </td>
+                                      <td className="px-3 py-2 text-right text-slate-600">
+                                        {v.stdEgg}%
+                                      </td>
+                                      <td className="px-3 py-2 text-right font-bold text-red-600">
+                                        -{v.lessBy.toFixed(1)}%
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )
+                      )}
                     </div>
                   )}
                 </>

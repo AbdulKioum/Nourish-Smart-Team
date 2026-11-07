@@ -1,9 +1,128 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { supabase } from "../../lib/supabase";
-import { BREEDS_BY_CATEGORY, CATEGORIES } from "../farmers/FarmerStatusPage";
 import { useAuth } from "../../context/AuthContext";
 import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
+
+export const CATEGORIES = [
+  "Broiler",
+  "Layer",
+  "Sonali",
+  "Duck",
+  "Quail",
+  "Cattle",
+  "Fish",
+];
+
+export const BREEDS_BY_CATEGORY: Record<string, string[]> = {
+  Broiler: ["Arber Acress", "Ross", "Cobb 500", "Indian River", "Hubbard", "Hubbard EP"],
+  Layer: [
+    "Shaver Star Cross 579 Brown",
+    "Bovans White",
+    "Bovans Brown",
+    "Lohman Brown",
+    "Lohman White",
+    "Isa Brown",
+    "Hisex Brown",
+    "Hisex White",
+    "Novojen Brown",
+    "Hyline Brown",
+    "Hyline White",
+    "Decalb White",
+    "BB 300",
+  ],
+  Sonali: [
+    "Local",
+    "Classic",
+    "Hybrid",
+    "Dominant",
+    "Hubbard Premium",
+    "Sasso",
+    "Color Bird/Sasso",
+    "Tetra HB",
+    "Bornali",
+    "Bornali Plus",
+    "Cock",
+    "Brown Cock",
+    "White Cock",
+  ],
+  Duck: ["Khaki Campbell", "Pekin", "Jinding", "Deshi Duck"],
+  Quail: ["Japanese Quail", "Bobwhite Quail"],
+  Cattle: ["Holstein Friesian", "Sahiwal", "Sindhi", "Deshi", "Crossbred"],
+  Fish: ["Pangus", "Tilapia", "Koi", "Pabda", "Gulsha", "Carp", "Mixed"],
+};
+
+export const FEED_TYPES_BY_CATEGORY: Record<string, string[]> = {
+  Broiler: ["Broiler Pre Starter", "Starter", "Grower", "Finisher"],
+  Layer: [
+    "Broiler Pre Starter",
+    "Starter",
+    "Sonali Starter",
+    "Layer Starter",
+    "Grower",
+    "Layer Layer 1",
+    "Layer Layer 2",
+    "Corporate Layer",
+    "Layer Concentrated",
+  ],
+  Sonali: [
+    "Sonali Starter",
+    "Grower",
+    "Finisher",
+    "Broiler Pre Starter",
+    "Starter",
+  ],
+};
+
+type StatusTab =
+  | "all"
+  | "Running"
+  | "Active"
+  | "Inactive"
+  | "Leave from Nourish"
+  | "Convert to Nourish";
+
+const STOCK_KEY_BY_CATEGORY: Record<string, string> = {
+  Broiler: "broiler",
+  Layer: "layer",
+  Sonali: "sonali",
+  Duck: "duck",
+  Quail: "quail",
+};
+const POULTRY_STOCK_KEYS = ["broiler", "layer", "sonali", "duck", "quail"];
+const STATUS_RANK: Record<string, number> = { Running: 0, Active: 1, Inactive: 2 };
+
+function normalizeCategory(f: any): string {
+  const raw = String(f.farm_type || f.farm_category || f.category || "").trim();
+  const matched = CATEGORIES.find((c) => c.toLowerCase() === raw.toLowerCase());
+  if (matched) return matched;
+  if (Number(f.layer || 0) > 0) return "Layer";
+  if (Number(f.sonali || 0) > 0) return "Sonali";
+  if (Number(f.duck || 0) > 0) return "Duck";
+  if (Number(f.quail || 0) > 0) return "Quail";
+  if (f.farm_category === "Cattle") return "Cattle";
+  if (f.farm_category === "Fish") return "Fish";
+  return "Broiler";
+}
+
+function getDaysSince(dateStr?: string | null): number | null {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return null;
+  return Math.floor((new Date().getTime() - d.getTime()) / 86400000);
+}
+
+// Batch tag shown under the farmer name (e.g. "Sonali Batch (1)")
+function batchTagOf(label?: string, farmerName?: string): string {
+  if (!label) return "";
+  if (label === farmerName) return "";
+  if (farmerName && label.startsWith(farmerName)) {
+    const rest = label.slice(farmerName.length).trim();
+    return rest;
+  }
+  return label;
+}
 
 export const UPDATED_FEED_TYPES_BY_CATEGORY: Record<string, string[]> = {
   Broiler: [
@@ -161,7 +280,39 @@ export default function VetVisitsPage() {
   const [selectedCategoryFilter, setSelectedCategoryFilter] =
     useState<string>("all");
 
-  const [visitsData, setVisitsData] = useState<any[]>([]);
+  const [_visitsData, setVisitsData] = useState<any[]>([]);
+  const location = useLocation();
+  const companyInitRef = useRef(false);
+  const [statusFarmers, setStatusFarmers] = useState<any[]>([]);
+  const [selectedAgent, setSelectedAgent] = useState<string>("all");
+  const [selectedStatusFilter, setSelectedStatusFilter] =
+    useState<StatusTab>("all");
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [expandedCard, setExpandedCard] = useState<string | null>(null);
+  const [focusVisitId, setFocusVisitId] = useState<string | null>(null);
+
+  // Activate / Run Farm / Add Batch
+  const [showActivateModal, setShowActivateModal] = useState(false);
+  const [activateFarmer, setActivateFarmer] = useState<any>(null);
+  const [activateBulk, setActivateBulk] = useState(false);
+  const [selectedFarmerIds, setSelectedFarmerIds] = useState<string[]>([]);
+  const [activateMode, setActivateMode] = useState<"add" | "replace">("add");
+  const [activateForm, setActivateForm] = useState({
+    category: "Broiler",
+    hatch_date: new Date().toISOString().split("T")[0],
+    hatchery: "",
+    breed: "",
+    box_no: "",
+    t_birds: "",
+    batch_mark: "",
+  });
+
+  // Edit a saved report (from History)
+  const [editReport, setEditReport] = useState<{
+    table: string;
+    id: any;
+    form: Record<string, any>;
+  } | null>(null);
   const [vaccines, setVaccines] = useState<any[]>([]);
   const [broilerStds, setBroilerStds] = useState<Record<number, any>>({});
   const [layerStds, setLayerStds] = useState<Record<string, any>>({});
@@ -284,7 +435,42 @@ export default function VetVisitsPage() {
 
   useEffect(() => {
     loadVetVisits();
-  }, [selectedCompany]);
+  }, []);
+
+  // Default company = Nourish (unless we arrived from a notification)
+  useEffect(() => {
+    if (companyInitRef.current || companies.length === 0) return;
+    companyInitRef.current = true;
+    const hasFocus = new URLSearchParams(location.search).get("focus");
+    if (hasFocus) return;
+    const nourish = companies.find((c) =>
+      c.company_name?.toLowerCase().includes("nourish")
+    );
+    if (nourish) setSelectedCompany(String(nourish.id));
+  }, [companies]);
+
+  // Coming from the notification "Sold" button: open that farmer's After Sale option
+  useEffect(() => {
+    const fid = new URLSearchParams(location.search).get("focus");
+    if (!fid) return;
+    setFocusVisitId(fid);
+    setSelectedCompany("all");
+    setSelectedAgent("all");
+    setSelectedStatusFilter("all");
+    setSelectedCategoryFilter("all");
+    setSearchQuery("");
+  }, [location.search]);
+
+  useEffect(() => {
+    if (!focusVisitId || _loading) return;
+    const t = setTimeout(() => {
+      const el =
+        document.getElementById("after-sale-btn-" + focusVisitId) ||
+        document.getElementById("visit-row-" + focusVisitId);
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [focusVisitId, statusFarmers, _loading]);
 
   async function loadInitialData() {
     setLoading(true);
@@ -379,50 +565,101 @@ export default function VetVisitsPage() {
   async function loadVetVisits() {
     setLoading(true);
     try {
-      let query = supabase
-        .from("vet_visits")
-        .select("*")
-        .in("status", ["Activated", "Running"]);
-
-      if (selectedCompany && selectedCompany !== "all") {
-        query = query.eq("company_id", String(selectedCompany));
-      }
-
-      const { data: visits, error: visitErr } = await query;
+      const [
+        { data: visits, error: visitErr },
+        { data: agentsData },
+        { data: farmersData },
+      ] = await Promise.all([
+        supabase
+          .from("vet_visits")
+          .select("*")
+          .order("created_at", { ascending: false }),
+        supabase.from("agents").select("*").order("agent_name"),
+        supabase.from("farmers").select("*").order("farmer_name"),
+      ]);
       if (visitErr) throw visitErr;
 
-      if (!visits || visits.length === 0) {
-        setVisitsData([]);
-        setLoading(false);
-        return;
-      }
+      const allVisits = visits || [];
+      const agentsList = agentsData || [];
+      const farmersList = farmersData || [];
 
-      const [{ data: agentsData }, { data: farmersData }] = await Promise.all([
-        supabase.from("agents").select("*"),
-        supabase.from("farmers").select("*"),
-      ]);
-
-      const enrichedVisits = visits.map((v) => {
-        const agent = agentsData?.find(
-          (a) => String(a.id) === String(v.agent_id)
-        );
-        const farmer = farmersData?.find(
-          (f) => String(f.id) === String(v.farmer_id)
-        );
-
-        return {
-          ...v,
-          agents: agent || { agent_name: "Unknown Agent" },
-          farmers: farmer || {
+      const enrich = (v: any) => ({
+        ...v,
+        agents:
+          agentsList.find((a: any) => String(a.id) === String(v.agent_id)) || {
+            agent_name: "Unknown Agent",
+          },
+        farmers:
+          farmersList.find((f: any) => String(f.id) === String(v.farmer_id)) || {
             farmer_name: "Unknown Farmer",
             mobile: "-",
             village: "-",
             upazila: "-",
           },
+      });
+
+      const processed = farmersList.map((f: any) => {
+        const fv = allVisits.filter(
+          (v: any) => String(v.farmer_id) === String(f.id)
+        );
+        const runningVisits = fv
+          .filter((v: any) => v.status === "Activated" || v.status === "Running")
+          .sort((a: any, b: any) =>
+            String(a.created_at || "").localeCompare(String(b.created_at || ""))
+          )
+          .map(enrich);
+        const closedVisits = fv.filter(
+          (v: any) => v.status === "Sold" || v.status === "Culled"
+        );
+        const latestClosed = closedVisits[0] || null;
+
+        const lastSaleDate =
+          f.last_sale_date ||
+          latestClosed?.closed_date ||
+          (latestClosed?.created_at
+            ? String(latestClosed.created_at).slice(0, 10)
+            : null);
+        const daysSinceSale = getDaysSince(lastSaleDate);
+
+        let computedStatus: "Running" | "Active" | "Inactive" = "Inactive";
+        let statusDate = "";
+        if (runningVisits.length > 0) {
+          computedStatus = "Running";
+          statusDate = runningVisits[0]?.hatch_date || "";
+        } else if (daysSinceSale !== null && daysSinceSale <= 60) {
+          computedStatus = "Active";
+          statusDate = lastSaleDate || "";
+        } else {
+          computedStatus = "Inactive";
+          statusDate = lastSaleDate || "";
+        }
+
+        const agentObj = agentsList.find(
+          (a: any) => String(a.id) === String(f.agent_id)
+        );
+        return {
+          ...f,
+          computedStatus,
+          statusDate,
+          daysSinceSale,
+          closedType: latestClosed?.status || "",
+          closedCategory: latestClosed?.category || "",
+          category: runningVisits[0]?.category || normalizeCategory(f),
+          runningVisits,
+          runningCount: runningVisits.length,
+          latestClosed,
+          agentName: agentObj?.agent_name || "Unassigned Agent",
+          nourishTag: f.nourish_status || "",
+          nourishTagDate: f.nourish_status_date || "",
         };
       });
 
-      setVisitsData(enrichedVisits);
+      setStatusFarmers(processed);
+      setVisitsData(
+        allVisits
+          .filter((v: any) => v.status === "Activated" || v.status === "Running")
+          .map(enrich)
+      );
     } catch (err) {
       console.error("Error loading vet visits:", err);
     }
@@ -1391,41 +1628,438 @@ ${currentUserProfile.region}`;
     );
   }
 
-  const totalRunningCount = visitsData.length;
-  const categoryCounts: Record<string, number> = {};
-  CATEGORIES.forEach((cat) => {
-    categoryCounts[cat] = visitsData.filter(
-      (v) => (v.category || "Broiler").toLowerCase() === cat.toLowerCase()
-    ).length;
+  const companyScopedFarmers = statusFarmers.filter((f) => {
+    const matchComp =
+      selectedCompany === "all" ||
+      String(f.company_id) === String(selectedCompany);
+    const matchAgent =
+      selectedAgent === "all" || String(f.agent_id) === String(selectedAgent);
+    return matchComp && matchAgent;
   });
 
-  const agentMap: Record<
-    string,
-    { agentName: string; visits: any[]; counts: Record<string, number> }
-  > = {};
+  function getSummaryForGroup(groupFilter: (f: any) => boolean) {
+    const list = companyScopedFarmers.filter(groupFilter);
+    const byCat: Record<string, number> = {};
+    CATEGORIES.forEach((c) => {
+      byCat[c] = list.filter(
+        (item) => item.category?.toLowerCase() === c.toLowerCase()
+      ).length;
+    });
+    return { total: list.length, byCat };
+  }
 
-  visitsData.forEach((v) => {
-    const agentId = v.agents?.id || "unknown";
-    const agentName = v.agents?.agent_name || "Unknown Agent";
+  const summaryCards = [
+    { key: "all" as StatusTab, title: "Total", color: "border-slate-300 bg-white text-slate-800", badgeBg: "bg-slate-800 text-white", data: getSummaryForGroup(() => true) },
+    { key: "Running" as StatusTab, title: "Running", color: "border-emerald-300 bg-emerald-50/60 text-emerald-900", badgeBg: "bg-emerald-600 text-white", data: getSummaryForGroup((f) => f.computedStatus === "Running") },
+    { key: "Active" as StatusTab, title: "Active (<2M)", color: "border-blue-300 bg-blue-50/60 text-blue-900", badgeBg: "bg-blue-600 text-white", data: getSummaryForGroup((f) => f.computedStatus === "Active") },
+    { key: "Inactive" as StatusTab, title: "Inactive (>2M)", color: "border-amber-300 bg-amber-50/60 text-amber-900", badgeBg: "bg-amber-600 text-white", data: getSummaryForGroup((f) => f.computedStatus === "Inactive") },
+    { key: "Leave from Nourish" as StatusTab, title: "Leave Nourish", color: "border-red-300 bg-red-50/60 text-red-900", badgeBg: "bg-red-600 text-white", data: getSummaryForGroup((f) => f.nourishTag === "Leave from Nourish") },
+    { key: "Convert to Nourish" as StatusTab, title: "Convert Nourish", color: "border-teal-300 bg-teal-50/60 text-teal-900", badgeBg: "bg-teal-600 text-white", data: getSummaryForGroup((f) => f.nourishTag === "Convert to Nourish") },
+  ];
 
-    if (!agentMap[agentId]) {
-      agentMap[agentId] = { agentName, visits: [], counts: {} };
-    }
+  const availableAgentsForDropdown =
+    selectedCompany === "all"
+      ? allAgents
+      : allAgents.filter((a) => String(a.company_id) === String(selectedCompany));
 
-    if (
-      selectedCategoryFilter === "all" ||
-      (v.category || "Broiler").toLowerCase() ===
-        selectedCategoryFilter.toLowerCase()
-    ) {
-      agentMap[agentId].visits.push(v);
-      const cat = v.category || "Broiler";
-      agentMap[agentId].counts[cat] = (agentMap[agentId].counts[cat] || 0) + 1;
+  // One row per running batch; one row per non-running farmer
+  const tableRows: any[] = [];
+  companyScopedFarmers.forEach((f) => {
+    if (f.runningVisits.length > 0) {
+      f.runningVisits.forEach((v: any) =>
+        tableRows.push({
+          kind: "batch",
+          key: "v" + v.id,
+          status: "Running",
+          category: v.category || "Broiler",
+          farmer: f,
+          visit: v,
+        })
+      );
+    } else {
+      tableRows.push({
+        kind: "farmer",
+        key: "f" + f.id,
+        status: f.computedStatus,
+        category: f.category,
+        farmer: f,
+        visit: null,
+      });
     }
   });
 
-  const filteredAgentsList = Object.values(agentMap).filter(
-    (ag) => ag.visits.length > 0
-  );
+  function rowRank(r: any) {
+    const base = STATUS_RANK[r.status] ?? 3;
+    // tagged farmers (Leave / Convert) that are not running go after the main statuses
+    if (r.status !== "Running" && r.farmer.nourishTag) return 3;
+    return base;
+  }
+
+  const tableFilteredRows = tableRows
+    .filter((r) => {
+      if (
+        selectedCategoryFilter !== "all" &&
+        r.category?.toLowerCase() !== selectedCategoryFilter.toLowerCase()
+      )
+        return false;
+      if (selectedStatusFilter !== "all") {
+        if (
+          selectedStatusFilter === "Leave from Nourish" ||
+          selectedStatusFilter === "Convert to Nourish"
+        ) {
+          if (r.farmer.nourishTag !== selectedStatusFilter) return false;
+        } else if (r.status !== selectedStatusFilter) return false;
+      }
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const f = r.farmer;
+        const match =
+          f.farmer_name?.toLowerCase().includes(q) ||
+          f.mobile?.toLowerCase().includes(q) ||
+          f.village?.toLowerCase().includes(q) ||
+          f.agentName?.toLowerCase().includes(q) ||
+          String(r.visit?.batch_label || "").toLowerCase().includes(q);
+        if (!match) return false;
+      }
+      return true;
+    })
+    .sort(
+      (a, b) =>
+        rowRank(a) - rowRank(b) ||
+        String(a.farmer.farmer_name || "").localeCompare(
+          String(b.farmer.farmer_name || "")
+        )
+    );
+
+  const filteredAgentsList = Object.values(
+    tableFilteredRows.reduce((acc: Record<string, any>, r: any) => {
+      const key = String(r.farmer.agent_id || "unknown");
+      if (!acc[key]) {
+        acc[key] = {
+          agentName: r.farmer.agentName,
+          rows: [],
+          counts: {} as Record<string, number>,
+        };
+      }
+      acc[key].rows.push(r);
+      acc[key].counts[r.status] = (acc[key].counts[r.status] || 0) + 1;
+      return acc;
+    }, {})
+  ).sort((x: any, y: any) =>
+    String(x.agentName).localeCompare(String(y.agentName))
+  ) as any[];
+
+
+
+  // ---------- Activate / Run Farm / Add Batch ----------
+  function toggleFarmerCheckbox(id: string) {
+    setSelectedFarmerIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  }
+
+  function openActivateModal(farmer: any) {
+    const defaultCat = farmer.category || "Broiler";
+    const defaultBreeds = BREEDS_BY_CATEGORY[defaultCat] || [];
+    const defaultHatchery =
+      companies.find((c) => String(c.id) === String(farmer.company_id))
+        ?.company_name ||
+      companies[0]?.company_name ||
+      "";
+    setActivateBulk(false);
+    setActivateFarmer(farmer);
+    setActivateMode("add");
+    setActivateForm({
+      category: defaultCat,
+      hatch_date: new Date().toISOString().split("T")[0],
+      hatchery: defaultHatchery,
+      breed: defaultBreeds[0] || "",
+      box_no: "",
+      t_birds: "",
+      batch_mark: "",
+    });
+    setShowActivateModal(true);
+  }
+
+  function openBulkActivateModal() {
+    if (selectedFarmerIds.length === 0) return;
+    const defaultHatchery =
+      companies.find((c) => String(c.id) === String(selectedCompany))
+        ?.company_name ||
+      companies[0]?.company_name ||
+      "";
+    setActivateBulk(true);
+    setActivateFarmer(null);
+    setActivateMode("add");
+    setActivateForm({
+      category: "Broiler",
+      hatch_date: new Date().toISOString().split("T")[0],
+      hatchery: defaultHatchery,
+      breed: BREEDS_BY_CATEGORY["Broiler"][0],
+      box_no: "",
+      t_birds: "",
+      batch_mark: "",
+    });
+    setShowActivateModal(true);
+  }
+
+  const activatePrevCats: string[] = (() => {
+    if (activateBulk || !activateFarmer) return [];
+    const running = (activateFarmer.runningVisits || [])
+      .map((v: any) => v.category)
+      .filter(Boolean);
+    const uniq = Array.from(new Set(running)) as string[];
+    if (uniq.length > 0) return uniq;
+    return activateFarmer.category ? [activateFarmer.category] : [];
+  })();
+  const activateNeedsChoice =
+    !activateBulk &&
+    activatePrevCats.length > 0 &&
+    !activatePrevCats.some(
+      (c) => c.toLowerCase() === activateForm.category.toLowerCase()
+    );
+
+  async function handleActivateSubmit() {
+    if (!activateForm.hatch_date || !activateForm.t_birds) {
+      alert("Hatch Date and Total Birds are required.");
+      return;
+    }
+    const targets = activateBulk
+      ? statusFarmers.filter((f) => selectedFarmerIds.includes(String(f.id)))
+      : activateFarmer
+      ? [activateFarmer]
+      : [];
+    if (targets.length === 0) return;
+
+    try {
+      for (const target of targets) {
+        const running: any[] = target.runningVisits || [];
+        const baseName = target.farmer_name || "Farmer";
+        const cat = activateForm.category;
+        const catLower = cat.toLowerCase();
+        const qty = Number(activateForm.t_birds);
+        const sameCat = running.filter(
+          (v) => (v.category || "").toLowerCase() === catLower
+        );
+        const mode: "add" | "replace" =
+          !activateBulk && activateNeedsChoice ? activateMode : "add";
+
+        // give unmarked running batches a clear "<Type> Batch (n)" mark
+        if (running.length > 0) {
+          const counters: Record<string, number> = {};
+          for (const rv of running) {
+            const rc = rv.category || "Broiler";
+            counters[rc] = (counters[rc] || 0) + 1;
+            const lbl = String(rv.batch_label || "");
+            const unmarked =
+              !lbl ||
+              lbl === baseName ||
+              (lbl.startsWith(baseName) && !lbl.includes("Batch"));
+            if (unmarked) {
+              await supabase
+                .from("vet_visits")
+                .update({ batch_label: `${rc} Batch (${counters[rc]})` })
+                .eq("id", rv.id);
+            }
+          }
+        }
+
+        const manual = (!activateBulk && activateForm.batch_mark.trim()) || "";
+        const batchLabel = manual
+          ? manual
+          : running.length > 0
+          ? `${cat} Batch (${sameCat.length + 1})`
+          : baseName;
+
+        // ---- Farmers page details ----
+        const farmerUpdate: any = {
+          status: "Running",
+          farm_type: cat,
+          farm_category:
+            cat === "Cattle" || cat === "Fish" ? cat : "Poultry",
+        };
+        const stockKey = STOCK_KEY_BY_CATEGORY[cat];
+        if (stockKey) {
+          const cur = Number(target[stockKey] || 0);
+          farmerUpdate[stockKey] = sameCat.length > 0 ? cur + qty : qty;
+          if (mode === "replace") {
+            POULTRY_STOCK_KEYS.forEach((k) => {
+              if (k !== stockKey) farmerUpdate[k] = 0;
+            });
+          }
+        }
+        const selectedCompObj = companies.find(
+          (c) => String(c.id) === String(target.company_id)
+        );
+        if (
+          selectedCompObj?.company_name?.toLowerCase().includes("nourish") &&
+          !target.last_feed_company
+        ) {
+          farmerUpdate.last_feed_company = "Nourish";
+        }
+        const { error: fErr } = await supabase
+          .from("farmers")
+          .update(farmerUpdate)
+          .eq("id", target.id);
+        if (fErr) {
+          delete farmerUpdate.last_feed_company;
+          await supabase.from("farmers").update(farmerUpdate).eq("id", target.id);
+        }
+
+        const insertPayload: any = {
+          farmer_id: String(target.id),
+          agent_id: String(target.agent_id),
+          company_id: String(target.company_id),
+          category: cat,
+          hatch_date: activateForm.hatch_date,
+          hatchery: activateForm.hatchery,
+          breed: activateForm.breed,
+          box_no: activateForm.box_no,
+          t_birds: qty,
+          status: "Activated",
+          batch_label: batchLabel,
+        };
+        const { error: visitErr } = await supabase
+          .from("vet_visits")
+          .insert([insertPayload]);
+        if (visitErr) {
+          delete insertPayload.batch_label;
+          const { error: retryErr } = await supabase
+            .from("vet_visits")
+            .insert([insertPayload]);
+          if (retryErr) throw retryErr;
+        }
+      }
+      alert("Farm is now Running!");
+      setShowActivateModal(false);
+      setSelectedFarmerIds([]);
+      loadVetVisits();
+    } catch (err: any) {
+      alert(err.message || "Failed to activate farmer");
+    }
+  }
+
+  // ---------- Export (status list) ----------
+  async function exportFilteredFarmersExcel() {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("Farmer Status");
+    sheet.addRow([
+      "SL", "Status", "Date", "Category", "Agent", "Farmer Name", "Mobile", "Address", "Nourish Conversion",
+    ]);
+    sheet.getRow(1).eachCell((c) => {
+      c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "0F172A" } };
+      c.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    });
+    tableFilteredRows.forEach((r, idx) => {
+      const f = r.farmer;
+      sheet.addRow([
+        idx + 1,
+        r.status,
+        r.kind === "batch" ? r.visit.hatch_date || "-" : f.statusDate || "-",
+        r.category,
+        f.agentName,
+        r.visit?.batch_label || f.farmer_name,
+        f.mobile || "-",
+        [f.village, f.upazila].filter(Boolean).join(", "),
+        f.nourishTag
+          ? `${f.nourishTag}${f.nourishTagDate ? ` (${f.nourishTagDate})` : ""}`
+          : "-",
+      ]);
+    });
+    sheet.columns.forEach((col) => (col.width = 20));
+    const buf = await workbook.xlsx.writeBuffer();
+    saveAs(
+      new Blob([buf]),
+      `Farmer_Status_${selectedStatusFilter}_${new Date().toISOString().slice(0, 10)}.xlsx`
+    );
+  }
+
+  // ---------- Edit saved report (from History) ----------
+  const REPORT_FIELDS: Record<string, { key: string; label: string; type?: string }[]> = {
+    before_sale_reports: [
+      { key: "visit_date", label: "Visit Date", type: "date" },
+      { key: "mortality_pcs", label: "Mortality (pcs)", type: "number" },
+      { key: "weight_gm_b", label: "Weight (g/b)", type: "number" },
+      { key: "feed_t_kg", label: "Feed Total (Kg)", type: "number" },
+      { key: "feed_gm_b", label: "Feed (g/b)", type: "number" },
+      { key: "fcr_w_out_m", label: "FCR (w/o M)", type: "number" },
+      { key: "fcr_with_m", label: "FCR (with M)", type: "number" },
+      { key: "uneven", label: "Uneven" },
+      { key: "indigestion", label: "Indigestion" },
+      { key: "orange_feces", label: "Orange Feces" },
+      { key: "watery_feces", label: "Watery Feces" },
+      { key: "feeder", label: "Feeder" },
+      { key: "drinker", label: "Drinker" },
+      { key: "floor_space", label: "Floor Space" },
+      { key: "litter_condition", label: "Litter Condition" },
+      { key: "ventilation", label: "Ventilation" },
+      { key: "feed_scattering", label: "Feed Scattering" },
+      { key: "feed_hardness", label: "Feed Hardness" },
+      { key: "feed_company", label: "Feed Company" },
+      { key: "feed_type", label: "Feed Type" },
+      { key: "pro_date", label: "MFG Date", type: "date" },
+      { key: "batch_no", label: "Batch No." },
+      { key: "remarks", label: "Remarks" },
+    ],
+    after_sale_reports: [
+      { key: "visit_date", label: "Sale Date", type: "date" },
+      { key: "mortality", label: "Mortality", type: "number" },
+      { key: "weight", label: "Weight (g)", type: "number" },
+      { key: "feed_consumption_kg", label: "Total Feed (Kg)", type: "number" },
+      { key: "feed_gm_b", label: "Feed/Bird (g)", type: "number" },
+      { key: "feed", label: "Last Feed Type" },
+      { key: "feed_mill", label: "Last Feed Company" },
+      { key: "fcr_w_out_m", label: "FCR (w/o M)", type: "number" },
+      { key: "fcr_with_m", label: "FCR (with M)", type: "number" },
+      { key: "remarks", label: "Remarks" },
+    ],
+    layer_reports: [
+      { key: "visit_date", label: "Visit Date", type: "date" },
+      { key: "b_weight_g", label: "Body Weight (g)", type: "number" },
+      { key: "feed_total_kg", label: "Feed Total (Kg)", type: "number" },
+      { key: "feed_intake_g", label: "Feed (g/b/d)", type: "number" },
+      { key: "egg_production", label: "Egg Production %", type: "number" },
+      { key: "egg_weight", label: "Egg Weight (g)", type: "number" },
+      { key: "feed_company", label: "Feed Company" },
+      { key: "feed_type", label: "Feed Type" },
+      { key: "pro_date", label: "MFG Date", type: "date" },
+      { key: "batch_no", label: "Batch No." },
+      { key: "hatchery", label: "Hatchery" },
+      { key: "breed", label: "Breed" },
+      { key: "disease", label: "Disease" },
+      { key: "remarks", label: "Remarks" },
+    ],
+  };
+
+  function openEditReport(table: string, rep: any) {
+    const form: Record<string, any> = {};
+    (REPORT_FIELDS[table] || []).forEach((fld) => {
+      form[fld.key] = rep[fld.key] ?? "";
+    });
+    setEditReport({ table, id: rep.id, form });
+  }
+
+  async function handleSaveEditedReport() {
+    if (!editReport) return;
+    const fields = REPORT_FIELDS[editReport.table] || [];
+    const payload: Record<string, any> = {};
+    fields.forEach((fld) => {
+      const v = editReport.form[fld.key];
+      if (fld.type === "number") payload[fld.key] = Number(v) || 0;
+      else if (fld.type === "date") payload[fld.key] = v || null;
+      else payload[fld.key] = v ?? "";
+    });
+    const { error } = await supabase
+      .from(editReport.table)
+      .update(payload)
+      .eq("id", editReport.id);
+    if (error) {
+      alert(error.message || "Failed to update report");
+      return;
+    }
+    setEditReport(null);
+    if (selectedHistoryVisit) await handleHistoryClick(selectedHistoryVisit);
+  }
 
   const activeAgeDays = getAgeDays(
     activeReportVisit?.hatch_date,
@@ -1452,97 +2086,183 @@ ${currentUserProfile.region}`;
   return (
     <div className="p-3 sm:p-5 max-w-7xl mx-auto space-y-4">
       {/* Top Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-slate-300 rounded-xl px-4 py-2.5 shadow-sm">
-        <h1 className="text-base sm:text-lg font-bold text-slate-800">
-          Vet Visits — Running Farmers
-        </h1>
+      <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-slate-300 rounded-xl px-3 py-2 shadow-sm">
+        <div className="flex items-center gap-2">
+          <h1 className="text-sm sm:text-base font-bold text-slate-800">
+            Vet Visits
+          </h1>
+          <span className="text-[11px] font-semibold bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-lg text-slate-700">
+            Rows: <strong>{tableFilteredRows.length}</strong>
+          </span>
+        </div>
 
-        <button
-          type="button"
-          onClick={() => setShowVaccineModal(true)}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition"
-        >
-          Vaccine Schedule
-        </button>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {selectedFarmerIds.length > 0 && (
+            <button
+              type="button"
+              onClick={openBulkActivateModal}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded-lg text-[11px] font-bold shadow-sm transition"
+            >
+              Activate Selected ({selectedFarmerIds.length})
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={exportFilteredFarmersExcel}
+            className="bg-slate-800 hover:bg-slate-900 text-white px-2.5 py-1 rounded-lg text-[11px] font-semibold shadow-sm transition"
+          >
+            Export Excel
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowVaccineModal(true)}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded-lg text-[11px] font-semibold shadow-sm transition"
+          >
+            Vaccine Schedule
+          </button>
+        </div>
       </div>
 
-      {/* Category-wise Running Farmers Summary Bar */}
-      <div className="bg-white p-3.5 rounded-xl border border-slate-300 shadow-sm space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2 bg-emerald-50/70 border border-emerald-200 rounded-lg px-3.5 py-2">
-          <div className="text-xs sm:text-sm font-bold text-emerald-950">
-            Total Running:{" "}
-            <span className="bg-emerald-600 text-white px-2.5 py-0.5 rounded-full text-xs ml-1">
-              {totalRunningCount}
-            </span>
-          </div>
-
-          <div className="flex flex-wrap gap-1.5 text-xs">
-            {CATEGORIES.map((cat) => (
-              <button
-                key={cat}
-                type="button"
-                onClick={() =>
-                  setSelectedCategoryFilter(
-                    selectedCategoryFilter === cat ? "all" : cat
-                  )
-                }
-                className={`px-2.5 py-1 rounded-md border font-semibold transition ${
-                  selectedCategoryFilter === cat
-                    ? "bg-emerald-600 text-white border-emerald-600"
-                    : "bg-white text-slate-700 border-emerald-200 hover:bg-emerald-100"
+      {/* Compact status summary + filters */}
+      <div className="bg-white p-2 sm:p-2.5 rounded-xl border border-slate-300 shadow-sm space-y-2">
+        <div className="flex flex-wrap gap-1.5">
+          {summaryCards.map((card) => {
+            const isSelected = selectedStatusFilter === card.key;
+            return (
+              <div
+                key={card.key}
+                className={`flex items-center gap-1 rounded-lg border pl-2 pr-1 py-0.5 text-[11px] cursor-pointer transition ${card.color} ${
+                  isSelected ? "ring-2 ring-emerald-600" : ""
                 }`}
+                onClick={() => setSelectedStatusFilter(card.key)}
               >
-                {cat}: <strong>{categoryCounts[cat] || 0}</strong>
-              </button>
-            ))}
-          </div>
+                <span className="font-bold">{card.title}</span>
+                <span className={`px-1.5 rounded-full font-extrabold ${card.badgeBg}`}>
+                  {card.data.total}
+                </span>
+                <button
+                  type="button"
+                  title="Category details"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setExpandedCard(expandedCard === card.key ? null : card.key);
+                  }}
+                  className="px-1 font-bold opacity-70 hover:opacity-100"
+                >
+                  {expandedCard === card.key ? "▴" : "▾"}
+                </button>
+              </div>
+            );
+          })}
         </div>
 
-        <div className="flex flex-wrap gap-3 items-center">
-          <div className="flex items-center gap-2">
-            <label className="text-xs font-bold text-slate-600">Company:</label>
-            <select
-              value={selectedCompany}
-              onChange={(e) => setSelectedCompany(e.target.value)}
-              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs outline-none bg-white"
-            >
-              <option value="all">All Companies</option>
-              {companies.map((comp) => (
-                <option key={comp.id} value={String(comp.id)}>
-                  {comp.company_name}
-                </option>
-              ))}
-            </select>
+        {expandedCard && (
+          <div className="flex flex-wrap gap-1 text-[11px] bg-slate-50 border border-slate-200 rounded-lg p-1.5">
+            {CATEGORIES.map((cat) => {
+              const card = summaryCards.find((c) => c.key === expandedCard);
+              return (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => {
+                    setSelectedStatusFilter(expandedCard as StatusTab);
+                    setSelectedCategoryFilter(cat);
+                  }}
+                  className="px-2 py-0.5 rounded border border-slate-300 bg-white hover:bg-slate-100"
+                >
+                  {cat}: <b>{card?.data.byCat[cat] || 0}</b>
+                </button>
+              );
+            })}
           </div>
+        )}
 
-          <div className="flex items-center gap-2">
-            <label className="text-xs font-bold text-slate-600">
-              Category:
-            </label>
-            <select
-              value={selectedCategoryFilter}
-              onChange={(e) => setSelectedCategoryFilter(e.target.value)}
-              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs outline-none bg-white"
-            >
-              <option value="all">All Categories</option>
-              {CATEGORIES.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
-                </option>
-              ))}
-            </select>
-          </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <input
+            type="text"
+            placeholder="Search farmer, mobile..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full sm:w-44 rounded-md border border-slate-300 px-2 py-1 text-[11px] outline-none focus:border-emerald-500"
+          />
+          <select
+            value={selectedCompany}
+            onChange={(e) => {
+              setSelectedCompany(e.target.value);
+              setSelectedAgent("all");
+            }}
+            className="rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] outline-none"
+          >
+            <option value="all">All Companies</option>
+            {companies.map((comp) => (
+              <option key={comp.id} value={String(comp.id)}>
+                {comp.company_name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={selectedAgent}
+            onChange={(e) => setSelectedAgent(e.target.value)}
+            className="rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] outline-none max-w-[140px]"
+          >
+            <option value="all">All Agents</option>
+            {availableAgentsForDropdown.map((ag) => (
+              <option key={ag.id} value={String(ag.id)}>
+                {ag.agent_name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={selectedCategoryFilter}
+            onChange={(e) => setSelectedCategoryFilter(e.target.value)}
+            className="rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] outline-none"
+          >
+            <option value="all">All Categories</option>
+            {CATEGORIES.map((cat) => (
+              <option key={cat} value={cat}>
+                {cat}
+              </option>
+            ))}
+          </select>
+          <select
+            value={selectedStatusFilter}
+            onChange={(e) => setSelectedStatusFilter(e.target.value as StatusTab)}
+            className="rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] outline-none font-semibold"
+          >
+            <option value="all">All Status</option>
+            <option value="Running">Running</option>
+            <option value="Active">Active (&lt; 2 Months)</option>
+            <option value="Inactive">Inactive (&gt; 2 Months)</option>
+            <option value="Leave from Nourish">Leave from Nourish</option>
+            <option value="Convert to Nourish">Convert to Nourish</option>
+          </select>
+          <button
+            type="button"
+            title="Reset filters"
+            onClick={() => {
+              setSelectedCompany("all");
+              setSelectedAgent("all");
+              setSelectedCategoryFilter("all");
+              setSelectedStatusFilter("all");
+              setSearchQuery("");
+              setSelectedFarmerIds([]);
+              setFocusVisitId(null);
+            }}
+            className="rounded-md bg-slate-100 hover:bg-slate-200 border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 transition"
+          >
+            Reset
+          </button>
         </div>
       </div>
 
-      {/* Agent-wise Minimal Bordered Table */}
+      {/* Agent-wise table: Status | Age | Category first, sorted Running > Active > Inactive > others */}
       {filteredAgentsList.length === 0 ? (
         <div className="bg-white border border-slate-300 rounded-xl p-8 text-center text-xs text-slate-400">
-          No running farmers found for the selected filter.
+          {_loading ? "Loading..." : "No farmers found for the selected filter."}
         </div>
       ) : (
-        filteredAgentsList.map((agentGroup, idx) => {
-          const agentCountsText = Object.entries(agentGroup.counts)
+        filteredAgentsList.map((agentGroup: any, idx: number) => {
+          const countsText = Object.entries(agentGroup.counts)
             .map(([c, cnt]) => `${c}: ${cnt}`)
             .join(", ");
 
@@ -1551,15 +2271,13 @@ ${currentUserProfile.region}`;
               key={idx}
               className="bg-white border border-slate-300 rounded-xl shadow-sm overflow-hidden"
             >
-              <div className="bg-slate-100 px-4 py-2 border-b border-slate-300 flex flex-wrap justify-between items-center gap-2">
+              <div className="bg-slate-100 px-3 py-1.5 border-b border-slate-300 flex flex-wrap justify-between items-center gap-2">
                 <h2 className="font-bold text-xs sm:text-sm text-slate-800">
                   Agent:{" "}
-                  <span className="text-emerald-700">
-                    {agentGroup.agentName}
-                  </span>
+                  <span className="text-emerald-700">{agentGroup.agentName}</span>
                 </h2>
-                <span className="text-xs bg-white border border-slate-300 text-slate-700 px-2.5 py-0.5 rounded font-semibold">
-                  Running: {agentGroup.visits.length} ({agentCountsText})
+                <span className="text-[11px] bg-white border border-slate-300 text-slate-700 px-2 py-0.5 rounded font-semibold">
+                  {agentGroup.rows.length} ({countsText})
                 </span>
               </div>
 
@@ -1567,213 +2285,290 @@ ${currentUserProfile.region}`;
                 <table className="w-full text-left border-collapse text-xs">
                   <thead className="bg-slate-50 text-slate-700">
                     <tr>
-                      <th className="border border-slate-300 px-2.5 py-1.5">
-                        Farmer
-                      </th>
-                      <th className="border border-slate-300 px-2.5 py-1.5">
-                        Mobile & Address
-                      </th>
-                      <th className="border border-slate-300 px-2.5 py-1.5">
-                        Category
-                      </th>
-                      <th className="border border-slate-300 px-2.5 py-1.5">
-                        H.Date
-                      </th>
-                      <th className="border border-slate-300 px-2.5 py-1.5">
-                        Hatchery & Breed
-                      </th>
-                      <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                        Birds
-                      </th>
-                      <th className="border border-slate-300 px-2.5 py-1.5 text-center font-bold text-emerald-700">
-                        Age
-                      </th>
-                      <th className="border border-slate-300 px-2.5 py-1.5">
-                        Vaccine / Alert
-                      </th>
-                      <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                        Take Report
-                      </th>
-                      <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                        History
-                      </th>
-                      <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                        Edit
-                      </th>
+                      <th className="border border-slate-300 px-2 py-1.5">Status & Date</th>
+                      <th className="border border-slate-300 px-2 py-1.5 text-center font-bold text-emerald-700">Age</th>
+                      <th className="border border-slate-300 px-2 py-1.5">Category</th>
+                      <th className="border border-slate-300 px-2 py-1.5">Farmer</th>
+                      <th className="border border-slate-300 px-2 py-1.5">Mobile & Address</th>
+                      <th className="border border-slate-300 px-2 py-1.5">H.Date</th>
+                      <th className="border border-slate-300 px-2 py-1.5">Hatchery & Breed</th>
+                      <th className="border border-slate-300 px-2 py-1.5 text-center">Birds</th>
+                      <th className="border border-slate-300 px-2 py-1.5">Vaccine / Alert</th>
+                      <th className="border border-slate-300 px-2 py-1.5 text-center">Take Report</th>
+                      <th className="border border-slate-300 px-2 py-1.5 text-center">History</th>
+                      <th className="border border-slate-300 px-2 py-1.5 text-center">Edit</th>
+                      <th className="border border-slate-300 px-2 py-1.5 text-center">Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {agentGroup.visits.map((visit) => {
-                      const farmer = visit.farmers || {};
-                      const category = visit.category || "Broiler";
+                    {agentGroup.rows.map((row: any) => {
+                      const farmer = row.farmer;
+                      const visit = row.visit;
+                      const isBatch = row.kind === "batch";
+                      const category = row.category || "Broiler";
                       const isLayer = category.toLowerCase() === "layer";
-                      const ageText = calculateAge(visit.hatch_date, category);
-                      const ageDays = getAgeDays(visit.hatch_date);
+                      const ageDays = isBatch ? getAgeDays(visit.hatch_date) : 0;
                       const isSellTime =
-                        category.toLowerCase() === "broiler" && ageDays >= 28;
-                      const vacInfo = getVaccineInfoForVisit(visit);
-
-                      const displayName =
-                        visit.batch_label || farmer.farmer_name || "N/A";
+                        isBatch && category.toLowerCase() === "broiler" && ageDays >= 28;
+                      const vacInfo = isBatch ? getVaccineInfoForVisit(visit) : null;
+                      const tag = isBatch ? batchTagOf(visit.batch_label, farmer.farmer_name) : "";
+                      const isFocused = isBatch && focusVisitId === String(visit.id);
+                      const days = farmer.daysSinceSale;
+                      const daysText =
+                        days === null || days === undefined
+                          ? ""
+                          : days === 0
+                          ? "today"
+                          : `${days} day${days === 1 ? "" : "s"} before`;
+                      const afterBtnRing = isFocused
+                        ? "ring-4 ring-yellow-400 animate-pulse"
+                        : "";
 
                       return (
-                        <tr key={visit.id} className="hover:bg-slate-50">
-                          <td className="border border-slate-300 px-2.5 py-1.5 font-bold text-slate-800">
-                            {displayName}
-                          </td>
-
-                          <td className="border border-slate-300 px-2.5 py-1.5 text-slate-600">
-                            <div>{farmer.mobile || "-"}</div>
-                            <div className="text-[11px] text-slate-500">
-                              {[farmer.village, farmer.upazila]
-                                .filter(Boolean)
-                                .join(", ")}
+                        <tr
+                          key={row.key}
+                          id={isBatch ? `visit-row-${visit.id}` : undefined}
+                          className={`hover:bg-slate-50 ${isFocused ? "bg-yellow-50" : ""}`}
+                        >
+                          {/* 1. STATUS & DATE */}
+                          <td className="border border-slate-300 px-2 py-1.5 whitespace-nowrap">
+                            <div className="flex items-center gap-1.5">
+                              {!isBatch && (
+                                <input
+                                  type="checkbox"
+                                  checked={selectedFarmerIds.includes(String(farmer.id))}
+                                  onChange={() => toggleFarmerCheckbox(String(farmer.id))}
+                                  className="w-3.5 h-3.5 accent-emerald-600 cursor-pointer"
+                                />
+                              )}
+                              <span
+                                className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                                  row.status === "Running"
+                                    ? "bg-emerald-100 text-emerald-800"
+                                    : row.status === "Active"
+                                    ? "bg-blue-100 text-blue-800"
+                                    : "bg-amber-100 text-amber-800"
+                                }`}
+                              >
+                                {row.status}
+                              </span>
+                              {farmer.nourishTag && (
+                                <span
+                                  className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                    farmer.nourishTag === "Convert to Nourish"
+                                      ? "bg-teal-100 text-teal-800 border border-teal-300"
+                                      : "bg-red-100 text-red-800 border border-red-300"
+                                  }`}
+                                >
+                                  {farmer.nourishTag}
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[10px] text-slate-500 mt-0.5">
+                              {isBatch ? (
+                                <>H.Date: {formatDmy(visit.hatch_date)}</>
+                              ) : farmer.statusDate ? (
+                                <>
+                                  {farmer.closedType || "Sale/Cull"}: {formatDmy(farmer.statusDate)}
+                                  {daysText && (
+                                    <span className="ml-1 font-semibold text-slate-600">
+                                      • {daysText}
+                                    </span>
+                                  )}
+                                </>
+                              ) : (
+                                "No sale record"
+                              )}
                             </div>
                           </td>
 
-                          <td className="border border-slate-300 px-2.5 py-1.5 font-semibold">
+                          {/* 2. AGE */}
+                          <td className="border border-slate-300 px-2 py-1.5 text-center font-bold text-emerald-700 whitespace-nowrap">
+                            {isBatch ? calculateAge(visit.hatch_date, category) : "-"}
+                          </td>
+
+                          {/* 3. CATEGORY */}
+                          <td className="border border-slate-300 px-2 py-1.5 font-semibold">
                             {category}
                           </td>
 
-                          <td className="border border-slate-300 px-2.5 py-1.5 whitespace-nowrap">
-                            {visit.hatch_date || "-"}
-                          </td>
-
-                          <td className="border border-slate-300 px-2.5 py-1.5">
-                            <div className="font-medium text-slate-800">
-                              {visit.hatchery || "-"}
-                            </div>
-                            <div className="text-[11px] text-slate-500">
-                              {visit.breed || "-"}
-                            </div>
-                          </td>
-
-                          <td className="border border-slate-300 px-2.5 py-1.5 text-center font-bold text-slate-800">
-                            {visit.t_birds || 0}
-                          </td>
-
-                          <td className="border border-slate-300 px-2.5 py-1.5 text-center font-bold text-emerald-700 whitespace-nowrap">
-                            {ageText}
-                          </td>
-
-                          {/* Vaccine / Alert Column with "+" Button to Add Given Vaccine */}
-                         {/* 2. Table Vaccine Column UI (Only Last Given & Next Vaccine) */}
-                            <td className="border border-slate-300 px-2.5 py-1.5 min-w-[200px]">
-                              <div className="flex items-start justify-between gap-1.5">
-                                <div className="space-y-0.5 flex-1">
-                                  {/* Last Given Vaccine */}
-                                  {visit.last_vaccine_name ? (
-                                    <div className="text-[11px] text-emerald-800  px-1.5 py-0.5 rounded">
-                                      <b>Last:</b> {visit.last_vaccine_name}{" "}
-                                      {visit.last_vaccine_date
-                                        ? `(${formatDmy(visit.last_vaccine_date)})`
-                                        : ""}
-                                    </div>
-                                  ) : (
-                                    <div className="text-[11px] text-slate-400 italic">
-                                      No vaccine recorded yet
-                                    </div>
-                                  )}
-
-                                  {/* Next Scheduled Vaccine */}
-                                  {vacInfo.upcoming && (
-                                    <div className="text-[11px] text-slate-600 bg-emerald-100 border border-emerald-200 mt-0.5">
-                                      <b>Next:</b> {vacInfo.upcoming.vaccine_name} (Day {vacInfo.upcoming.age_days} • {formatDmy(vacInfo.upcomingDateStr)})
-                                    </div>
-                                  )}
-
-                                  {isSellTime && (
-                                    <div className="mt-1 inline-block bg-red-100 border border-red-300 text-red-700 text-[11px] px-2 py-0.5 rounded font-bold">
-                                      Time to Sale
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* "+" Button to Record Vaccine Given */}
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenLogVaccineModal(visit)}
-                                  title="Add Given Vaccine"
-                                  className="w-6 h-6 shrink-0 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm flex items-center justify-center shadow-sm transition"
-                                >
-                                  +
-                                </button>
-                              </div>
-                            </td>
-
-                          <td className="border border-slate-300 px-2.5 py-1.5 text-center whitespace-nowrap">
-                            {isLayer ? (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  openReportModal("layer_report", visit)
-                                }
-                                className="bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded text-[11px] font-semibold"
-                              >
-                                Layer Report
-                              </button>
-                            ) : isSellTime ? (
-                              <div className="flex flex-col gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    openReportModal("after_sale", visit)
-                                  }
-                                  className="bg-red-600 hover:bg-red-700 text-white px-2.5 py-1 rounded text-[11px] font-bold shadow-sm"
-                                >
-                                  After Sale Report
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    openReportModal("before_sale", visit)
-                                  }
-                                  className="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 px-2 py-0.5 rounded text-[10px] font-semibold"
-                                >
-                                  Before Sale
-                                </button>
-                              </div>
-                            ) : (
-                              <div className="flex flex-col gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    openReportModal("before_sale", visit)
-                                  }
-                                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded text-[11px] font-semibold shadow-sm"
-                                >
-                                  Before Sale Report
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    openReportModal("after_sale", visit)
-                                  }
-                                  className="bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300 px-2 py-0.5 rounded text-[10px]"
-                                >
-                                  After Sale
-                                </button>
+                          <td className="border border-slate-300 px-2 py-1.5 font-bold text-slate-800">
+                            {farmer.farmer_name || "N/A"}
+                            {tag && (
+                              <div className="mt-0.5">
+                                <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-semibold">
+                                  {tag}
+                                </span>
                               </div>
                             )}
                           </td>
 
-                          <td className="border border-slate-300 px-2.5 py-1.5 text-center">
+                          <td className="border border-slate-300 px-2 py-1.5 text-slate-600">
+                            <div>{farmer.mobile || "-"}</div>
+                            <div className="text-[11px] text-slate-500">
+                              {[farmer.village, farmer.upazila].filter(Boolean).join(", ")}
+                            </div>
+                          </td>
+
+                          {isBatch ? (
+                            <>
+                              <td className="border border-slate-300 px-2 py-1.5 whitespace-nowrap">
+                                {visit.hatch_date || "-"}
+                              </td>
+
+                              <td className="border border-slate-300 px-2 py-1.5">
+                                <div className="font-medium text-slate-800">{visit.hatchery || "-"}</div>
+                                <div className="text-[11px] text-slate-500">{visit.breed || "-"}</div>
+                              </td>
+
+                              <td className="border border-slate-300 px-2 py-1.5 text-center font-bold text-slate-800">
+                                {visit.t_birds || 0}
+                              </td>
+
+                              <td className="border border-slate-300 px-2 py-1.5 min-w-[190px]">
+                                <div className="flex items-start justify-between gap-1.5">
+                                  <div className="space-y-0.5 flex-1">
+                                    {visit.last_vaccine_name ? (
+                                      <div className="text-[11px] text-emerald-800 px-1.5 py-0.5 rounded">
+                                        <b>Last:</b> {visit.last_vaccine_name}{" "}
+                                        {visit.last_vaccine_date ? `(${formatDmy(visit.last_vaccine_date)})` : ""}
+                                      </div>
+                                    ) : (
+                                      <div className="text-[11px] text-slate-400 italic">No vaccine recorded yet</div>
+                                    )}
+                                    {vacInfo?.upcoming && (
+                                      <div className="text-[11px] text-slate-600 bg-emerald-100 border border-emerald-200 mt-0.5">
+                                        <b>Next:</b> {vacInfo.upcoming.vaccine_name} (Day {vacInfo.upcoming.age_days} • {formatDmy(vacInfo.upcomingDateStr)})
+                                      </div>
+                                    )}
+                                    {isSellTime && (
+                                      <div className="mt-1 inline-block bg-red-100 border border-red-300 text-red-700 text-[11px] px-2 py-0.5 rounded font-bold">
+                                        Time to Sale
+                                      </div>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenLogVaccineModal(visit)}
+                                    title="Add Given Vaccine"
+                                    className="w-6 h-6 shrink-0 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm flex items-center justify-center shadow-sm transition"
+                                  >
+                                    +
+                                  </button>
+                                </div>
+                              </td>
+
+                              <td className="border border-slate-300 px-2 py-1.5 text-center whitespace-nowrap">
+                                {isLayer ? (
+                                  <button
+                                    type="button"
+                                    id={`after-sale-btn-${visit.id}`}
+                                    onClick={() => openReportModal("layer_report", visit)}
+                                    className={`bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded text-[11px] font-semibold ${afterBtnRing}`}
+                                  >
+                                    Layer Report
+                                  </button>
+                                ) : isSellTime ? (
+                                  <div className="flex flex-col gap-1">
+                                    <button
+                                      type="button"
+                                      id={`after-sale-btn-${visit.id}`}
+                                      onClick={() => openReportModal("after_sale", visit)}
+                                      className={`bg-red-600 hover:bg-red-700 text-white px-2.5 py-1 rounded text-[11px] font-bold shadow-sm ${afterBtnRing}`}
+                                    >
+                                      After Sale Report
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => openReportModal("before_sale", visit)}
+                                      className="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 px-2 py-0.5 rounded text-[10px] font-semibold"
+                                    >
+                                      Before Sale
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="flex flex-col gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => openReportModal("before_sale", visit)}
+                                      className="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded text-[11px] font-semibold shadow-sm"
+                                    >
+                                      Before Sale Report
+                                    </button>
+                                    <button
+                                      type="button"
+                                      id={`after-sale-btn-${visit.id}`}
+                                      onClick={() => openReportModal("after_sale", visit)}
+                                      className={`bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300 px-2 py-0.5 rounded text-[10px] ${afterBtnRing}`}
+                                    >
+                                      After Sale
+                                    </button>
+                                  </div>
+                                )}
+                              </td>
+                            </>
+                          ) : (
+                            <td
+                              colSpan={5}
+                              className="border border-slate-300 px-2 py-1.5 text-[11px] text-slate-400 italic"
+                            >
+                              No running batch
+                            </td>
+                          )}
+
+                          <td className="border border-slate-300 px-2 py-1.5 text-center">
                             <button
                               type="button"
-                              onClick={() => handleHistoryClick(visit)}
-                              className="bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 px-2.5 py-1 rounded text-[11px] font-semibold"
+                              onClick={() => {
+                                if (isBatch) {
+                                  handleHistoryClick(visit);
+                                } else if (farmer.latestClosed) {
+                                  handleHistoryClick({
+                                    ...farmer.latestClosed,
+                                    farmers: farmer,
+                                    agents: { agent_name: farmer.agentName },
+                                  });
+                                } else {
+                                  alert("No batch history found for this farmer.");
+                                }
+                              }}
+                              className="bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 px-2 py-1 rounded text-[11px] font-semibold"
                             >
                               History
                             </button>
                           </td>
 
-                          <td className="border border-slate-300 px-2.5 py-1.5 text-center">
+                          <td className="border border-slate-300 px-2 py-1.5 text-center">
+                            {isBatch ? (
+                              <button
+                                type="button"
+                                onClick={() => handleEditClick(visit)}
+                                className="bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 px-2 py-1 rounded text-[11px] font-semibold"
+                              >
+                                Edit
+                              </button>
+                            ) : (
+                              <span className="text-slate-300">-</span>
+                            )}
+                          </td>
+
+                          <td className="border border-slate-300 px-2 py-1.5 text-center whitespace-nowrap">
                             <button
                               type="button"
-                              onClick={() => handleEditClick(visit)}
-                              className="bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 px-2.5 py-1 rounded text-[11px] font-semibold"
+                              onClick={() => openActivateModal(farmer)}
+                              className={`px-2.5 py-1 rounded text-[11px] font-semibold shadow-sm text-white ${
+                                row.status === "Running"
+                                  ? "bg-emerald-600 hover:bg-emerald-700"
+                                  : row.status === "Active"
+                                  ? "bg-blue-600 hover:bg-blue-700"
+                                  : "bg-amber-600 hover:bg-amber-700"
+                              }`}
                             >
-                              Edit
+                              {row.status === "Running"
+                                ? "+ Add Batch"
+                                : row.status === "Active"
+                                ? "Run Farm"
+                                : "Activate"}
                             </button>
                           </td>
                         </tr>
@@ -1785,6 +2580,149 @@ ${currentUserProfile.region}`;
             </div>
           );
         })
+      )}
+
+      {/* ==================================================
+          ACTIVATE / RUN FARM / ADD BATCH MODAL
+      ================================================== */}
+      {showActivateModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-3">
+          <div className="bg-white rounded-xl p-5 w-full max-w-md max-h-[92vh] overflow-y-auto shadow-2xl border border-slate-300">
+            <div className="flex justify-between items-center pb-2.5 mb-3 border-b">
+              <h3 className="text-sm sm:text-base font-bold text-slate-800">
+                {activateBulk
+                  ? `Bulk Run Farms (${selectedFarmerIds.length})`
+                  : activateFarmer?.runningCount > 0
+                  ? `Add New Batch: ${activateFarmer?.farmer_name}`
+                  : activateFarmer?.computedStatus === "Active"
+                  ? `Run Farm: ${activateFarmer?.farmer_name}`
+                  : `Activate Farmer: ${activateFarmer?.farmer_name}`}
+              </h3>
+              <button onClick={() => setShowActivateModal(false)} className="text-slate-500 font-bold">✖</button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">Category / Farm Type *</label>
+                <select
+                  value={activateForm.category}
+                  onChange={(e) => {
+                    const cat = e.target.value;
+                    const breeds = BREEDS_BY_CATEGORY[cat] || [];
+                    setActivateForm({ ...activateForm, category: cat, breed: breeds[0] || "" });
+                  }}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white outline-none"
+                >
+                  {CATEGORIES.map((cat) => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+              </div>
+
+              {activateNeedsChoice && (
+                <div className="border border-amber-300 bg-amber-50 rounded-xl p-3 space-y-2">
+                  <div className="font-bold text-amber-900">
+                    Before: {activatePrevCats.join(", ")} → Now: {activateForm.category}
+                  </div>
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input type="radio" name="actMode" checked={activateMode === "add"} onChange={() => setActivateMode("add")} className="mt-0.5 accent-amber-600" />
+                    <span><b>Add</b> new {activateForm.category} batch (keep {activatePrevCats.join(", ")})</span>
+                  </label>
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input type="radio" name="actMode" checked={activateMode === "replace"} onChange={() => setActivateMode("replace")} className="mt-0.5 accent-amber-600" />
+                    <span><b>Replace</b> {activatePrevCats.join(", ")} with {activateForm.category} on Farmers page</span>
+                  </label>
+                </div>
+              )}
+
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">Hatch Date *</label>
+                <input type="date" value={activateForm.hatch_date} onChange={(e) => setActivateForm({ ...activateForm, hatch_date: e.target.value })} className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none" />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">Hatchery (All Companies) *</label>
+                <select value={activateForm.hatchery} onChange={(e) => setActivateForm({ ...activateForm, hatchery: e.target.value })} className="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white outline-none">
+                  <option value="">Select Hatchery Company</option>
+                  {companies.map((c) => (
+                    <option key={c.id} value={c.company_name}>{c.company_name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">Breed *</label>
+                <select value={activateForm.breed} onChange={(e) => setActivateForm({ ...activateForm, breed: e.target.value })} className="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white outline-none">
+                  <option value="">Select Breed</option>
+                  {(BREEDS_BY_CATEGORY[activateForm.category] || []).map((b) => (
+                    <option key={b} value={b}>{b}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block font-bold text-slate-600 mb-1">Box No.</label>
+                  <input type="text" placeholder="Box No" value={activateForm.box_no} onChange={(e) => setActivateForm({ ...activateForm, box_no: e.target.value })} className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none" />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-600 mb-1">Total Birds / Qty *</label>
+                  <input type="number" placeholder="Total Birds" value={activateForm.t_birds} onChange={(e) => setActivateForm({ ...activateForm, t_birds: e.target.value })} className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none" />
+                </div>
+              </div>
+
+              {!activateBulk && (
+                <div>
+                  <label className="block font-bold text-slate-600 mb-1">Batch mark (optional)</label>
+                  <input type="text" placeholder="Leave empty for auto e.g. Sonali Batch (1)" value={activateForm.batch_mark} onChange={(e) => setActivateForm({ ...activateForm, batch_mark: e.target.value })} className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none" />
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-3 border-t">
+                <button type="button" onClick={() => setShowActivateModal(false)} className="px-4 py-1.5 rounded-lg bg-slate-200 text-slate-700 font-semibold">Cancel</button>
+                <button type="button" onClick={handleActivateSubmit} className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-sm">
+                  Run Farm
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================
+          EDIT SAVED REPORT (from History)
+      ================================================== */}
+      {editReport && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[75] p-3">
+          <div className="bg-white rounded-xl p-4 w-full max-w-2xl max-h-[92vh] overflow-y-auto shadow-2xl border border-slate-300">
+            <div className="flex justify-between items-center pb-2 mb-3 border-b">
+              <h3 className="text-sm font-bold text-slate-800">Edit Report</h3>
+              <button onClick={() => setEditReport(null)} className="text-slate-500 font-bold">✖</button>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
+              {(REPORT_FIELDS[editReport.table] || []).map((fld) => (
+                <div key={fld.key} className={fld.key === "remarks" ? "col-span-2 sm:col-span-3" : ""}>
+                  <label className="block font-semibold text-slate-600 mb-0.5">{fld.label}</label>
+                  <input
+                    type={fld.type || "text"}
+                    value={editReport.form[fld.key] ?? ""}
+                    onChange={(e) =>
+                      setEditReport({
+                        ...editReport,
+                        form: { ...editReport.form, [fld.key]: e.target.value },
+                      })
+                    }
+                    className="w-full rounded-lg border border-slate-300 px-2 py-1.5 outline-none focus:border-emerald-500"
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end gap-2 pt-3 mt-3 border-t">
+              <button type="button" onClick={() => setEditReport(null)} className="px-4 py-1.5 rounded-lg bg-slate-200 text-slate-700 text-xs font-semibold">Cancel</button>
+              <button type="button" onClick={handleSaveEditedReport} className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold">Save Changes</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ==================================================
@@ -3260,6 +4198,13 @@ ${currentUserProfile.region}`;
                                 >
                                   WtsApp
                                 </button>
+                                <button
+                                  type="button"
+                                  onClick={() => openEditReport("layer_reports", rep)}
+                                  className="ml-1 bg-amber-500 text-white px-2 py-0.5 rounded text-[10px] font-bold"
+                                >
+                                  Edit
+                                </button>
                               </td>
                             </tr>
                           );
@@ -3386,6 +4331,13 @@ ${currentUserProfile.region}`;
                                   >
                                     WtsApp
                                   </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditReport("before_sale_reports", rep)}
+                                    className="ml-1 bg-amber-500 text-white px-2 py-0.5 rounded text-[10px] font-bold"
+                                  >
+                                    Edit
+                                  </button>
                                 </td>
                               </tr>
                             );
@@ -3435,7 +4387,10 @@ ${currentUserProfile.region}`;
                             FCR(With)
                           </th>
                           <th className="border border-slate-300 px-2 py-1.5">
-                            Feed Mill & Type
+                            Last Feed Mill & Type
+                          </th>
+                          <th className="border border-slate-300 px-2 py-1.5 text-center">
+                            Edit
                           </th>
                         </tr>
                       </thead>
@@ -3443,7 +4398,7 @@ ${currentUserProfile.region}`;
                         {farmerHistory.after.length === 0 ? (
                           <tr>
                             <td
-                              colSpan={11}
+                              colSpan={12}
                               className="border border-slate-300 py-4 text-center text-slate-400"
                             >
                               No after sale reports found.
@@ -3503,6 +4458,15 @@ ${currentUserProfile.region}`;
                                 <td className="border border-slate-300 px-2 py-1">
                                   {rep.feed_mill || "-"}{" "}
                                   {rep.feed ? `(${rep.feed})` : ""}
+                                </td>
+                                <td className="border border-slate-300 px-2 py-1 text-center">
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditReport("after_sale_reports", rep)}
+                                    className="bg-amber-500 text-white px-2 py-0.5 rounded text-[10px] font-bold"
+                                  >
+                                    Edit
+                                  </button>
                                 </td>
                               </tr>
                             );

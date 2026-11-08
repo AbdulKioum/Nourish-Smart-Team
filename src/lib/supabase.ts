@@ -38,6 +38,17 @@ export interface SyncMutation {
 
 const QUEUE_KEY = "fams_offline_mutation_queue";
 
+function isNetworkFailure(error: any): boolean {
+  if (!navigator.onLine) return true;
+  const msg = String(error?.message || error || "").toLowerCase();
+  return (
+    msg.includes("failed to fetch") ||
+    msg.includes("networkerror") ||
+    msg.includes("network request failed") ||
+    msg.includes("load failed")
+  );
+}
+
 export async function pullAllTablesToLocal(): Promise<boolean> {
   if (!navigator.onLine) return false;
   try {
@@ -108,16 +119,13 @@ export async function processMutationQueue(): Promise<void> {
         }
 
         const { error } = await query;
-        if (error) {
-          if (
-            error.message?.includes("fetch") ||
-            error.message?.includes("network")
-          ) {
-            remainingQueue.push(item);
-          }
+        if (error && isNetworkFailure(error)) {
+          remainingQueue.push(item);
         }
-      } catch {
-        remainingQueue.push(item);
+      } catch (err) {
+        if (isNetworkFailure(err)) {
+          remainingQueue.push(item);
+        }
       }
     }
 
@@ -147,7 +155,8 @@ async function addToMutationQueue(
 
 class OfflineQueryBuilder {
   private table: string;
-  private action: "select" | "insert" | "update" | "delete" | "upsert" = "select";
+  private action: "select" | "insert" | "update" | "delete" | "upsert" =
+    "select";
   private selectQuery = "*";
   private selectOpts: any = undefined;
   private payload: any = null;
@@ -366,7 +375,11 @@ class OfflineQueryBuilder {
     return query;
   }
 
-  private async execute(): Promise<{ data: any; error: any; count?: number | null }> {
+  private async execute(): Promise<{
+    data: any;
+    error: any;
+    count?: number | null;
+  }> {
     const storageKey = `table_${this.table}`;
 
     // =====================================
@@ -402,8 +415,13 @@ class OfflineQueryBuilder {
             }
             return res;
           }
-        } catch {
-          // Network failure -> fall back to IndexedDB
+          if (!isNetworkFailure(res.error)) {
+            return res;
+          }
+        } catch (err) {
+          if (!isNetworkFailure(err)) {
+            return { data: null, error: err };
+          }
         }
       }
 
@@ -461,11 +479,18 @@ class OfflineQueryBuilder {
           await this.applyLocalMutation(data);
           return { data, error: null };
         }
-      } catch {
-        // Offline fallback below
+        // Jodi server error (e.g. 400 Bad Request / missing column) hoy, tobe caller-ke error return korbe jate fallback kaj kore!
+        if (!isNetworkFailure(error)) {
+          return { data: null, error };
+        }
+      } catch (err) {
+        if (!isNetworkFailure(err)) {
+          return { data: null, error: err };
+        }
       }
     }
 
+    // ONLY Queue when truly offline / network unreachable
     const mutatedData = await this.applyLocalMutation();
     await addToMutationQueue({
       table: this.table,

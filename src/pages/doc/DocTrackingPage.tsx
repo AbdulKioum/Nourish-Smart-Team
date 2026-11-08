@@ -64,14 +64,12 @@ const BREEDS_BY_CATEGORY: Record<string, string[]> = {
   Fish: ["Pangus", "Tilapia", "Koi", "Pabda", "Gulsha", "Carp", "Mixed"],
 };
 
-// Exact PCD / DOC Type to Category & Full Breed Name Auto-Mapper
 function mapPcdToCategoryAndBreed(pcd: string): {
   category: string;
   breed: string;
 } {
   const code = String(pcd || "").trim().toUpperCase();
 
-  // Broiler Breeds
   if (code.startsWith("AA"))
     return { category: "Broiler", breed: "Arbor Acress" };
   if (code.startsWith("RO"))
@@ -79,13 +77,11 @@ function mapPcdToCategoryAndBreed(pcd: string): {
   if (code.startsWith("EP") || code.startsWith("HE"))
     return { category: "Broiler", breed: "Hubbard EP" };
 
-  // Layer Breeds
   if (code.startsWith("SH"))
     return { category: "Layer", breed: "Shaver star cross 579" };
   if (code.startsWith("BO"))
     return { category: "Layer", breed: "Bovans White" };
 
-  // Sonali Breeds
   if (code.startsWith("CB"))
     return { category: "Sonali", breed: "Brown Cock" };
   if (code.startsWith("CW"))
@@ -98,6 +94,18 @@ function mapPcdToCategoryAndBreed(pcd: string): {
     return { category: "Sonali", breed: "Bornali" };
 
   return { category: "Broiler", breed: pcd };
+}
+
+function normStr(val: any): string {
+  return String(val ?? "").trim();
+}
+
+function normDate(val: any): string {
+  return String(val ?? "").trim().slice(0, 10);
+}
+
+function normCode(val: any): string {
+  return String(val ?? "").trim().toUpperCase();
 }
 
 const STOCK_KEY_BY_CATEGORY: Record<string, string> = {
@@ -269,13 +277,13 @@ export default function DocTrackingPage() {
   );
   const [pcdFilter, setPcdFilter] = useState<string>("");
   const [upazilaFilter, setUpazilaFilter] = useState<string>("");
+  const [agentDocIdFilter, setAgentDocIdFilter] = useState<string>("");
   const [officerFilter, setOfficerFilter] = useState<string>("");
-  const [searchAgent, setSearchAgent] = useState<string>("");
-  const [trackFilter, setTrackFilter] = useState<"all" | "tracked" | "untracked">(
-    "all"
-  );
+  const [trackFilter, setTrackFilter] = useState<
+    "all" | "tracked" | "untracked"
+  >("all");
 
-  // --- Add tracking: extra options ---
+  // Extra modal states
   const [saveToFarmers, setSaveToFarmers] = useState(false);
   const [showInVisits, setShowInVisits] = useState(true);
   const [batchMode, setBatchMode] = useState<"add" | "replace">("add");
@@ -326,6 +334,7 @@ export default function DocTrackingPage() {
     breed: "Arbor Acress",
     ag_b: "",
     h_date: "",
+    pcd: "",
     batch_mark: "",
     feed_company: "",
     remark: "",
@@ -473,7 +482,10 @@ export default function DocTrackingPage() {
     const { data: agentData, error: agentErr } = await agentQuery;
     if (agentErr) throw agentErr;
 
-    const loadedAgents: DocAgent[] = agentData || [];
+    const loadedAgents: DocAgent[] = (agentData || []).map((a: any) => ({
+      ...a,
+      doc_id: normStr(a.doc_id),
+    }));
     setAgents(loadedAgents);
 
     const allowedDocIds = loadedAgents.map((a) => a.doc_id);
@@ -500,7 +512,13 @@ export default function DocTrackingPage() {
     if (supErr) throw supErr;
     if (trkErr) throw trkErr;
 
-    const loadedSupplies: DocSupply[] = supData || [];
+    const loadedSupplies: DocSupply[] = (supData || []).map((s: any) => ({
+      ...s,
+      doc_id: normStr(s.doc_id),
+      h_date: normDate(s.h_date),
+      pcd: normCode(s.pcd),
+    }));
+
     const loadedTrackings: DocTracking[] = (trkData || []).map((t: any) => {
       let trackerName = t.tracked_by_name;
       if (!trackerName && t.created_by) {
@@ -509,6 +527,9 @@ export default function DocTrackingPage() {
       }
       return {
         ...t,
+        doc_id: normStr(t.doc_id),
+        h_date: normDate(t.h_date),
+        pcd: normCode(t.pcd),
         tracked_by_name: trackerName || "-",
       };
     });
@@ -630,9 +651,9 @@ export default function DocTrackingPage() {
           .replace(/<[^>]*>/g, "")
           .trim();
 
-        const rawPcd = String(getVal(["pcd", "doc type"]) || "")
-          .replace(/<[^>]*>/g, "")
-          .trim();
+        const rawPcd = normCode(
+          String(getVal(["pcd", "doc type"]) || "").replace(/<[^>]*>/g, "")
+        );
         if (!rawPcd) continue;
 
         const rawAgB = String(getVal(["ag/b+", "ag/b", "ag_b"]) || "")
@@ -725,7 +746,7 @@ export default function DocTrackingPage() {
   function getCollaboratedFeedAgentId(
     target: typeof activeTarget
   ): number | null {
-    if (!target) return null;
+    if (!target) return feedAgents[0]?.id || null;
     if (target.feed_agent_id) return Number(target.feed_agent_id);
 
     const byCode = feedAgents.find(
@@ -741,7 +762,9 @@ export default function DocTrackingPage() {
     if (byName) return byName.id;
 
     const inUpazila = feedAgents.find((fa) => fa.upazila === target.upazila);
-    return inUpazila ? inUpazila.id : null;
+    if (inUpazila) return inUpazila.id;
+
+    return feedAgents[0]?.id || null;
   }
 
   function getCollaboratedFarmersForTarget(target: typeof activeTarget) {
@@ -787,47 +810,80 @@ export default function DocTrackingPage() {
     return false;
   }
 
-  function openAddTrackingModal(params: {
-    doc_id: string;
-    agent_name: string;
-    upazila: string;
-    district: string;
-    feed_agent_id?: number | null;
-    pcd: string;
-    h_date: string;
-    supply_id?: string;
-    remainingQty: number;
-  }) {
-    if (params.remainingQty <= 0) {
-      alert("all DOC are tracked");
+  function getStatsForAgentDatePcd(
+    docId: string,
+    hDate: string,
+    pcd: string,
+    excludeTrackingId?: string
+  ) {
+    const cleanId = normStr(docId);
+    const cleanDate = normDate(hDate);
+    const cleanPcd = normCode(pcd);
+
+    const supRows = supplies.filter(
+      (s) =>
+        normStr(s.doc_id) === cleanId &&
+        normDate(s.h_date) === cleanDate &&
+        normCode(s.pcd) === cleanPcd
+    );
+    const total = supRows.reduce((sum, r) => sum + (Number(r.qty) || 0), 0);
+
+    const trkRows = trackings.filter(
+      (t) =>
+        normStr(t.doc_id) === cleanId &&
+        normDate(t.h_date) === cleanDate &&
+        normCode(t.pcd) === cleanPcd &&
+        (!excludeTrackingId || String(t.id) !== String(excludeTrackingId))
+    );
+    const tracked = trkRows.reduce((sum, r) => sum + (Number(r.qty) || 0), 0);
+    const remaining = Math.max(0, total - tracked);
+
+    const agBOptions = Array.from(
+      new Set(supRows.map((s) => s.ag_b).filter(Boolean))
+    );
+
+    return {
+      total,
+      tracked,
+      remaining,
+      supplyId: supRows[0]?.id,
+      agBOptions: agBOptions.length > 0 ? agBOptions : ["AG", "B+"],
+    };
+  }
+
+  // Single "Add Tracking" button handler per agent
+  function openAgentTrackingModal(agent: DocAgent, agentBlocks: any[]) {
+    const firstUntracked =
+      agentBlocks.find((b) => b.untracked > 0) || agentBlocks[0];
+    if (!firstUntracked || firstUntracked.untracked <= 0) {
+      alert("All DOC are tracked for this agent.");
       return;
     }
+
+    const hDate = normDate(firstUntracked.h_date);
+    const pcd = normCode(firstUntracked.pcd);
+    const stats = getStatsForAgentDatePcd(agent.doc_id, hDate, pcd);
 
     const defaultFeedComp =
       companyNames.find((c) => c.toLowerCase().includes("nourish")) ||
       companyNames[0] ||
       "";
 
-    const { category: autoCat, breed: autoBreed } = mapPcdToCategoryAndBreed(
-      params.pcd
-    );
-
-    const agBOptions = Array.from(
-      new Set(
-        supplies
-          .filter(
-            (sp) =>
-              sp.doc_id === params.doc_id &&
-              sp.pcd === params.pcd &&
-              sp.h_date === params.h_date &&
-              sp.ag_b
-          )
-          .map((sp) => sp.ag_b)
-      )
-    );
+    const { category: autoCat, breed: autoBreed } =
+      mapPcdToCategoryAndBreed(pcd);
 
     setEditingTracking(null);
-    setActiveTarget(params);
+    setActiveTarget({
+      doc_id: agent.doc_id,
+      agent_name: agent.agent_name,
+      upazila: agent.upazila,
+      district: agent.district,
+      feed_agent_id: agent.feed_agent_id,
+      pcd,
+      h_date: hDate,
+      supply_id: stats.supplyId,
+      remainingQty: stats.remaining,
+    });
     setSelectedFarmerId("");
     setSaveToFarmers(false);
     setShowInVisits(true);
@@ -837,11 +893,12 @@ export default function DocTrackingPage() {
       farmer_name: "",
       address: "",
       mobile: "",
-      qty: String(params.remainingQty),
+      qty: String(stats.remaining),
       category: autoCat,
       breed: autoBreed,
-      ag_b: agBOptions.length === 1 ? agBOptions[0] : "",
-      h_date: params.h_date,
+      ag_b: stats.agBOptions.length === 1 ? stats.agBOptions[0] : "",
+      h_date: hDate,
+      pcd,
       batch_mark: "",
       feed_company: defaultFeedComp,
       remark: "",
@@ -851,17 +908,23 @@ export default function DocTrackingPage() {
 
   function openEditTrackingModal(
     tr: DocTracking,
-    agent: DocAgent,
-    currentUntrackedQty: number
+    agent: DocAgent
   ) {
     if (!canModifyTracking(tr)) {
       alert("You can only edit tracking entries added by you.");
       return;
     }
 
-    const { category: autoCat, breed: autoBreed } = mapPcdToCategoryAndBreed(
-      tr.pcd
+    const cleanDate = normDate(tr.h_date);
+    const cleanPcd = normCode(tr.pcd);
+    const stats = getStatsForAgentDatePcd(
+      agent.doc_id,
+      cleanDate,
+      cleanPcd,
+      tr.id
     );
+    const { category: autoCat, breed: autoBreed } =
+      mapPcdToCategoryAndBreed(cleanPcd);
 
     setEditingTracking(tr);
     setActiveTarget({
@@ -870,10 +933,10 @@ export default function DocTrackingPage() {
       upazila: agent.upazila,
       district: agent.district,
       feed_agent_id: agent.feed_agent_id,
-      pcd: tr.pcd,
-      h_date: tr.h_date,
-      supply_id: tr.supply_id || undefined,
-      remainingQty: currentUntrackedQty + Number(tr.qty || 0),
+      pcd: cleanPcd,
+      h_date: cleanDate,
+      supply_id: tr.supply_id || stats.supplyId,
+      remainingQty: stats.remaining,
     });
     setSelectedFarmerId(tr.farmer_id ? String(tr.farmer_id) : "");
     setTrackForm({
@@ -884,13 +947,14 @@ export default function DocTrackingPage() {
       category: tr.category || autoCat,
       breed: tr.breed || autoBreed,
       ag_b: tr.ag_b || "",
-      h_date: tr.h_date,
+      h_date: cleanDate,
+      pcd: cleanPcd,
       batch_mark: "",
       feed_company: tr.feed_company || companyNames[0] || "",
       remark: tr.remark || "",
     });
     setSaveToFarmers(false);
-    setShowInVisits(true);
+    setShowInVisits(false);
     setBatchCtx(null);
     setIsTrackModalOpen(true);
   }
@@ -926,15 +990,24 @@ export default function DocTrackingPage() {
     e.preventDefault();
     if (!activeTarget) return;
 
+    const trackHDate = normDate(trackForm.h_date || activeTarget.h_date);
+    const trackPcd = normCode(trackForm.pcd || activeTarget.pcd);
+    const liveStats = getStatsForAgentDatePcd(
+      activeTarget.doc_id,
+      trackHDate,
+      trackPcd,
+      editingTracking?.id
+    );
+
     const numQty = Number(trackForm.qty);
     if (!trackForm.farmer_name.trim() || numQty <= 0) {
       setErrorMsg("Farmer Name and valid DOC Qty are required.");
       return;
     }
 
-    if (numQty > activeTarget.remainingQty) {
+    if (numQty > liveStats.remaining) {
       alert(
-        `DOC Qty (${numQty}) cannot exceed remaining untracked DOC (${activeTarget.remainingQty}).`
+        `DOC Qty (${numQty}) cannot exceed remaining untracked DOC (${liveStats.remaining}).`
       );
       return;
     }
@@ -978,6 +1051,18 @@ export default function DocTrackingPage() {
             .eq("id", editingTracking.id);
           if (retryErr) throw retryErr;
         }
+
+        setTrackings((prev) =>
+          prev.map((item) =>
+            String(item.id) === String(editingTracking.id)
+              ? {
+                  ...item,
+                  ...updateData,
+                  ag_b: trackForm.ag_b || "",
+                }
+              : item
+          )
+        );
       } else {
         const feedAgentFromTarget = getCollaboratedFeedAgentId(activeTarget);
         const chosenCompObj =
@@ -991,9 +1076,8 @@ export default function DocTrackingPage() {
           ) ||
           companiesList[0];
         const targetCompId = chosenCompObj?.id || 1;
-        const trackHDate = trackForm.h_date || activeTarget.h_date;
 
-        // ---- 1. Which farmer record (if any) ----
+        // 1. Identify or create Farmer record
         let targetFarmerId: number | null = selectedFarmerId
           ? Number(selectedFarmerId)
           : null;
@@ -1011,62 +1095,145 @@ export default function DocTrackingPage() {
 
         const stockKey = STOCK_KEY_BY_CATEGORY[finalCategory];
 
-        // ---- 2. Optional: save a manually typed farmer to Farmers page ----
-        if (!targetFarmerId && saveToFarmers) {
-          const nfAgent = Number(newFarmerForm.agent_id || feedAgentFromTarget || 0);
+        // 2. If user checked "Save to Farmers page" OR checked "Show as Running on Visit page" for a new farmer
+        if (!targetFarmerId && (saveToFarmers || showInVisits)) {
+          const nfAgent = Number(
+            newFarmerForm.agent_id || feedAgentFromTarget || 0
+          );
           const nfComp = Number(newFarmerForm.company_id || targetCompId);
-          if (!nfAgent) {
+
+          if (saveToFarmers && !nfAgent) {
             throw new Error(
               "Select an Agent to save this farmer to the Farmers page."
             );
           }
-          const newFarmerPayload: Record<string, any> = {
-            company_id: nfComp,
-            agent_id: nfAgent,
-            farmer_name: trackForm.farmer_name.trim(),
-            mobile: trackForm.mobile.trim(),
-            village: newFarmerForm.village.trim() || trackForm.address.trim(),
-            union_name: newFarmerForm.union_name,
-            upazila: newFarmerForm.upazila || activeTarget.upazila,
-            district:
-              newFarmerForm.district || activeTarget.district || "Mymensingh",
-            farm_category:
-              finalCategory === "Cattle" || finalCategory === "Fish"
-                ? finalCategory
-                : "Poultry",
-            farm_type: finalCategory,
-            feed_type: newFarmerForm.feed_type,
-            remarks: newFarmerForm.remarks,
-            status: showInVisits ? "Running" : "Active",
-            last_feed_company: trackForm.feed_company,
-          };
-          POULTRY_STOCK_KEYS.forEach((k) => (newFarmerPayload[k] = 0));
-          if (stockKey) newFarmerPayload[stockKey] = numQty;
 
-          let created: any = null;
-          const { data: c1, error: cErr } = await supabase
-            .from("farmers")
-            .insert([newFarmerPayload])
-            .select()
-            .single();
-          if (!cErr && c1) {
-            created = c1;
-          } else {
-            delete newFarmerPayload.last_feed_company;
-            const { data: c2, error: cErr2 } = await supabase
+          if (nfAgent) {
+            const newFarmerPayload: Record<string, any> = {
+              company_id: nfComp,
+              agent_id: nfAgent,
+              farmer_name: trackForm.farmer_name.trim(),
+              mobile: trackForm.mobile.trim(),
+              village:
+                newFarmerForm.village.trim() || trackForm.address.trim(),
+              union_name: newFarmerForm.union_name || "",
+              upazila: newFarmerForm.upazila || activeTarget.upazila,
+              district:
+                newFarmerForm.district ||
+                activeTarget.district ||
+                "Mymensingh",
+              farm_category:
+                finalCategory === "Cattle" || finalCategory === "Fish"
+                  ? finalCategory
+                  : "Poultry",
+              farm_type: finalCategory,
+              feed_type: newFarmerForm.feed_type || "",
+              remarks: newFarmerForm.remarks || "",
+              status: showInVisits ? "Running" : "Active",
+              last_feed_company: trackForm.feed_company,
+            };
+            POULTRY_STOCK_KEYS.forEach((k) => (newFarmerPayload[k] = 0));
+            if (stockKey) newFarmerPayload[stockKey] = numQty;
+
+            const { data: c1, error: cErr } = await supabase
               .from("farmers")
               .insert([newFarmerPayload])
               .select()
               .single();
-            if (cErr2) throw cErr2;
-            created = c2;
+
+            if (!cErr && c1) {
+              targetFarmerId = c1.id;
+            } else {
+              delete newFarmerPayload.last_feed_company;
+              const { data: c2 } = await supabase
+                .from("farmers")
+                .insert([newFarmerPayload])
+                .select()
+                .single();
+              if (c2) targetFarmerId = c2.id;
+            }
           }
-          targetFarmerId = created?.id || null;
         }
 
-        // ---- 3. Farmer-page details + running batches ----
+        // 3. ALWAYS Save to DOC Trackings first so it never fails to show under the H.Date row
+        const insertPayload: Record<string, any> = {
+          supply_id: liveStats.supplyId || activeTarget.supply_id || null,
+          doc_id: normStr(activeTarget.doc_id),
+          h_date: trackHDate,
+          pcd: trackPcd,
+          farmer_name: trackForm.farmer_name.trim(),
+          address: trackForm.address.trim(),
+          mobile: trackForm.mobile.trim(),
+          qty: numQty,
+          feed_company: trackForm.feed_company,
+          remark: trackForm.remark.trim(),
+          category: finalCategory,
+          breed: finalBreed,
+          ag_b: trackForm.ag_b || null,
+          farmer_id: targetFarmerId || null,
+          created_by: currentUserId || null,
+          tracked_by_name: currentUserName,
+        };
+
+        let insertedTrackingRow: any = null;
+        const { data: trkInsData, error: trkInsErr } = await supabase
+          .from("doc_trackings")
+          .insert([insertPayload])
+          .select();
+
+        if (!trkInsErr && trkInsData && trkInsData[0]) {
+          insertedTrackingRow = trkInsData[0];
+        } else if (trkInsErr) {
+          const fallbackPayload: Record<string, any> = {
+            supply_id: liveStats.supplyId || activeTarget.supply_id || null,
+            doc_id: normStr(activeTarget.doc_id),
+            h_date: trackHDate,
+            pcd: trackPcd,
+            farmer_name: trackForm.farmer_name.trim(),
+            address: trackForm.address.trim(),
+            mobile: trackForm.mobile.trim(),
+            qty: numQty,
+            feed_company: trackForm.feed_company,
+            remark: trackForm.remark.trim(),
+            created_by: currentUserId || null,
+          };
+          const { data: retryData, error: retryErr } = await supabase
+            .from("doc_trackings")
+            .insert([fallbackPayload])
+            .select();
+          if (retryErr) throw retryErr;
+          insertedTrackingRow = retryData?.[0] || fallbackPayload;
+        }
+
+        const uiTrackingRow: DocTracking = {
+          id:
+            insertedTrackingRow?.id ||
+            `local_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          supply_id: liveStats.supplyId || activeTarget.supply_id || null,
+          doc_id: normStr(activeTarget.doc_id),
+          h_date: trackHDate,
+          pcd: trackPcd,
+          farmer_name: trackForm.farmer_name.trim(),
+          address: trackForm.address.trim(),
+          mobile: trackForm.mobile.trim(),
+          qty: numQty,
+          feed_company: trackForm.feed_company,
+          remark: trackForm.remark.trim(),
+          category: finalCategory,
+          breed: finalBreed,
+          ag_b: trackForm.ag_b || "",
+          farmer_id: targetFarmerId || null,
+          created_by: currentUserId || undefined,
+          tracked_by_name: currentUserName,
+        };
+
+        // Immediately append to local state so it appears right below the H.Date row
+        setTrackings((prev) => [...prev, uiTrackingRow]);
+
+        // 4. Update Farmer Stock & Create Vet Visit if Show in Visits is checked
         let runningBatches: any[] = [];
         let existingFarmerRec: any = null;
+
         if (targetFarmerId) {
           existingFarmerRec =
             farmersList.find((f) => Number(f.id) === Number(targetFarmerId)) ||
@@ -1095,7 +1262,8 @@ export default function DocTrackingPage() {
             );
           const mode: "add" | "replace" = needsChoice ? batchMode : "add";
           const sameCatRunning = runningBatches.filter(
-            (r) => (r.category || "").toLowerCase() === finalCategory.toLowerCase()
+            (r) =>
+              (r.category || "").toLowerCase() === finalCategory.toLowerCase()
           );
 
           const farmerUpdatePayload: Record<string, any> = {
@@ -1110,7 +1278,6 @@ export default function DocTrackingPage() {
 
           if (stockKey) {
             const cur = Number(existingFarmerRec?.[stockKey] || 0);
-            // same type already running -> new batch is added on top
             farmerUpdatePayload[stockKey] =
               sameCatRunning.length > 0 ? cur + numQty : numQty;
             if (mode === "replace") {
@@ -1120,7 +1287,6 @@ export default function DocTrackingPage() {
             }
           }
 
-          // a farmer freshly created above already has its stock set
           const { error: fUpdErr } = await supabase
             .from("farmers")
             .update(farmerUpdatePayload)
@@ -1134,121 +1300,84 @@ export default function DocTrackingPage() {
           }
         }
 
-        // ---- 4. Tracking row ----
-        const supplyForDate = supplies.find(
-          (sp) =>
-            sp.doc_id === activeTarget.doc_id &&
-            sp.pcd === activeTarget.pcd &&
-            sp.h_date === trackHDate
-        );
-        const insertPayload: Record<string, any> = {
-          supply_id: supplyForDate?.id || activeTarget.supply_id || null,
-          doc_id: activeTarget.doc_id,
-          h_date: trackHDate,
-          pcd: activeTarget.pcd,
-          farmer_name: trackForm.farmer_name.trim(),
-          address: trackForm.address.trim(),
-          mobile: trackForm.mobile.trim(),
-          qty: numQty,
-          feed_company: trackForm.feed_company,
-          remark: trackForm.remark.trim(),
-          category: finalCategory,
-          breed: finalBreed,
-          ag_b: trackForm.ag_b || null,
-          farmer_id: targetFarmerId || null,
-          created_by: currentUserId || null,
-          tracked_by_name: currentUserName,
-        };
+        // 5. Add to Running Vet Visits if checked
+        if (showInVisits) {
+          const visitAgentId =
+            existingFarmerRec?.agent_id ||
+            (saveToFarmers && newFarmerForm.agent_id
+              ? Number(newFarmerForm.agent_id)
+              : feedAgentFromTarget);
 
-        const { error: trkInsErr } = await supabase
-          .from("doc_trackings")
-          .insert([insertPayload]);
+          if (visitAgentId) {
+            const baseFarmerName = trackForm.farmer_name.trim();
+            const catLower = finalCategory.toLowerCase();
+            const sameCatCount = runningBatches.filter(
+              (r) => (r.category || "").toLowerCase() === catLower
+            ).length;
 
-        if (trkInsErr) {
-          delete insertPayload.category;
-          delete insertPayload.breed;
-          delete insertPayload.ag_b;
-          delete insertPayload.farmer_id;
-          delete insertPayload.tracked_by_name;
-          const { error: retryErr } = await supabase
-            .from("doc_trackings")
-            .insert([insertPayload]);
-          if (retryErr) throw retryErr;
-        }
-
-        // ---- 5. Running batch on Vet Visits page (only if checked) ----
-        const visitAgentId =
-          existingFarmerRec?.agent_id ||
-          (saveToFarmers && newFarmerForm.agent_id
-            ? Number(newFarmerForm.agent_id)
-            : feedAgentFromTarget);
-
-        if (targetFarmerId && showInVisits && visitAgentId) {
-          const baseFarmerName = trackForm.farmer_name.trim();
-          const catLower = finalCategory.toLowerCase();
-          const sameCatCount = runningBatches.filter(
-            (r) => (r.category || "").toLowerCase() === catLower
-          ).length;
-
-          // give already-running (unmarked) batches a clear "<Type> Batch (n)" mark
-          if (runningBatches.length > 0) {
-            const counters: Record<string, number> = {};
-            for (const rb of runningBatches) {
-              const cat = rb.category || "Broiler";
-              counters[cat] = (counters[cat] || 0) + 1;
-              const lbl = String(rb.batch_label || "");
-              const unmarked =
-                !lbl ||
-                lbl === baseFarmerName ||
-                (lbl.startsWith(baseFarmerName) && !lbl.includes("Batch"));
-              if (unmarked) {
-                await supabase
-                  .from("vet_visits")
-                  .update({ batch_label: `${cat} Batch (${counters[cat]})` })
-                  .eq("id", rb.id);
+            if (runningBatches.length > 0) {
+              const counters: Record<string, number> = {};
+              for (const rb of runningBatches) {
+                const cat = rb.category || "Broiler";
+                counters[cat] = (counters[cat] || 0) + 1;
+                const lbl = String(rb.batch_label || "");
+                const unmarked =
+                  !lbl ||
+                  lbl === baseFarmerName ||
+                  (lbl.startsWith(baseFarmerName) && !lbl.includes("Batch"));
+                if (unmarked) {
+                  await supabase
+                    .from("vet_visits")
+                    .update({
+                      batch_label: `${baseFarmerName} - ${cat} Batch (${counters[cat]})`,
+                    })
+                    .eq("id", rb.id);
+                }
               }
             }
-          }
 
-          const manualMark = trackForm.batch_mark.trim();
-          const batchLabel = manualMark
-            ? manualMark
-            : runningBatches.length > 0
-            ? `${finalCategory} Batch (${sameCatCount + 1})`
-            : baseFarmerName;
+            const manualMark = trackForm.batch_mark.trim();
+            const batchLabel = manualMark
+              ? `${baseFarmerName} (${manualMark})`
+              : runningBatches.length > 0
+              ? `${baseFarmerName} - ${finalCategory} Batch (${
+                  sameCatCount + 1
+                })`
+              : baseFarmerName;
 
-          const nourishHatcheryName =
-            companyNames.find((c) => c.toLowerCase().includes("nourish")) ||
-            "Nourish";
+            const nourishHatcheryName =
+              companyNames.find((c) => c.toLowerCase().includes("nourish")) ||
+              "Nourish";
 
-          const visitPayload: Record<string, any> = {
-            farmer_id: String(targetFarmerId),
-            agent_id: String(visitAgentId),
-            company_id: String(targetCompId),
-            category: finalCategory,
-            hatch_date: trackHDate,
-            hatchery: nourishHatcheryName,
-            breed: finalBreed,
-            box_no: "",
-            t_birds: numQty,
-            status: "Activated",
-            batch_label: batchLabel,
-          };
+            const visitPayload: Record<string, any> = {
+              farmer_id: targetFarmerId ? String(targetFarmerId) : null,
+              agent_id: String(visitAgentId),
+              company_id: String(targetCompId),
+              category: finalCategory,
+              hatch_date: trackHDate,
+              hatchery: nourishHatcheryName,
+              breed: finalBreed,
+              box_no: "",
+              t_birds: numQty,
+              status: "Activated",
+              batch_label: batchLabel,
+            };
 
-          const { error: vErr } = await supabase
-            .from("vet_visits")
-            .insert([visitPayload]);
+            const { error: vErr } = await supabase
+              .from("vet_visits")
+              .insert([visitPayload]);
 
-          if (vErr) {
-            delete visitPayload.batch_label;
-            await supabase.from("vet_visits").insert([visitPayload]);
+            if (vErr) {
+              delete visitPayload.batch_label;
+              await supabase.from("vet_visits").insert([visitPayload]);
+            }
           }
         }
       }
 
-      await loadAllData();
       setIsTrackModalOpen(false);
       setEditingTracking(null);
+      await loadAllData();
     } catch (err: any) {
       setErrorMsg(err?.message || "Failed to save tracking.");
     } finally {
@@ -1268,6 +1397,7 @@ export default function DocTrackingPage() {
         .delete()
         .eq("id", tr.id);
       if (error) throw error;
+      setTrackings((prev) => prev.filter((item) => item.id !== tr.id));
       await loadAllData();
     } catch (err: any) {
       setErrorMsg(err?.message || "Failed to delete tracking.");
@@ -1275,7 +1405,14 @@ export default function DocTrackingPage() {
   }
 
   const allPcdTypes = Array.from(new Set(supplies.map((s) => s.pcd))).sort();
-  const allUpazilas = Array.from(new Set(agents.map((a) => a.upazila))).sort();
+  const availableAssignedUpazilas = Array.from(
+    new Set(
+      (assignedUpazilas.length > 0 && !isManagerOrAdmin
+        ? assignedUpazilas
+        : agents.map((a) => a.upazila)
+      ).filter(Boolean)
+    )
+  ).sort();
 
   const allMonths = Array.from(
     new Set(supplies.map((s) => s.h_date.slice(0, 7)))
@@ -1322,8 +1459,8 @@ export default function DocTrackingPage() {
     setMonthFilter("");
     setPcdFilter("");
     setUpazilaFilter("");
+    setAgentDocIdFilter("");
     setOfficerFilter("");
-    setSearchAgent("");
     setTrackFilter("all");
     if (cachedPageState) {
       cachedPageState.fromDate = latestDate;
@@ -1333,49 +1470,63 @@ export default function DocTrackingPage() {
   }
 
   function matchesDateFilter(hDate: string) {
-    if (monthFilter && !hDate.startsWith(monthFilter)) return false;
-    if (fromDate && hDate < fromDate) return false;
-    if (toDate && hDate > toDate) return false;
+    const clean = normDate(hDate);
+    if (monthFilter && !clean.startsWith(monthFilter)) return false;
+    if (fromDate && clean < fromDate) return false;
+    if (toDate && clean > toDate) return false;
     return true;
   }
 
-  const matchingAgents = agents.filter((agent) => {
+  // Agents matching Upazila & Officer filter
+  const baseScopedAgents = agents.filter((agent) => {
     if (upazilaFilter && agent.upazila !== upazilaFilter) return false;
-
     if (officerFilter) {
       const selectedOff = officers.find((o) => o.id === officerFilter);
       if (selectedOff && !selectedOff.upazilas.includes(agent.upazila)) {
         return false;
       }
     }
-
-    const q = searchAgent.trim().toLowerCase();
-    if (q) {
-      const matchSearch =
-        agent.doc_id.toLowerCase().includes(q) ||
-        agent.agent_name.toLowerCase().includes(q);
-      if (!matchSearch) return false;
-    }
-
     return true;
   });
 
-  const matchingAgentDocIds = new Set(matchingAgents.map((a) => a.doc_id));
+  // Agents that actually have DOC on the selected dates & DOC type (for Agent Dropdown)
+  const agentsWithDocInScope = baseScopedAgents.filter((agent) =>
+    supplies.some(
+      (s) =>
+        normStr(s.doc_id) === normStr(agent.doc_id) &&
+        matchesDateFilter(s.h_date) &&
+        (!pcdFilter || normCode(s.pcd) === normCode(pcdFilter))
+    )
+  );
+
+  const matchingAgents = baseScopedAgents.filter((agent) => {
+    if (
+      agentDocIdFilter &&
+      normStr(agent.doc_id) !== normStr(agentDocIdFilter)
+    ) {
+      return false;
+    }
+    return true;
+  });
+
+  const matchingAgentDocIds = new Set(
+    matchingAgents.map((a) => normStr(a.doc_id))
+  );
 
   const filteredSupplies = supplies.filter((s) => {
-    if (!matchingAgentDocIds.has(s.doc_id)) return false;
-    const matchPcd = !pcdFilter || s.pcd === pcdFilter;
+    if (!matchingAgentDocIds.has(normStr(s.doc_id))) return false;
+    const matchPcd = !pcdFilter || normCode(s.pcd) === normCode(pcdFilter);
     return matchesDateFilter(s.h_date) && matchPcd;
   });
 
   const filteredTrackings = trackings.filter((t) => {
-    if (!matchingAgentDocIds.has(t.doc_id)) return false;
-    const matchPcd = !pcdFilter || t.pcd === pcdFilter;
+    if (!matchingAgentDocIds.has(normStr(t.doc_id))) return false;
+    const matchPcd = !pcdFilter || normCode(t.pcd) === normCode(pcdFilter);
     return matchesDateFilter(t.h_date) && matchPcd;
   });
 
   const visibleAgents = matchingAgents.filter((agent) =>
-    filteredSupplies.some((s) => s.doc_id === agent.doc_id)
+    filteredSupplies.some((s) => normStr(s.doc_id) === normStr(agent.doc_id))
   );
 
   const dateRangeLabel =
@@ -1434,7 +1585,8 @@ export default function DocTrackingPage() {
     visibleAgents.forEach((agent) => {
       const agentSupplies = filteredSupplies.filter(
         (s) =>
-          s.doc_id === agent.doc_id && exportSelectedTypes.includes(s.pcd)
+          normStr(s.doc_id) === normStr(agent.doc_id) &&
+          exportSelectedTypes.includes(normCode(s.pcd))
       );
 
       const groups = new Map<
@@ -1442,14 +1594,14 @@ export default function DocTrackingPage() {
         { h_date: string; pcd: string; qty: number }
       >();
       agentSupplies.forEach((s) => {
-        const key = `${s.h_date}_${s.pcd}`;
+        const key = `${normDate(s.h_date)}_${normCode(s.pcd)}`;
         const prev = groups.get(key);
         if (prev) {
           prev.qty += Number(s.qty) || 0;
         } else {
           groups.set(key, {
-            h_date: s.h_date,
-            pcd: s.pcd,
+            h_date: normDate(s.h_date),
+            pcd: normCode(s.pcd),
             qty: Number(s.qty) || 0,
           });
         }
@@ -1460,9 +1612,9 @@ export default function DocTrackingPage() {
 
         const matchingTracks = filteredTrackings.filter(
           (t) =>
-            t.doc_id === agent.doc_id &&
-            t.h_date === g.h_date &&
-            t.pcd === g.pcd
+            normStr(t.doc_id) === normStr(agent.doc_id) &&
+            normDate(t.h_date) === g.h_date &&
+            normCode(t.pcd) === g.pcd
         );
 
         if (matchingTracks.length === 0) {
@@ -1553,18 +1705,20 @@ export default function DocTrackingPage() {
   }
 
   const reportSupplies = supplies.filter((s) => {
-    if (!matchingAgentDocIds.has(s.doc_id)) return false;
+    if (!matchingAgentDocIds.has(normStr(s.doc_id))) return false;
     const matchFrom = !reportFromDate || s.h_date >= reportFromDate;
     const matchTo = !reportToDate || s.h_date <= reportToDate;
-    const matchPcd = !reportPcdFilter || s.pcd === reportPcdFilter;
+    const matchPcd =
+      !reportPcdFilter || normCode(s.pcd) === normCode(reportPcdFilter);
     return matchFrom && matchTo && matchPcd;
   });
 
   const reportTrackings = trackings.filter((t) => {
-    if (!matchingAgentDocIds.has(t.doc_id)) return false;
+    if (!matchingAgentDocIds.has(normStr(t.doc_id))) return false;
     const matchFrom = !reportFromDate || t.h_date >= reportFromDate;
     const matchTo = !reportToDate || t.h_date <= reportToDate;
-    const matchPcd = !reportPcdFilter || t.pcd === reportPcdFilter;
+    const matchPcd =
+      !reportPcdFilter || normCode(t.pcd) === normCode(reportPcdFilter);
     return matchFrom && matchTo && matchPcd;
   });
 
@@ -1611,19 +1765,19 @@ export default function DocTrackingPage() {
   const pcdBreakdown = allPcdTypes.map((pcd) => {
     const supQty = supplies
       .filter((s) => {
-        if (!matchingAgentDocIds.has(s.doc_id)) return false;
+        if (!matchingAgentDocIds.has(normStr(s.doc_id))) return false;
         const matchFrom = !reportFromDate || s.h_date >= reportFromDate;
         const matchTo = !reportToDate || s.h_date <= reportToDate;
-        return matchFrom && matchTo && s.pcd === pcd;
+        return matchFrom && matchTo && normCode(s.pcd) === normCode(pcd);
       })
       .reduce((sum, s) => sum + (Number(s.qty) || 0), 0);
 
     const trkQty = trackings
       .filter((t) => {
-        if (!matchingAgentDocIds.has(t.doc_id)) return false;
+        if (!matchingAgentDocIds.has(normStr(t.doc_id))) return false;
         const matchFrom = !reportFromDate || t.h_date >= reportFromDate;
         const matchTo = !reportToDate || t.h_date <= reportToDate;
-        return matchFrom && matchTo && t.pcd === pcd;
+        return matchFrom && matchTo && normCode(t.pcd) === normCode(pcd);
       })
       .reduce((sum, t) => sum + (Number(t.qty) || 0), 0);
 
@@ -1633,87 +1787,163 @@ export default function DocTrackingPage() {
     return { pcd, supQty, trkQty, untrkQty, pct };
   });
 
-  // ---------- Hatch-date blocks (latest hatch date first) ----------
+  // Build unified blocks per agent (latest h_date first)
   function buildAgentBlocks(agent: DocAgent) {
-    const sup = filteredSupplies.filter((x) => x.doc_id === agent.doc_id);
+    const cleanAgentDocId = normStr(agent.doc_id);
+    const sup = filteredSupplies.filter(
+      (x) => normStr(x.doc_id) === cleanAgentDocId
+    );
     const keys = new Map<string, { h_date: string; pcd: string }>();
-    sup.forEach((x) => keys.set(`${x.h_date}__${x.pcd}`, { h_date: x.h_date, pcd: x.pcd }));
+    sup.forEach((x) => {
+      const d = normDate(x.h_date);
+      const p = normCode(x.pcd);
+      keys.set(`${d}__${p}`, { h_date: d, pcd: p });
+    });
+
     return Array.from(keys.values())
-      .sort((a, b) => b.h_date.localeCompare(a.h_date) || a.pcd.localeCompare(b.pcd))
+      .sort(
+        (a, b) =>
+          b.h_date.localeCompare(a.h_date) || a.pcd.localeCompare(b.pcd)
+      )
       .map(({ h_date, pcd }) => {
-        const rows = sup.filter((x) => x.h_date === h_date && x.pcd === pcd);
+        const rows = sup.filter(
+          (x) => normDate(x.h_date) === h_date && normCode(x.pcd) === pcd
+        );
         const total = rows.reduce((sum, r) => sum + (Number(r.qty) || 0), 0);
+        const bTotal = rows.reduce((sum, r) => sum + (Number(r.b_qty) || 0), 0);
+        const agBText =
+          Array.from(new Set(rows.map((r) => r.ag_b).filter(Boolean))).join(
+            ", "
+          ) || "-";
         const trk = filteredTrackings.filter(
-          (t) => t.doc_id === agent.doc_id && t.h_date === h_date && t.pcd === pcd
+          (t) =>
+            normStr(t.doc_id) === cleanAgentDocId &&
+            normDate(t.h_date) === h_date &&
+            normCode(t.pcd) === pcd
         );
         const tracked = trk.reduce((sum, r) => sum + (Number(r.qty) || 0), 0);
-        return { h_date, pcd, rows, total, trk, tracked, untracked: Math.max(0, total - tracked) };
+        return {
+          h_date,
+          pcd,
+          rows,
+          total,
+          bTotal,
+          agBText,
+          trk,
+          tracked,
+          untracked: Math.max(0, total - tracked),
+        };
       });
   }
 
   const agentBlocksList = visibleAgents
-    .map((agent) => ({
-      agent,
-      blocks: buildAgentBlocks(agent).filter(
+    .map((agent) => {
+      const allBlocks = buildAgentBlocks(agent);
+      const filteredBlocks = allBlocks.filter(
         (b) =>
           trackFilter === "all" ||
           (trackFilter === "tracked" ? b.tracked > 0 : b.untracked > 0)
-      ),
-    }))
+      );
+      return { agent, blocks: filteredBlocks, allBlocks };
+    })
     .filter((x) => x.blocks.length > 0);
 
-  function hatchDatesForTarget(): string[] {
+  // Modal dynamic options for H.Date and DOC Type
+  function modalHatchDatesForAgent(): string[] {
     if (!activeTarget) return [];
+    const cleanId = normStr(activeTarget.doc_id);
     return Array.from(
       new Set(
         supplies
           .filter(
             (x) =>
-              x.doc_id === activeTarget.doc_id &&
-              x.pcd === activeTarget.pcd &&
-              matchesDateFilter(x.h_date)
+              normStr(x.doc_id) === cleanId &&
+              matchesDateFilter(x.h_date) &&
+              (!pcdFilter || normCode(x.pcd) === normCode(pcdFilter))
           )
-          .map((x) => x.h_date)
+          .map((x) => normDate(x.h_date))
       )
     ).sort((a, b) => b.localeCompare(a));
   }
 
-  function handleChangeHatchDate(date: string) {
-    if (!activeTarget) return;
-    const supQty = supplies
-      .filter(
-        (x) =>
-          x.doc_id === activeTarget.doc_id &&
-          x.pcd === activeTarget.pcd &&
-          x.h_date === date
+  function modalDocTypesForDate(hDate: string): string[] {
+    if (!activeTarget) return [];
+    const cleanId = normStr(activeTarget.doc_id);
+    const cleanDate = normDate(hDate);
+    return Array.from(
+      new Set(
+        supplies
+          .filter(
+            (x) =>
+              normStr(x.doc_id) === cleanId &&
+              normDate(x.h_date) === cleanDate &&
+              (!pcdFilter || normCode(x.pcd) === normCode(pcdFilter))
+          )
+          .map((x) => normCode(x.pcd))
       )
-      .reduce((sum, r) => sum + (Number(r.qty) || 0), 0);
-    const trkQty = trackings
-      .filter(
-        (t) =>
-          t.doc_id === activeTarget.doc_id &&
-          t.pcd === activeTarget.pcd &&
-          t.h_date === date &&
-          (!editingTracking || t.id !== editingTracking.id)
-      )
-      .reduce((sum, r) => sum + (Number(r.qty) || 0), 0);
-    const remaining = Math.max(0, supQty - trkQty);
-    const supRow = supplies.find(
-      (x) =>
-        x.doc_id === activeTarget.doc_id &&
-        x.pcd === activeTarget.pcd &&
-        x.h_date === date
     );
-    setActiveTarget({
-      ...activeTarget,
-      h_date: date,
-      supply_id: supRow?.id,
-      remainingQty: remaining,
-    });
-    setTrackForm((prev) => ({ ...prev, h_date: date, qty: String(remaining), ag_b: "" }));
   }
 
-  // ---------- farmer / batch detection for the Add Tracking modal ----------
+  function handleModalDateChange(newDate: string) {
+    if (!activeTarget) return;
+    const typesForDate = modalDocTypesForDate(newDate);
+    const nextPcd = typesForDate.includes(normCode(trackForm.pcd))
+      ? normCode(trackForm.pcd)
+      : typesForDate[0] || activeTarget.pcd;
+
+    const stats = getStatsForAgentDatePcd(
+      activeTarget.doc_id,
+      newDate,
+      nextPcd,
+      editingTracking?.id
+    );
+    const mapped = mapPcdToCategoryAndBreed(nextPcd);
+
+    setActiveTarget({
+      ...activeTarget,
+      h_date: newDate,
+      pcd: nextPcd,
+      supply_id: stats.supplyId,
+      remainingQty: stats.remaining,
+    });
+    setTrackForm((prev) => ({
+      ...prev,
+      h_date: newDate,
+      pcd: nextPcd,
+      category: mapped.category,
+      breed: mapped.breed,
+      qty: String(stats.remaining),
+      ag_b: stats.agBOptions.length === 1 ? stats.agBOptions[0] : "",
+    }));
+  }
+
+  function handleModalPcdChange(newPcd: string) {
+    if (!activeTarget) return;
+    const curDate = normDate(trackForm.h_date || activeTarget.h_date);
+    const stats = getStatsForAgentDatePcd(
+      activeTarget.doc_id,
+      curDate,
+      newPcd,
+      editingTracking?.id
+    );
+    const mapped = mapPcdToCategoryAndBreed(newPcd);
+
+    setActiveTarget({
+      ...activeTarget,
+      pcd: newPcd,
+      supply_id: stats.supplyId,
+      remainingQty: stats.remaining,
+    });
+    setTrackForm((prev) => ({
+      ...prev,
+      pcd: newPcd,
+      category: mapped.category,
+      breed: mapped.breed,
+      qty: String(stats.remaining),
+      ag_b: stats.agBOptions.length === 1 ? stats.agBOptions[0] : "",
+    }));
+  }
+
   const matchedFarmerId: number | null = (() => {
     if (!isTrackModalOpen || editingTracking || !activeTarget) return null;
     if (selectedFarmerId) return Number(selectedFarmerId);
@@ -1748,7 +1978,9 @@ export default function DocTrackingPage() {
       ) as string[];
       const inactive = running.length === 0;
       if (inactive) {
-        const fr: any = farmersList.find((f) => Number(f.id) === matchedFarmerId);
+        const fr: any = farmersList.find(
+          (f) => Number(f.id) === matchedFarmerId
+        );
         if (fr?.farm_type) {
           prevCats = [fr.farm_type];
         } else if (fr) {
@@ -1777,7 +2009,6 @@ export default function DocTrackingPage() {
     setBatchMode("add");
   }, [trackForm.category, matchedFarmerId]);
 
-  // ---------- geo data for "save to Farmers page" ----------
   useEffect(() => {
     if (!saveToFarmers || geoDistricts.length > 0) return;
     supabase
@@ -1846,28 +2077,14 @@ export default function DocTrackingPage() {
       String(a.company_id) !== String(newFarmerForm.company_id)
     )
       return false;
-    if (newFarmerForm.upazila && a.upazila && a.upazila !== newFarmerForm.upazila)
+    if (
+      newFarmerForm.upazila &&
+      a.upazila &&
+      a.upazila !== newFarmerForm.upazila
+    )
       return false;
     return true;
   });
-
-  const modalAgBOptions = (() => {
-    if (!activeTarget) return ["AG", "B+"];
-    const found = Array.from(
-      new Set(
-        supplies
-          .filter(
-            (x) =>
-              x.doc_id === activeTarget.doc_id &&
-              x.pcd === activeTarget.pcd &&
-              x.h_date === (trackForm.h_date || activeTarget.h_date) &&
-              x.ag_b
-          )
-          .map((x) => x.ag_b)
-      )
-    );
-    return found.length > 0 ? found : ["AG", "B+"];
-  })();
 
   function agBadge(v?: string) {
     if (!v) return null;
@@ -1883,220 +2100,47 @@ export default function DocTrackingPage() {
     );
   }
 
-  function renderDocBlock(agent: DocAgent, block: any) {
-    const { h_date, pcd, rows, total, trk, tracked, untracked } = block;
-    const isAllTracked = total > 0 && untracked <= 0;
-    const mapped = mapPcdToCategoryAndBreed(pcd);
-    const trkPct = total > 0 ? ((tracked / total) * 100).toFixed(1) : "0.0";
-    const untrkPct = total > 0 ? ((untracked / total) * 100).toFixed(1) : "0.0";
-    const trackedRowsToShow = trackFilter === "untracked" ? [] : trk;
+  const collaboratedFarmers = getCollaboratedFarmersForTarget(activeTarget);
 
-    return (
-      <div key={`${h_date}_${pcd}`} className="space-y-2">
-        <div className="flex items-center justify-between gap-2">
-          <span className="px-2 py-1 rounded-lg bg-slate-100 border border-slate-200 text-slate-800 font-bold text-[11px] sm:text-xs truncate">
-            {mapped.breed}
+  // Live modal stats for selected H.Date & DOC Type
+  const modalSelectedStats = activeTarget
+    ? getStatsForAgentDatePcd(
+        activeTarget.doc_id,
+        trackForm.h_date || activeTarget.h_date,
+        trackForm.pcd || activeTarget.pcd,
+        editingTracking?.id
+      )
+    : { total: 0, tracked: 0, remaining: 0, agBOptions: ["AG", "B+"] };
+
+  return (
+    <div className="p-2 sm:p-4 max-w-7xl mx-auto space-y-2.5">
+      {/* HEADER BAR */}
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2 bg-white border border-slate-200 rounded-xl px-3 py-2 shadow-sm">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="px-2 py-0.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 text-[11px] sm:text-xs font-medium">
+            Date: <strong className="text-slate-900">{dateRangeLabel}</strong>
           </span>
 
           <button
             type="button"
-            title={isAllTracked ? "All DOC tracked" : "Add Tracking"}
-            onClick={() => {
-              if (isAllTracked) {
-                alert("all DOC are tracked");
-                return;
-              }
-              openAddTrackingModal({
-                doc_id: agent.doc_id,
-                agent_name: agent.agent_name,
-                upazila: agent.upazila,
-                district: agent.district,
-                feed_agent_id: agent.feed_agent_id,
-                pcd,
-                h_date,
-                supply_id: rows[0]?.id,
-                remainingQty: untracked,
-              });
-            }}
-            className={`shrink-0 inline-flex items-center justify-center gap-1.5 rounded-full sm:rounded-lg w-8 h-8 sm:w-auto sm:h-auto sm:px-3 sm:py-1.5 text-xs font-semibold shadow-sm transition ${
-              isAllTracked
-                ? "bg-slate-200 text-slate-500 cursor-not-allowed"
-                : "bg-emerald-600 hover:bg-emerald-700 text-white"
+            onClick={() => setTrackFilter("all")}
+            className={`px-2 py-0.5 rounded-lg border text-[11px] sm:text-xs font-medium transition ${
+              trackFilter === "all"
+                ? "bg-slate-800 border-slate-800 text-white"
+                : "bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200"
             }`}
           >
-            {isAllTracked ? (
-              <>
-                <FaCheck size={11} />
-                <span className="hidden sm:inline">All DOC Tracked</span>
-              </>
-            ) : (
-              <>
-                <FaPlus size={11} />
-                <span className="hidden sm:inline">Add Tracking</span>
-              </>
-            )}
+            Total DOC: <strong>{totalSupplyQty.toLocaleString()}</strong>
           </button>
-        </div>
-
-        {/* SUPPLY TABLE */}
-        <div className="overflow-x-auto border border-slate-200 rounded-lg">
-          <table className="min-w-full text-[11px] sm:text-xs">
-            <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
-              <tr>
-                <th className="px-2 sm:px-3 py-1 text-left font-semibold">H.Date</th>
-                <th className="px-2 sm:px-3 py-1 text-left font-semibold">DOC Type</th>
-                <th className="px-2 sm:px-3 py-1 text-left font-semibold">AG/B+</th>
-                <th className="px-2 sm:px-3 py-1 text-right font-semibold">Qty</th>
-                <th className="px-2 sm:px-3 py-1 text-right font-semibold">B.Qty</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {rows.map((row: DocSupply) => (
-                <tr key={row.id} className="hover:bg-slate-50">
-                  <td className="px-2 sm:px-3 py-1 font-medium text-slate-800 whitespace-nowrap">{row.h_date}</td>
-                  <td className="px-2 sm:px-3 py-1 font-bold text-slate-700">{row.pcd}</td>
-                  <td className="px-2 sm:px-3 py-1 text-slate-600">{row.ag_b || "-"}</td>
-                  <td className="px-2 sm:px-3 py-1 text-right font-bold text-slate-800">{Number(row.qty).toLocaleString()}</td>
-                  <td className="px-2 sm:px-3 py-1 text-right text-slate-600">{Number(row.b_qty).toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* TRACKED FARMERS */}
-        {trackedRowsToShow.length > 0 && (
-          <div className="bg-emerald-50/40 border border-emerald-200 rounded-lg p-1.5 sm:p-2">
-            {/* Mobile: compact cards */}
-            <div className="sm:hidden space-y-1.5">
-              {trackedRowsToShow.map((tr: DocTracking) => {
-                const allowedToEdit = canModifyTracking(tr);
-                const autoInfo = mapPcdToCategoryAndBreed(tr.pcd);
-                return (
-                  <div key={tr.id} className="bg-white border border-emerald-100 rounded-lg px-2.5 py-1.5 text-[11px] space-y-0.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-bold text-slate-800 truncate">{tr.farmer_name}</span>
-                      <span className="font-bold text-emerald-700 shrink-0">{Number(tr.qty).toLocaleString()}</span>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-1 text-slate-500">
-                      <span>{tr.h_date}</span>
-                      {agBadge(tr.ag_b)}
-                      <span>• {tr.category || autoInfo.category}</span>
-                      <span>• {tr.feed_company}</span>
-                    </div>
-                    <div className="text-slate-500 truncate">
-                      {[tr.mobile, tr.address].filter(Boolean).join(" • ") || "-"}
-                    </div>
-                    <div className="flex items-center justify-between text-slate-400">
-                      <span>By {tr.tracked_by_name || "-"}</span>
-                      {allowedToEdit && (
-                        <span className="space-x-2">
-                          <button type="button" onClick={() => openEditTrackingModal(tr, agent, untracked)} className="text-blue-600"><FaEdit size={12} /></button>
-                          <button type="button" onClick={() => handleDeleteTracking(tr)} className="text-red-500"><FaTrash size={11} /></button>
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Desktop: table */}
-            <div className="hidden sm:block overflow-x-auto">
-              <table className="min-w-full text-xs">
-                <thead className="border-b border-emerald-200 text-emerald-900">
-                  <tr>
-                    <th className="py-1.5 px-2 text-left">Farmer</th>
-                    <th className="py-1.5 px-2 text-left">H.Date</th>
-                    <th className="py-1.5 px-2 text-left">AG/B+</th>
-                    <th className="py-1.5 px-2 text-left">Address</th>
-                    <th className="py-1.5 px-2 text-left">Mobile</th>
-                    <th className="py-1.5 px-2 text-left">Category & Breed</th>
-                    <th className="py-1.5 px-2 text-right">DOC Qty</th>
-                    <th className="py-1.5 px-2 text-left">Feed Company</th>
-                    <th className="py-1.5 px-2 text-left">Tracked By</th>
-                    <th className="py-1.5 px-2 text-left">Remark</th>
-                    <th className="py-1.5 px-2 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-emerald-100">
-                  {trackedRowsToShow.map((tr: DocTracking) => {
-                    const allowedToEdit = canModifyTracking(tr);
-                    const autoInfo = mapPcdToCategoryAndBreed(tr.pcd);
-                    return (
-                      <tr key={tr.id}>
-                        <td className="py-1.5 px-2 font-semibold text-slate-800">{tr.farmer_name}</td>
-                        <td className="py-1.5 px-2 text-slate-600 whitespace-nowrap">{tr.h_date}</td>
-                        <td className="py-1.5 px-2">{agBadge(tr.ag_b) || "-"}</td>
-                        <td className="py-1.5 px-2 text-slate-600">{tr.address || "-"}</td>
-                        <td className="py-1.5 px-2 text-slate-600">{tr.mobile || "-"}</td>
-                        <td className="py-1.5 px-2 text-slate-700 font-medium">
-                          {tr.category || autoInfo.category} • {tr.breed || autoInfo.breed}
-                        </td>
-                        <td className="py-1.5 px-2 text-right font-bold text-emerald-700">{Number(tr.qty).toLocaleString()}</td>
-                        <td className="py-1.5 px-2">
-                          <span className="px-2 py-0.5 rounded bg-white border border-emerald-300 text-emerald-800 font-semibold">{tr.feed_company}</span>
-                        </td>
-                        <td className="py-1.5 px-2 font-medium text-slate-700">{tr.tracked_by_name || "-"}</td>
-                        <td className="py-1.5 px-2 text-slate-600">{tr.remark || "-"}</td>
-                        <td className="py-1.5 px-2 text-right whitespace-nowrap space-x-1">
-                          {allowedToEdit ? (
-                            <>
-                              <button type="button" onClick={() => openEditTrackingModal(tr, agent, untracked)} className="text-blue-600 hover:text-blue-800 p-1" title="Edit Tracking"><FaEdit size={12} /></button>
-                              <button type="button" onClick={() => handleDeleteTracking(tr)} className="text-red-500 hover:text-red-700 p-1" title="Delete Tracking"><FaTrash size={11} /></button>
-                            </>
-                          ) : (
-                            <span className="text-[10px] text-slate-400 italic">View only</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-0.5 px-1 text-[11px] sm:text-xs">
-          <span className="text-emerald-700 font-semibold">
-            Tracked: {tracked.toLocaleString()} ({trkPct}%)
-          </span>
-          <span className="text-amber-700 font-semibold">
-            Untracked: {untracked.toLocaleString()} ({untrkPct}%)
-          </span>
-        </div>
-      </div>
-    );
-  }
-
-  const collaboratedFarmers = getCollaboratedFarmersForTarget(activeTarget);
-
-  return (
-    <div className="p-2.5 sm:p-4 max-w-7xl mx-auto space-y-3">
-      {/* HEADER */}
-      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2.5 bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 shadow-sm">
-        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-          <span className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 text-xs font-medium">
-            Date: <strong className="text-slate-900">{dateRangeLabel}</strong>
-          </span>
-
-          <span className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 text-xs font-medium">
-            Total DOC:{" "}
-            <strong className="text-slate-900">
-              {totalSupplyQty.toLocaleString()}
-            </strong>
-          </span>
 
           <button
             type="button"
             onClick={() =>
               setTrackFilter(trackFilter === "tracked" ? "all" : "tracked")
             }
-            title="Click to show only tracked DOC"
-            className={`px-2 sm:px-2.5 py-1 rounded-lg border text-[11px] sm:text-xs font-medium transition ${
+            className={`px-2 py-0.5 rounded-lg border text-[11px] sm:text-xs font-medium transition ${
               trackFilter === "tracked"
-                ? "bg-emerald-600 border-emerald-700 text-white ring-2 ring-emerald-300"
+                ? "bg-emerald-600 border-emerald-700 text-white ring-2 ring-emerald-200"
                 : "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
             }`}
           >
@@ -2111,10 +2155,9 @@ export default function DocTrackingPage() {
             onClick={() =>
               setTrackFilter(trackFilter === "untracked" ? "all" : "untracked")
             }
-            title="Click to show only untracked DOC"
-            className={`px-2 sm:px-2.5 py-1 rounded-lg border text-[11px] sm:text-xs font-medium transition ${
+            className={`px-2 py-0.5 rounded-lg border text-[11px] sm:text-xs font-medium transition ${
               trackFilter === "untracked"
-                ? "bg-amber-500 border-amber-600 text-white ring-2 ring-amber-300"
+                ? "bg-amber-500 border-amber-600 text-white ring-2 ring-amber-200"
                 : "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
             }`}
           >
@@ -2129,7 +2172,7 @@ export default function DocTrackingPage() {
           <button
             onClick={() => initTrackingPage(true)}
             title="Refresh Data"
-            className="p-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 text-xs transition"
+            className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 text-xs transition"
           >
             <FaSyncAlt className={loading ? "animate-spin" : ""} />
           </button>
@@ -2146,45 +2189,45 @@ export default function DocTrackingPage() {
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={importing}
-                className="inline-flex items-center gap-1.5 bg-slate-700 hover:bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition"
+                className="inline-flex items-center gap-1 bg-slate-700 hover:bg-slate-800 text-white px-2.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-medium transition"
               >
                 {importing ? (
                   <FaSpinner className="animate-spin" />
                 ) : (
                   <FaFileUpload />
                 )}
-                Import Excel
+                Import
               </button>
             </>
           )}
 
           <button
             onClick={openExportModal}
-            className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition"
+            className="inline-flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-medium transition"
           >
             <FaFileExcel />
-            Export Excel
+            Export
           </button>
 
           <button
             onClick={() => setIsReportOpen(true)}
-            className="inline-flex items-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition"
+            className="inline-flex items-center gap-1 bg-amber-500 hover:bg-amber-600 text-white px-2.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-medium transition"
           >
             <FaChartPie />
-            Tracked Report
+            Report
           </button>
         </div>
       </div>
 
-      {/* FILTER BAR */}
-      <div className="bg-white border border-slate-200 rounded-xl p-2.5 shadow-sm">
+      {/* COMPACT FILTER BAR (WITH ASSIGNED UPAZILA & ACTIVE DOC AGENTS DROPDOWN) */}
+      <div className="bg-white border border-slate-200 rounded-xl p-2 shadow-sm">
         <div
           className={`grid grid-cols-2 sm:grid-cols-4 ${
-            isManagerOrAdmin ? "lg:grid-cols-7" : "lg:grid-cols-5"
-          } gap-2 items-center`}
+            isManagerOrAdmin ? "lg:grid-cols-7" : "lg:grid-cols-6"
+          } gap-1.5 items-center`}
         >
           <div className="flex items-center border border-slate-300 rounded-lg px-2 py-1 bg-white">
-            <span className="text-[10px] font-semibold text-slate-400 mr-1.5 shrink-0">
+            <span className="text-[10px] font-semibold text-slate-400 mr-1 shrink-0">
               From:
             </span>
             <input
@@ -2198,12 +2241,12 @@ export default function DocTrackingPage() {
                   cachedPageState.monthFilter = "";
                 }
               }}
-              className="w-full text-xs outline-none bg-transparent text-slate-700"
+              className="w-full text-[11px] sm:text-xs outline-none bg-transparent text-slate-700"
             />
           </div>
 
           <div className="flex items-center border border-slate-300 rounded-lg px-2 py-1 bg-white">
-            <span className="text-[10px] font-semibold text-slate-400 mr-1.5 shrink-0">
+            <span className="text-[10px] font-semibold text-slate-400 mr-1 shrink-0">
               To:
             </span>
             <input
@@ -2217,19 +2260,19 @@ export default function DocTrackingPage() {
                   cachedPageState.monthFilter = "";
                 }
               }}
-              className="w-full text-xs outline-none bg-transparent text-slate-700"
+              className="w-full text-[11px] sm:text-xs outline-none bg-transparent text-slate-700"
             />
           </div>
 
           <select
             value={monthFilter}
             onChange={(e) => handleMonthChange(e.target.value)}
-            className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white outline-none"
+            className="border border-slate-300 rounded-lg px-2 py-1.5 text-[11px] sm:text-xs bg-white outline-none"
           >
             <option value="">All Months</option>
             {allMonths.map((ym) => (
               <option key={ym} value={ym}>
-                Month: {formatMonthLabel(ym)}
+                {formatMonthLabel(ym)}
               </option>
             ))}
           </select>
@@ -2237,60 +2280,74 @@ export default function DocTrackingPage() {
           <select
             value={pcdFilter}
             onChange={(e) => setPcdFilter(e.target.value)}
-            className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white outline-none"
+            className="border border-slate-300 rounded-lg px-2 py-1.5 text-[11px] sm:text-xs bg-white outline-none"
           >
             <option value="">All DOC Types</option>
             {allPcdTypes.map((pcd) => (
               <option key={pcd} value={pcd}>
-                DOC Type: {pcd}
+                {pcd} ({mapPcdToCategoryAndBreed(pcd).breed})
+              </option>
+            ))}
+          </select>
+
+          {/* Assigned Upazila Dropdown (Visible to all users) */}
+          <select
+            value={upazilaFilter}
+            onChange={(e) => {
+              setUpazilaFilter(e.target.value);
+              setAgentDocIdFilter("");
+            }}
+            className="border border-slate-300 rounded-lg px-2 py-1.5 text-[11px] sm:text-xs bg-white outline-none"
+          >
+            <option value="">All Upazilas</option>
+            {availableAssignedUpazilas.map((u) => (
+              <option key={u} value={u}>
+                {u}
               </option>
             ))}
           </select>
 
           {isManagerOrAdmin && (
             <select
-              value={upazilaFilter}
-              onChange={(e) => setUpazilaFilter(e.target.value)}
-              className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white outline-none"
-            >
-              <option value="">All Upazilas</option>
-              {allUpazilas.map((u) => (
-                <option key={u} value={u}>
-                  Upazila: {u}
-                </option>
-              ))}
-            </select>
-          )}
-
-          {isManagerOrAdmin && (
-            <select
               value={officerFilter}
-              onChange={(e) => setOfficerFilter(e.target.value)}
-              className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white outline-none"
+              onChange={(e) => {
+                setOfficerFilter(e.target.value);
+                setAgentDocIdFilter("");
+              }}
+              className="border border-slate-300 rounded-lg px-2 py-1.5 text-[11px] sm:text-xs bg-white outline-none"
             >
               <option value="">All Officers</option>
               {officers
                 .filter((o) => o.upazilas.length > 0)
                 .map((off) => (
                   <option key={off.id} value={off.id}>
-                    Officer: {off.full_name}
+                    {off.full_name}
                   </option>
                 ))}
             </select>
           )}
 
-          <div className="col-span-2 sm:col-span-1 flex items-center gap-1.5">
-            <input
-              type="text"
-              placeholder="Search ID or Agent..."
-              value={searchAgent}
-              onChange={(e) => setSearchAgent(e.target.value)}
-              className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs outline-none"
-            />
+          {/* Dropdown of Agents that have DOC in the filtered dates + Reset */}
+          <div className="col-span-2 sm:col-span-1 flex items-center gap-1">
+            <select
+              value={agentDocIdFilter}
+              onChange={(e) => setAgentDocIdFilter(e.target.value)}
+              className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-[11px] sm:text-xs bg-white outline-none"
+            >
+              <option value="">
+                All DOC Agents ({agentsWithDocInScope.length})
+              </option>
+              {agentsWithDocInScope.map((ag) => (
+                <option key={ag.doc_id} value={ag.doc_id}>
+                  {ag.doc_id} - {ag.agent_name}
+                </option>
+              ))}
+            </select>
+
             <button
               onClick={resetAllFilters}
               title="Reset Filters"
-              className="shrink-0 inline-flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition"
+              className="shrink-0 inline-flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 px-2 py-1.5 text-xs font-semibold text-slate-700 transition"
             >
               <RotateCcw size={13} />
             </button>
@@ -2317,15 +2374,15 @@ export default function DocTrackingPage() {
         </div>
       )}
 
-      {/* AGENT-WISE CARDS */}
+      {/* AGENT-WISE UNIFIED COMPACT CARDS (ONE ADD BUTTON PER AGENT, NO SEPARATE H.DATE HEADINGS) */}
       {loading ? (
         <div className="bg-white border border-slate-200 rounded-2xl py-10 text-center text-slate-500 text-xs sm:text-sm">
           <FaSpinner className="animate-spin inline mr-2" />
           Loading DOC tracking data...
         </div>
       ) : agentBlocksList.length === 0 ? (
-        <div className="bg-white border border-slate-200 rounded-2xl py-12 text-center px-4">
-          <p className="text-slate-600 text-sm sm:text-base font-bold">
+        <div className="bg-white border border-slate-200 rounded-2xl py-10 text-center px-4">
+          <p className="text-slate-600 text-xs sm:text-sm font-bold">
             {trackFilter !== "all"
               ? `No ${trackFilter} DOC for the selected filter`
               : fromDate || toDate || monthFilter
@@ -2334,48 +2391,266 @@ export default function DocTrackingPage() {
           </p>
         </div>
       ) : (
-        <div className="space-y-3">
-          {agentBlocksList.map(({ agent, blocks }) => {
-            const dates = Array.from(new Set(blocks.map((bl) => bl.h_date)));
-            const multiDate = dates.length > 1;
-            const agentTotal = blocks.reduce((sum, bl) => sum + bl.total, 0);
-            const showTotal = blocks.length > 1;
+        <div className="space-y-2.5">
+          {agentBlocksList.map(({ agent, blocks, allBlocks }) => {
+            const agentTotal = allBlocks.reduce((sum, bl) => sum + bl.total, 0);
+            const agentTracked = allBlocks.reduce(
+              (sum, bl) => sum + bl.tracked,
+              0
+            );
+            const agentRemaining = Math.max(0, agentTotal - agentTracked);
+            const isAgentAllTracked = agentTotal > 0 && agentRemaining <= 0;
+            const showTotalBadge = allBlocks.length > 1;
 
             return (
               <div
                 key={agent.id}
                 className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden"
               >
-                <div className="bg-slate-100 border-b border-slate-200 px-3 sm:px-4 py-2 flex items-center gap-2">
-                  <span className="px-2 py-0.5 rounded-md bg-slate-200/80 border border-slate-300 text-slate-800 font-bold text-[11px] sm:text-xs">
-                    {agent.doc_id}
-                  </span>
-                  <h2 className="font-bold text-slate-800 text-sm sm:text-base truncate">
-                    {agent.agent_name}
-                  </h2>
-                  {showTotal && (
-                    <span className="ml-auto shrink-0 px-2 py-0.5 rounded-md bg-white border border-slate-300 text-slate-700 text-[11px] sm:text-xs font-semibold">
-                      Total DOC: {agentTotal.toLocaleString()}
+                {/* AGENT HEADER WITH SINGLE ADD TRACKING BUTTON */}
+                <div className="bg-slate-100 border-b border-slate-200 px-2.5 sm:px-3.5 py-2 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="px-1.5 py-0.5 rounded bg-slate-200/90 border border-slate-300 text-slate-800 font-bold text-[10px] sm:text-xs shrink-0">
+                      {agent.doc_id}
                     </span>
-                  )}
+                    <h2 className="font-bold text-slate-800 text-xs sm:text-sm truncate">
+                      {agent.agent_name}
+                    </h2>
+                    <span className="hidden sm:inline text-[11px] text-slate-500 shrink-0">
+                      ({agent.upazila})
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {showTotalBadge && (
+                      <span className="px-2 py-0.5 rounded bg-white border border-slate-300 text-slate-700 text-[10px] sm:text-xs font-semibold">
+                        Total: <b>{agentTotal.toLocaleString()}</b>
+                      </span>
+                    )}
+
+                    <button
+                      type="button"
+                      disabled={isAgentAllTracked}
+                      onClick={() => openAgentTrackingModal(agent, allBlocks)}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] sm:text-xs font-bold shadow-sm transition ${
+                        isAgentAllTracked
+                          ? "bg-slate-200 text-slate-500 cursor-not-allowed"
+                          : "bg-emerald-600 hover:bg-emerald-700 text-white"
+                      }`}
+                    >
+                      {isAgentAllTracked ? (
+                        <>
+                          <FaCheck size={10} />
+                          <span>All Tracked</span>
+                        </>
+                      ) : (
+                        <>
+                          <FaPlus size={10} />
+                          <span>
+                            Add Tracking ({agentRemaining.toLocaleString()}{" "}
+                            left)
+                          </span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
 
-                <div className="p-2.5 sm:p-4 space-y-3">
-                  {dates.map((date) => (
-                    <div key={date} className="space-y-3">
-                      {multiDate && (
-                        <div className="flex items-center gap-2">
-                          <span className="px-2 py-0.5 rounded-md bg-indigo-50 border border-indigo-200 text-indigo-700 text-[11px] sm:text-xs font-bold whitespace-nowrap">
-                            H.Date: {date}
-                          </span>
-                          <div className="flex-1 border-t border-slate-200" />
-                        </div>
-                      )}
-                      {blocks
-                        .filter((bl) => bl.h_date === date)
-                        .map((bl) => renderDocBlock(agent, bl))}
-                    </div>
-                  ))}
+                {/* SINGLE UNIFIED SUPPLY + INLINE TRACKED TABLE */}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[11px] sm:text-xs border-collapse">
+                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                      <tr>
+                        <th className="px-2 sm:px-3 py-1.5 text-left font-semibold">
+                          H.Date
+                        </th>
+                        <th className="px-2 sm:px-3 py-1.5 text-left font-semibold">
+                          DOC Type
+                        </th>
+                        <th className="px-2 sm:px-3 py-1.5 text-left font-semibold">
+                          AG/B+
+                        </th>
+                        <th className="px-2 sm:px-3 py-1.5 text-right font-semibold">
+                          Qty
+                        </th>
+                        <th className="px-2 sm:px-3 py-1.5 text-right font-semibold">
+                          B.Qty
+                        </th>
+                        <th className="px-2 sm:px-3 py-1.5 text-right font-semibold">
+                          Status
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {blocks.map((block) => {
+                        const mapped = mapPcdToCategoryAndBreed(block.pcd);
+                        const trackedRowsToShow =
+                          trackFilter === "untracked" ? [] : block.trk;
+
+                        return (
+                          <React.Fragment key={`${block.h_date}_${block.pcd}`}>
+                            {/* SUPPLY ROW */}
+                            <tr className="bg-white hover:bg-slate-50/80">
+                              <td className="px-2 sm:px-3 py-1.5 font-semibold text-slate-800 whitespace-nowrap">
+                                {block.h_date}
+                              </td>
+                              <td className="px-2 sm:px-3 py-1.5 font-bold text-slate-800">
+                                {block.pcd}{" "}
+                                <span className="font-normal text-slate-500 text-[10px] sm:text-[11px]">
+                                  ({mapped.breed})
+                                </span>
+                              </td>
+                              <td className="px-2 sm:px-3 py-1.5 text-slate-600">
+                                {block.agBText}
+                              </td>
+                              <td className="px-2 sm:px-3 py-1.5 text-right font-extrabold text-slate-900">
+                                {block.total.toLocaleString()}
+                              </td>
+                              <td className="px-2 sm:px-3 py-1.5 text-right text-slate-600">
+                                {block.bTotal.toLocaleString()}
+                              </td>
+                              <td className="px-2 sm:px-3 py-1.5 text-right whitespace-nowrap">
+                                {block.untracked <= 0 ? (
+                                  <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold text-[10px]">
+                                    All Tracked ({block.tracked.toLocaleString()})
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] sm:text-[11px] font-semibold">
+                                    <span className="text-emerald-700">
+                                      Trk: {block.tracked.toLocaleString()}
+                                    </span>{" "}
+                                    •{" "}
+                                    <span className="text-amber-700 font-bold">
+                                      Left: {block.untracked.toLocaleString()}
+                                    </span>
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+
+                            {/* INLINE TRACKED FARMERS RIGHT BELOW THIS H.DATE ROW */}
+                            {trackedRowsToShow.length > 0 && (
+                              <tr className="bg-emerald-50/40">
+                                <td colSpan={6} className="p-1.5 sm:px-3 sm:py-2">
+                                  <div className="border border-emerald-200 rounded-lg bg-white overflow-x-auto">
+                                    <table className="w-full text-[10px] sm:text-[11px]">
+                                      <thead className="bg-emerald-50/80 border-b border-emerald-200 text-emerald-950">
+                                        <tr>
+                                          <th className="py-1 px-2 text-left font-bold">
+                                            Farmer
+                                          </th>
+                                          <th className="py-1 px-1.5 text-left font-bold">
+                                            H.Date
+                                          </th>
+                                          <th className="py-1 px-1.5 text-left font-bold">
+                                            AG/B+
+                                          </th>
+                                          <th className="py-1 px-2 text-left font-bold">
+                                            Mobile & Address
+                                          </th>
+                                          <th className="py-1 px-2 text-left font-bold">
+                                            Breed
+                                          </th>
+                                          <th className="py-1 px-2 text-right font-bold">
+                                            Qty
+                                          </th>
+                                          <th className="py-1 px-2 text-left font-bold">
+                                            Feed
+                                          </th>
+                                          <th className="py-1 px-1.5 text-right font-bold">
+                                            Act
+                                          </th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-emerald-100">
+                                        {trackedRowsToShow.map(
+                                          (tr: DocTracking) => {
+                                            const allowedToEdit =
+                                              canModifyTracking(tr);
+                                            const autoInfo =
+                                              mapPcdToCategoryAndBreed(tr.pcd);
+                                            return (
+                                              <tr
+                                                key={tr.id}
+                                                className="hover:bg-emerald-50/40"
+                                              >
+                                                <td className="py-1 px-2 font-bold text-slate-800">
+                                                  {tr.farmer_name}
+                                                </td>
+                                                <td className="py-1 px-1.5 text-slate-600 whitespace-nowrap">
+                                                  {tr.h_date}
+                                                </td>
+                                                <td className="py-1 px-1.5">
+                                                  {agBadge(tr.ag_b) || "-"}
+                                                </td>
+                                                <td className="py-1 px-2 text-slate-600">
+                                                  {[tr.mobile, tr.address]
+                                                    .filter(Boolean)
+                                                    .join(" • ") || "-"}
+                                                </td>
+                                                <td className="py-1 px-2 text-slate-700">
+                                                  {tr.category ||
+                                                    autoInfo.category}{" "}
+                                                  • {tr.breed || autoInfo.breed}
+                                                </td>
+                                                <td className="py-1 px-2 text-right font-extrabold text-emerald-700">
+                                                  {Number(
+                                                    tr.qty
+                                                  ).toLocaleString()}
+                                                </td>
+                                                <td className="py-1 px-2 font-semibold text-emerald-800">
+                                                  {tr.feed_company || "-"}
+                                                </td>
+                                                <td className="py-1 px-1.5 text-right whitespace-nowrap space-x-1">
+                                                  {allowedToEdit ? (
+                                                    <>
+                                                      <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                          openEditTrackingModal(
+                                                            tr,
+                                                            agent
+                                                          )
+                                                        }
+                                                        className="text-blue-600 hover:text-blue-800 p-0.5"
+                                                        title="Edit"
+                                                      >
+                                                        <FaEdit size={11} />
+                                                      </button>
+                                                      <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                          handleDeleteTracking(
+                                                            tr
+                                                          )
+                                                        }
+                                                        className="text-red-500 hover:text-red-700 p-0.5"
+                                                        title="Delete"
+                                                      >
+                                                        <FaTrash size={10} />
+                                                      </button>
+                                                    </>
+                                                  ) : (
+                                                    <span className="text-[9px] text-slate-400">
+                                                      -
+                                                    </span>
+                                                  )}
+                                                </td>
+                                              </tr>
+                                            );
+                                          }
+                                        )}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             );
@@ -2387,23 +2662,19 @@ export default function DocTrackingPage() {
       {isTrackModalOpen && activeTarget && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full max-w-md max-h-[92vh] flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200 bg-slate-100">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 bg-slate-100">
               <div>
                 <h3 className="text-sm sm:text-base font-bold text-slate-800">
                   {editingTracking ? "Edit Tracking" : "Add Tracking"} —{" "}
-                  {mapPcdToCategoryAndBreed(activeTarget.pcd).breed}
+                  {activeTarget.doc_id} • {activeTarget.agent_name}
                 </h3>
-                <p className="text-xs text-slate-600">
-                  {activeTarget.doc_id} • {activeTarget.agent_name} (Remaining:{" "}
-                  <strong>{activeTarget.remainingQty}</strong>)
-                </p>
               </div>
               <button
                 onClick={() => {
                   setIsTrackModalOpen(false);
                   setEditingTracking(null);
                 }}
-                className="w-8 h-8 rounded-lg hover:bg-slate-200 flex items-center justify-center text-slate-500"
+                className="w-7 h-7 rounded-lg hover:bg-slate-200 flex items-center justify-center text-slate-500"
               >
                 <FaTimes />
               </button>
@@ -2411,10 +2682,107 @@ export default function DocTrackingPage() {
 
             <form
               onSubmit={handleSaveTracking}
-              className="p-5 space-y-3.5 overflow-y-auto"
+              className="p-4 space-y-3 overflow-y-auto text-xs"
             >
+              {/* H.Date, DOC Type & AG/B+ Selectors */}
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    H.Date *
+                  </label>
+                  <select
+                    value={trackForm.h_date || activeTarget.h_date}
+                    disabled={!!editingTracking}
+                    onChange={(e) => handleModalDateChange(e.target.value)}
+                    className="w-full border border-slate-300 rounded-lg px-2 py-1.5 bg-white outline-none focus:border-emerald-500 disabled:bg-slate-100 font-semibold"
+                  >
+                    {(modalHatchDatesForAgent().length > 0
+                      ? modalHatchDatesForAgent()
+                      : [activeTarget.h_date]
+                    ).map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    DOC Type *
+                  </label>
+                  <select
+                    value={trackForm.pcd || activeTarget.pcd}
+                    disabled={!!editingTracking}
+                    onChange={(e) => handleModalPcdChange(e.target.value)}
+                    className="w-full border border-slate-300 rounded-lg px-2 py-1.5 bg-white outline-none focus:border-emerald-500 disabled:bg-slate-100 font-semibold"
+                  >
+                    {(modalDocTypesForDate(
+                      trackForm.h_date || activeTarget.h_date
+                    ).length > 0
+                      ? modalDocTypesForDate(
+                          trackForm.h_date || activeTarget.h_date
+                        )
+                      : [activeTarget.pcd]
+                    ).map((p) => (
+                      <option key={p} value={p}>
+                        {p} ({mapPcdToCategoryAndBreed(p).breed})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    AG / B+
+                  </label>
+                  <select
+                    value={trackForm.ag_b}
+                    onChange={(e) =>
+                      setTrackForm({ ...trackForm, ag_b: e.target.value })
+                    }
+                    className="w-full border border-slate-300 rounded-lg px-2 py-1.5 bg-white outline-none focus:border-emerald-500"
+                  >
+                    <option value="">-- Select --</option>
+                    {modalSelectedStats.agBOptions.map((o) => (
+                      <option key={o} value={o}>
+                        {o}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Live Summary Bar for Selected Date & DOC Type */}
+              <div className="grid grid-cols-3 gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2 text-center">
+                <div>
+                  <span className="text-[10px] text-slate-500 block">
+                    Total DOC
+                  </span>
+                  <strong className="text-slate-900 text-xs">
+                    {modalSelectedStats.total.toLocaleString()}
+                  </strong>
+                </div>
+                <div>
+                  <span className="text-[10px] text-emerald-700 block">
+                    Tracked
+                  </span>
+                  <strong className="text-emerald-700 text-xs">
+                    {modalSelectedStats.tracked.toLocaleString()}
+                  </strong>
+                </div>
+                <div>
+                  <span className="text-[10px] text-amber-700 block">
+                    Remaining
+                  </span>
+                  <strong className="text-amber-700 text-xs">
+                    {modalSelectedStats.remaining.toLocaleString()}
+                  </strong>
+                </div>
+              </div>
+
               <div>
-                <label className="block text-xs font-semibold text-emerald-700 mb-1">
+                <label className="block font-semibold text-emerald-700 mb-1">
                   Select Farmer from List (Optional)
                 </label>
                 <select
@@ -2422,7 +2790,7 @@ export default function DocTrackingPage() {
                   onChange={(e) =>
                     handleSelectFarmerFromDropdown(e.target.value)
                   }
-                  className="w-full border border-emerald-300 rounded-xl px-3 py-2 text-xs sm:text-sm bg-emerald-50/40 text-slate-800 outline-none focus:border-emerald-600"
+                  className="w-full border border-emerald-300 rounded-lg px-2.5 py-1.5 bg-emerald-50/40 text-slate-800 outline-none focus:border-emerald-600"
                 >
                   <option value="">
                     -- Select from List ({collaboratedFarmers.length} farmers)
@@ -2438,52 +2806,8 @@ export default function DocTrackingPage() {
                 </select>
               </div>
 
-              {(hatchDatesForTarget().length > 1 || !editingTracking) && (
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-medium text-slate-700 mb-1">
-                      Hatch Date *
-                    </label>
-                    <select
-                      value={trackForm.h_date || activeTarget.h_date}
-                      disabled={!!editingTracking}
-                      onChange={(e) => handleChangeHatchDate(e.target.value)}
-                      className="w-full border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm bg-white outline-none focus:border-emerald-500 disabled:bg-slate-100"
-                    >
-                      {(hatchDatesForTarget().length > 0
-                        ? hatchDatesForTarget()
-                        : [activeTarget.h_date]
-                      ).map((d) => (
-                        <option key={d} value={d}>
-                          {d}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-700 mb-1">
-                      AG / B+
-                    </label>
-                    <select
-                      value={trackForm.ag_b}
-                      onChange={(e) =>
-                        setTrackForm({ ...trackForm, ag_b: e.target.value })
-                      }
-                      className="w-full border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm bg-white outline-none focus:border-emerald-500"
-                    >
-                      <option value="">-- Select --</option>
-                      {modalAgBOptions.map((o) => (
-                        <option key={o} value={o}>
-                          {o}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              )}
-
               <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
+                <label className="block font-medium text-slate-700 mb-1">
                   Farmer Name *
                 </label>
                 <input
@@ -2494,13 +2818,13 @@ export default function DocTrackingPage() {
                   onChange={(e) =>
                     setTrackForm({ ...trackForm, farmer_name: e.target.value })
                   }
-                  className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none focus:border-emerald-500"
+                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 outline-none focus:border-emerald-500"
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2.5">
                 <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                  <label className="block font-medium text-slate-700 mb-1">
                     Address
                   </label>
                   <input
@@ -2510,12 +2834,12 @@ export default function DocTrackingPage() {
                     onChange={(e) =>
                       setTrackForm({ ...trackForm, address: e.target.value })
                     }
-                    className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none focus:border-emerald-500"
+                    className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 outline-none focus:border-emerald-500"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                  <label className="block font-medium text-slate-700 mb-1">
                     Mobile
                   </label>
                   <input
@@ -2525,14 +2849,14 @@ export default function DocTrackingPage() {
                     onChange={(e) =>
                       setTrackForm({ ...trackForm, mobile: e.target.value })
                     }
-                    className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none focus:border-emerald-500"
+                    className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 outline-none focus:border-emerald-500"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2.5">
                 <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                  <label className="block font-medium text-slate-700 mb-1">
                     Farm Category *
                   </label>
                   <select
@@ -2546,7 +2870,7 @@ export default function DocTrackingPage() {
                         breed: breeds[0] || "",
                       });
                     }}
-                    className="w-full border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm bg-white outline-none focus:border-emerald-500"
+                    className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white outline-none focus:border-emerald-500"
                   >
                     {FARM_CATEGORIES.map((cat) => (
                       <option key={cat} value={cat}>
@@ -2557,15 +2881,15 @@ export default function DocTrackingPage() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Breed ({activeTarget.pcd}) *
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Breed ({trackForm.pcd || activeTarget.pcd}) *
                   </label>
                   <select
                     value={trackForm.breed}
                     onChange={(e) =>
                       setTrackForm({ ...trackForm, breed: e.target.value })
                     }
-                    className="w-full border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm bg-white outline-none focus:border-emerald-500"
+                    className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white outline-none focus:border-emerald-500"
                   >
                     {(BREEDS_BY_CATEGORY[trackForm.category] || []).map((b) => (
                       <option key={b} value={b}>
@@ -2576,27 +2900,27 @@ export default function DocTrackingPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2.5">
                 <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                  <label className="block font-medium text-slate-700 mb-1">
                     DOC Qty *
                   </label>
                   <input
                     type="number"
                     required
                     min={1}
-                    max={activeTarget.remainingQty}
+                    max={modalSelectedStats.remaining}
                     placeholder="Qty"
                     value={trackForm.qty}
                     onChange={(e) =>
                       setTrackForm({ ...trackForm, qty: e.target.value })
                     }
-                    className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none focus:border-emerald-500"
+                    className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 outline-none focus:border-emerald-500 font-bold"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                  <label className="block font-medium text-slate-700 mb-1">
                     Feed Company *
                   </label>
                   <select
@@ -2608,7 +2932,7 @@ export default function DocTrackingPage() {
                         feed_company: e.target.value,
                       })
                     }
-                    className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none bg-white focus:border-emerald-500"
+                    className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 outline-none bg-white focus:border-emerald-500"
                   >
                     <option value="">Select Company</option>
                     {companyNames.map((fc) => (
@@ -2621,7 +2945,7 @@ export default function DocTrackingPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
+                <label className="block font-medium text-slate-700 mb-1">
                   Remark
                 </label>
                 <input
@@ -2631,16 +2955,16 @@ export default function DocTrackingPage() {
                   onChange={(e) =>
                     setTrackForm({ ...trackForm, remark: e.target.value })
                   }
-                  className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none focus:border-emerald-500"
+                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 outline-none focus:border-emerald-500"
                 />
               </div>
 
-              {/* ---- Save manually typed farmer to Farmers page ---- */}
+              {/* Save manually typed farmer to Farmers page */}
               {!editingTracking &&
                 !matchedFarmerId &&
                 trackForm.farmer_name.trim() && (
-                  <div className="border border-indigo-200 bg-indigo-50/40 rounded-xl p-3 space-y-2.5">
-                    <label className="flex items-center gap-2 text-xs sm:text-sm font-semibold text-indigo-900 cursor-pointer">
+                  <div className="border border-indigo-200 bg-indigo-50/40 rounded-xl p-2.5 space-y-2">
+                    <label className="flex items-center gap-2 font-semibold text-indigo-900 cursor-pointer">
                       <input
                         type="checkbox"
                         checked={saveToFarmers}
@@ -2651,117 +2975,136 @@ export default function DocTrackingPage() {
                     </label>
 
                     {saveToFarmers && (
-                      <div className="grid grid-cols-2 gap-2.5 text-xs">
+                      <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <label className="block font-medium text-slate-700 mb-0.5">Company *</label>
+                          <label className="block font-medium text-slate-700 mb-0.5">
+                            Company *
+                          </label>
                           <select
                             value={newFarmerForm.company_id}
                             onChange={(e) =>
-                              setNewFarmerForm({ ...newFarmerForm, company_id: e.target.value, agent_id: "" })
+                              setNewFarmerForm({
+                                ...newFarmerForm,
+                                company_id: e.target.value,
+                                agent_id: "",
+                              })
                             }
-                            className="w-full border border-slate-300 rounded-lg px-2 py-1.5 bg-white"
+                            className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
                           >
                             <option value="">Select</option>
                             {companiesList.map((c) => (
-                              <option key={c.id} value={c.id}>{c.company_name}</option>
+                              <option key={c.id} value={c.id}>
+                                {c.company_name}
+                              </option>
                             ))}
                           </select>
                         </div>
                         <div>
-                          <label className="block font-medium text-slate-700 mb-0.5">District *</label>
+                          <label className="block font-medium text-slate-700 mb-0.5">
+                            District *
+                          </label>
                           <select
                             value={newFarmerForm.district}
                             onChange={(e) =>
-                              setNewFarmerForm({ ...newFarmerForm, district: e.target.value, upazila: "", union_name: "", agent_id: "" })
+                              setNewFarmerForm({
+                                ...newFarmerForm,
+                                district: e.target.value,
+                                upazila: "",
+                                union_name: "",
+                                agent_id: "",
+                              })
                             }
-                            className="w-full border border-slate-300 rounded-lg px-2 py-1.5 bg-white"
+                            className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
                           >
                             <option value="">Select</option>
                             {geoDistricts.map((d) => (
-                              <option key={d.id} value={d.name}>{d.name}</option>
+                              <option key={d.id} value={d.name}>
+                                {d.name}
+                              </option>
                             ))}
                           </select>
                         </div>
                         <div>
-                          <label className="block font-medium text-slate-700 mb-0.5">Upazila *</label>
+                          <label className="block font-medium text-slate-700 mb-0.5">
+                            Upazila *
+                          </label>
                           <select
                             value={newFarmerForm.upazila}
                             onChange={(e) =>
-                              setNewFarmerForm({ ...newFarmerForm, upazila: e.target.value, union_name: "", agent_id: "" })
+                              setNewFarmerForm({
+                                ...newFarmerForm,
+                                upazila: e.target.value,
+                                union_name: "",
+                                agent_id: "",
+                              })
                             }
-                            className="w-full border border-slate-300 rounded-lg px-2 py-1.5 bg-white"
+                            className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
                           >
                             <option value="">Select</option>
                             {geoUpazilas.map((u) => (
-                              <option key={u.id} value={u.name}>{u.name}</option>
+                              <option key={u.id} value={u.name}>
+                                {u.name}
+                              </option>
                             ))}
                           </select>
                         </div>
                         <div>
-                          <label className="block font-medium text-slate-700 mb-0.5">Agent *</label>
+                          <label className="block font-medium text-slate-700 mb-0.5">
+                            Agent *
+                          </label>
                           <select
                             value={newFarmerForm.agent_id}
                             onChange={(e) =>
-                              setNewFarmerForm({ ...newFarmerForm, agent_id: e.target.value })
+                              setNewFarmerForm({
+                                ...newFarmerForm,
+                                agent_id: e.target.value,
+                              })
                             }
-                            className="w-full border border-slate-300 rounded-lg px-2 py-1.5 bg-white"
+                            className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
                           >
                             <option value="">Select</option>
                             {nfAgentOptions.map((a) => (
-                              <option key={a.id} value={a.id}>{a.agent_name}</option>
+                              <option key={a.id} value={a.id}>
+                                {a.agent_name}
+                              </option>
                             ))}
                           </select>
                         </div>
                         <div>
-                          <label className="block font-medium text-slate-700 mb-0.5">Union</label>
+                          <label className="block font-medium text-slate-700 mb-0.5">
+                            Union
+                          </label>
                           <select
                             value={newFarmerForm.union_name}
                             onChange={(e) =>
-                              setNewFarmerForm({ ...newFarmerForm, union_name: e.target.value })
+                              setNewFarmerForm({
+                                ...newFarmerForm,
+                                union_name: e.target.value,
+                              })
                             }
-                            className="w-full border border-slate-300 rounded-lg px-2 py-1.5 bg-white"
+                            className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
                           >
                             <option value="">Select</option>
                             {geoUnions.map((u) => (
-                              <option key={u.id} value={u.name}>{u.name}</option>
+                              <option key={u.id} value={u.name}>
+                                {u.name}
+                              </option>
                             ))}
                           </select>
                         </div>
                         <div>
-                          <label className="block font-medium text-slate-700 mb-0.5">Village</label>
+                          <label className="block font-medium text-slate-700 mb-0.5">
+                            Village
+                          </label>
                           <input
                             value={newFarmerForm.village}
                             onChange={(e) =>
-                              setNewFarmerForm({ ...newFarmerForm, village: e.target.value })
+                              setNewFarmerForm({
+                                ...newFarmerForm,
+                                village: e.target.value,
+                              })
                             }
-                            className="w-full border border-slate-300 rounded-lg px-2 py-1.5"
-                          />
-                        </div>
-                        <div className="col-span-2 text-[11px] text-indigo-800 bg-white border border-indigo-100 rounded-lg px-2 py-1.5">
-                          Auto-filled: {trackForm.farmer_name} • {trackForm.mobile || "no mobile"} •{" "}
-                          {STOCK_KEY_BY_CATEGORY[trackForm.category]
-                            ? "Poultry"
-                            : trackForm.category}{" "}
-                          — {trackForm.category}: {trackForm.qty || 0}
-                        </div>
-                        <div>
-                          <label className="block font-medium text-slate-700 mb-0.5">Feed Type</label>
-                          <input
-                            value={newFarmerForm.feed_type}
-                            onChange={(e) =>
-                              setNewFarmerForm({ ...newFarmerForm, feed_type: e.target.value })
-                            }
-                            className="w-full border border-slate-300 rounded-lg px-2 py-1.5"
-                          />
-                        </div>
-                        <div>
-                          <label className="block font-medium text-slate-700 mb-0.5">Remarks</label>
-                          <input
-                            value={newFarmerForm.remarks}
-                            onChange={(e) =>
-                              setNewFarmerForm({ ...newFarmerForm, remarks: e.target.value })
-                            }
-                            className="w-full border border-slate-300 rounded-lg px-2 py-1.5"
+                            className="w-full border border-slate-300 rounded-lg px-2 py-1"
                           />
                         </div>
                       </div>
@@ -2769,9 +3112,9 @@ export default function DocTrackingPage() {
                   </div>
                 )}
 
-              {/* ---- Batch: add or replace when category changed ---- */}
+              {/* Batch Add or Replace Option */}
               {!editingTracking && batchCtx && needsBatchChoice && (
-                <div className="border border-amber-300 bg-amber-50 rounded-xl p-3 space-y-2 text-xs">
+                <div className="border border-amber-300 bg-amber-50 rounded-xl p-2.5 space-y-1.5">
                   <div className="font-bold text-amber-900">
                     Before: {batchCtx.prevCats.join(", ")}{" "}
                     {batchCtx.inactive ? "(inactive)" : "(running)"} → Now:{" "}
@@ -2787,7 +3130,7 @@ export default function DocTrackingPage() {
                     />
                     <span>
                       <b>Add</b> new {trackForm.category} batch (keep{" "}
-                      {batchCtx.prevCats.join(", ")} on Farmers page)
+                      {batchCtx.prevCats.join(", ")})
                     </span>
                   </label>
                   <label className="flex items-start gap-2 cursor-pointer">
@@ -2800,90 +3143,62 @@ export default function DocTrackingPage() {
                     />
                     <span>
                       <b>Replace</b> {batchCtx.prevCats.join(", ")} with{" "}
-                      {trackForm.category} on Farmers page
+                      {trackForm.category}
                     </span>
                   </label>
                 </div>
               )}
 
-              {!editingTracking &&
-                batchCtx &&
-                !needsBatchChoice &&
-                !batchCtx.inactive && (
-                  <div className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
-                    This farmer already has {batchCtx.running.length} running
-                    batch(es) — a new{" "}
-                    <b>
-                      {trackForm.category} Batch (
-                      {batchCtx.running.filter(
-                        (r: any) =>
-                          (r.category || "").toLowerCase() ===
-                          trackForm.category.toLowerCase()
-                      ).length + 1}
-                      )
-                    </b>{" "}
-                    will be added.
-                  </div>
-                )}
-
-              {/* ---- Show on Vet Visit page (default checked) ---- */}
+              {/* Show as Running on Visit Page (Always enabled & default checked) */}
               {!editingTracking && (
-                <div className="space-y-2">
-                  <label
-                    className={`flex items-center gap-2 text-xs sm:text-sm font-semibold ${
-                      matchedFarmerId || saveToFarmers
-                        ? "text-emerald-800 cursor-pointer"
-                        : "text-slate-400"
-                    }`}
-                  >
+                <div className="space-y-2 pt-1">
+                  <label className="flex items-center gap-2 font-semibold text-emerald-800 cursor-pointer">
                     <input
                       type="checkbox"
-                      checked={showInVisits && !!(matchedFarmerId || saveToFarmers)}
-                      disabled={!(matchedFarmerId || saveToFarmers)}
+                      checked={showInVisits}
                       onChange={(e) => setShowInVisits(e.target.checked)}
                       className="w-4 h-4 accent-emerald-600"
                     />
                     Show as Running on Visit page
                   </label>
-                  {!(matchedFarmerId || saveToFarmers) && (
-                    <p className="text-[11px] text-slate-400">
-                      Needs a farmer from the list, or save this farmer to the Farmers page.
-                    </p>
-                  )}
-                  {showInVisits && (matchedFarmerId || saveToFarmers) && (
+
+                  {showInVisits && (
                     <div>
-                      <label className="block text-xs font-medium text-slate-700 mb-1">
+                      <label className="block font-medium text-slate-700 mb-1">
                         Batch mark (optional)
                       </label>
                       <input
                         type="text"
-                        placeholder="e.g. Shed-2 / Sonali Batch (1) — leave empty for auto"
+                        placeholder="e.g. Shed-2 / Sonali Batch (1)"
                         value={trackForm.batch_mark}
                         onChange={(e) =>
-                          setTrackForm({ ...trackForm, batch_mark: e.target.value })
+                          setTrackForm({
+                            ...trackForm,
+                            batch_mark: e.target.value,
+                          })
                         }
-                        className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none focus:border-emerald-500"
+                        className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 outline-none focus:border-emerald-500"
                       />
                     </div>
                   )}
                 </div>
               )}
 
-              <div className="flex gap-2.5 pt-3 border-t border-slate-100">
+              <div className="flex gap-2 pt-2 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => {
                     setIsTrackModalOpen(false);
                     setEditingTracking(null);
                   }}
-                  className="flex-1 py-2 rounded-xl border border-slate-300 text-slate-600 text-sm font-medium"
+                  className="flex-1 py-2 rounded-xl border border-slate-300 text-slate-600 font-semibold"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting}
-                  className="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium flex items-center justify-center gap-2"
+                  disabled={submitting || modalSelectedStats.remaining <= 0}
+                  className="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold flex items-center justify-center gap-1.5"
                 >
                   {submitting && <FaSpinner className="animate-spin" />}
                   {editingTracking ? "Update Tracking" : "Save Tracking"}

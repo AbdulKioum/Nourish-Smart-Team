@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 import { supabase } from "../../lib/supabase";
 import {
   FaClipboardList,
-  FaUserCheck,
   FaStethoscope,
   FaChartBar,
   FaUserFriends,
@@ -162,13 +161,6 @@ export default function Dashboard() {
       textColor: "text-emerald-900",
     },
     {
-      title: "Farmer Status",
-      path: "/farmer-status",
-      icon: <FaUserCheck className="text-blue-600 text-2xl sm:text-3xl" />,
-      bg: "bg-blue-50 hover:bg-blue-100 border-blue-200",
-      textColor: "text-blue-900",
-    },
-    {
       title: "Vet Visits",
       path: "/visits",
       icon: <FaStethoscope className="text-indigo-600 text-2xl sm:text-3xl" />,
@@ -200,7 +192,7 @@ export default function Dashboard() {
 
   return (
     <div className="p-3 sm:p-6 max-w-7xl mx-auto space-y-5">
-      {/* 6 CARDS (2 COLUMNS EVEN ON MOBILE) */}
+      {/* 5 CARDS (2 COLUMNS EVEN ON MOBILE) */}
       <div className="grid grid-cols-2 gap-3 sm:gap-5">
         {navCards.map((card) => (
           <Link

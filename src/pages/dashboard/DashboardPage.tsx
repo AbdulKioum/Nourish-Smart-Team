@@ -8,6 +8,7 @@ import {
   FaUserFriends,
   FaUsers,
   FaCalendarAlt,
+  FaMapMarkerAlt,
 } from "react-icons/fa";
 
 function parseArray(field: any): string[] {
@@ -188,6 +189,13 @@ export default function Dashboard() {
       bg: "bg-purple-50 hover:bg-purple-100 border-purple-200",
       textColor: "text-purple-900",
     },
+    {
+      title: "Farmer Tracking",
+      path: "/farmer-tracking",
+      icon: <FaMapMarkerAlt className="text-orange-600 text-2xl sm:text-3xl" />, 
+      bg: "bg-emerald-50 hover:bg-emerald-100 border-emerald-200",
+      textColor: "text-emerald-900",
+    }
   ];
 
   return (

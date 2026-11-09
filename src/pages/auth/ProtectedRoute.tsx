@@ -11,7 +11,7 @@ export default function ProtectedRoute({
   const { role, loading } = useAuth(); // loading যোগ করা হয়েছে
   const location = useLocation();
 
-  // ১. সেশন লোড হওয়া পর্যন্ত রিডাইরেক্ট না করে লোডার দেখানো
+  
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -20,7 +20,6 @@ export default function ProtectedRoute({
     );
   }
 
-  // ২. লোডিং শেষ হওয়ার পর যদি role না থাকে (লগইন করা না থাকে)
   if (!role) {
     return (
       <Navigate
@@ -33,7 +32,7 @@ export default function ProtectedRoute({
     );
   }
 
-  // ৩. রোল থাকলেও অনুমতি (Permission) না থাকলে
+
   if (!allowedRoles.includes(role)) {
     return <Navigate to="/" replace />;
   }

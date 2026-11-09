@@ -2,6 +2,15 @@ import React, { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../context/AuthContext";
+import LocationPicker from "../../components/maps/LocationPicker";
+import {
+  MapPin,
+  Navigation,
+  CheckCircle2,
+  X,
+  Plus,
+  UserPlus,
+} from "lucide-react";
 import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
 
@@ -98,6 +107,66 @@ const STOCK_KEY_BY_CATEGORY: Record<string, string> = {
   Quail: "quail",
 };
 const POULTRY_STOCK_KEYS = ["broiler", "layer", "sonali", "duck", "quail"];
+const POULTRY_FIELDS = [
+  "broiler",
+  "layer",
+  "sonali",
+  "duck",
+  "quail",
+  "deshi_chicken",
+];
+const CATTLE_FIELDS = ["dairy_cow", "bull", "calf_heifer"];
+const FISH_FIELDS = [
+  "pangus",
+  "tilapia",
+  "koi",
+  "shing",
+  "pabda",
+  "gulsha",
+  "magur",
+  "carp",
+  "golda",
+  "bagda",
+  "tengra",
+];
+
+const EMPTY_FARMER_FORM = {
+  company_id: "",
+  agent_id: "",
+  farmer_name: "",
+  mobile: "",
+  village: "",
+  union_name: "",
+  upazila: "",
+  district: "",
+  farm_category: "Poultry",
+  broiler: "",
+  layer: "",
+  sonali: "",
+  duck: "",
+  quail: "",
+  deshi_chicken: "",
+  dairy_cow: "",
+  bull: "",
+  calf_heifer: "",
+  pangus: "",
+  tilapia: "",
+  koi: "",
+  shing: "",
+  pabda: "",
+  gulsha: "",
+  magur: "",
+  carp: "",
+  golda: "",
+  bagda: "",
+  tengra: "",
+  feed_type: "",
+  latitude: "",
+  longitude: "",
+  status: "Active",
+  remarks: "",
+};
+
 const STATUS_RANK: Record<string, number> = {
   Running: 0,
   Active: 1,
@@ -156,6 +225,11 @@ function hasValue(val: any): boolean {
   const s = String(val).trim();
   if (s === "" || s === "-" || s === "null" || s === "undefined") return false;
   return true;
+}
+
+function getRemarkText(rep: any): string {
+  const r = rep?.remarks ?? rep?.remark ?? "";
+  return String(r || "").trim();
 }
 
 export const UPDATED_FEED_TYPES_BY_CATEGORY: Record<string, string[]> = {
@@ -326,7 +400,6 @@ export default function VetVisitsPage() {
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
   const [focusVisitId, setFocusVisitId] = useState<string | null>(null);
 
-  // Visit report tracking maps (by visitId and by farmerId)
   const [visitReportMeta, setVisitReportMeta] = useState<
     Record<string, { count: number; lastDate: string }>
   >({});
@@ -350,6 +423,29 @@ export default function VetVisitsPage() {
     batch_mark: "",
   });
 
+  // Add / Full Edit Farmer + Batch Modal (Triggered from Agent "+" icon or Action -> Edit)
+  const [showFarmerFormModal, setShowFarmerFormModal] = useState(false);
+  const [editingFarmerId, setEditingFarmerId] = useState<number | null>(null);
+  const [editingBatchVisit, setEditingBatchVisit] = useState<any>(null);
+  const [farmerForm, setFarmerForm] = useState({ ...EMPTY_FARMER_FORM });
+  const [batchEditSubForm, setBatchEditSubForm] = useState({
+    hatch_date: "",
+    hatchery: "",
+    breed: "",
+    box_no: "",
+    t_birds: "",
+    category: "Broiler",
+    batch_label: "",
+  });
+  const [geoDistricts, setGeoDistricts] = useState<any[]>([]);
+  const [geoUpazilas, setGeoUpazilas] = useState<any[]>([]);
+  const [geoUnions, setGeoUnions] = useState<any[]>([]);
+  const [showMapPicker, setShowMapPicker] = useState(false);
+  const [pickerCenterOverride, setPickerCenterOverride] = useState<
+    [number, number] | null
+  >(null);
+  const [locatingInPicker, setLocatingInPicker] = useState(false);
+
   // Edit a saved report (from History)
   const [editReport, setEditReport] = useState<{
     table: string;
@@ -358,6 +454,7 @@ export default function VetVisitsPage() {
   } | null>(null);
   const [vaccines, setVaccines] = useState<any[]>([]);
   const [broilerStds, setBroilerStds] = useState<Record<number, any>>({});
+  const [sonaliStds, setSonaliStds] = useState<Record<number, any>>({});
   const [layerStds, setLayerStds] = useState<Record<string, any>>({});
   const [_loading, setLoading] = useState(true);
 
@@ -379,20 +476,7 @@ export default function VetVisitsPage() {
     vaccine_date: new Date().toISOString().split("T")[0],
   });
 
-  // Edit Batch Modal
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [editingVisit, setEditingVisit] = useState<any>(null);
-  const [editForm, setEditForm] = useState({
-    hatch_date: "",
-    hatchery: "",
-    breed: "",
-    box_no: "",
-    t_birds: "",
-    category: "Broiler",
-    batch_label: "",
-  });
-
-  // History Modal (Batch-wise with 2 front tabs + older dropdown)
+  // History Modal (1 front batch + dropdown for other batches)
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [selectedHistoryVisit, setSelectedHistoryVisit] = useState<any>(null);
   const [historyBatches, setHistoryBatches] = useState<any[]>([]);
@@ -461,7 +545,7 @@ export default function VetVisitsPage() {
     remarks: "",
   });
 
-  // Layer Form (With Mortality default "0")
+  // Layer Form
   const [layerForm, setLayerForm] = useState({
     mortality_pcs: "0",
     b_weight_g: "",
@@ -517,6 +601,54 @@ export default function VetVisitsPage() {
     return () => clearTimeout(t);
   }, [focusVisitId, statusFarmers, _loading]);
 
+  // Dependent Geo Loaders for Add / Edit Farmer Modal
+  const selectedFormDistrict = geoDistricts.find(
+    (d) => d.name === farmerForm.district
+  );
+
+  useEffect(() => {
+    async function loadModalUpazilas() {
+      if (!selectedFormDistrict) {
+        setGeoUpazilas([]);
+        return;
+      }
+      const { data } = await supabase
+        .from("upazilas")
+        .select("*")
+        .eq("district_id", selectedFormDistrict.id)
+        .order("name");
+      const list = data || [];
+      const allowed = isFullAccess
+        ? list
+        : list.filter(
+            (u: any) =>
+              assignedUpazilas.length === 0 || assignedUpazilas.includes(u.name)
+          );
+      setGeoUpazilas(allowed);
+    }
+    loadModalUpazilas();
+  }, [selectedFormDistrict, isFullAccess, assignedUpazilas]);
+
+  const selectedFormUpazila = geoUpazilas.find(
+    (u) => u.name === farmerForm.upazila
+  );
+
+  useEffect(() => {
+    async function loadModalUnions() {
+      if (!selectedFormUpazila) {
+        setGeoUnions([]);
+        return;
+      }
+      const { data } = await supabase
+        .from("unions")
+        .select("*")
+        .eq("upazila_id", selectedFormUpazila.id)
+        .order("name");
+      setGeoUnions(data || []);
+    }
+    loadModalUnions();
+  }, [selectedFormUpazila]);
+
   async function loadInitialData() {
     setLoading(true);
     const {
@@ -557,6 +689,7 @@ export default function VetVisitsPage() {
       { data: vacData },
       { data: bStdData },
       { data: lStdData },
+      { data: distData },
     ] = await Promise.all([
       supabase.from("companies").select("*").order("company_name"),
       supabase.from("agents").select("*").order("agent_name"),
@@ -566,20 +699,50 @@ export default function VetVisitsPage() {
         .order("age_days", { ascending: true }),
       supabase.from("broiler_standards").select("*"),
       supabase.from("layer_standards").select("*"),
+      supabase.from("districts").select("*").order("name"),
     ]);
+
+    // Optional Sonali Standards (if uploaded in database `sonali_standards`, it will load automatically)
+    try {
+      const { data: sStdData } = await supabase
+        .from("sonali_standards")
+        .select("*");
+      const sMap: Record<number, any> = {};
+      (sStdData || []).forEach((s: any) => {
+        if (s.age_days !== undefined) sMap[Number(s.age_days)] = s;
+      });
+      setSonaliStds(sMap);
+    } catch {
+      setSonaliStds({});
+    }
+
+    const allDists = distData || [];
+    const allowedDists = isFullAccess
+      ? allDists
+      : allDists.filter(
+          (d: any) => uDistricts.length === 0 || uDistricts.includes(d.name)
+        );
+    setGeoDistricts(allowedDists);
 
     const bMap: Record<number, any> = {};
     (bStdData || []).forEach((s: any) => (bMap[Number(s.age_days)] = s));
     setBroilerStds(bMap);
 
+    // Index Layer Standards by exact breed, white/brown type, and fallback week
     const lMap: Record<string, any> = {};
     (lStdData || []).forEach((s: any) => {
-      const breedKey = String(s.breed || "shaver star cross 579 brown")
+      const w = Number(s.age_weeks);
+      const breedRaw = String(s.breed || "shaver star cross 579 brown")
         .trim()
         .toLowerCase();
-      lMap[`${breedKey}_${Number(s.age_weeks)}`] = s;
-      if (!lMap[`any_${Number(s.age_weeks)}`]) {
-        lMap[`any_${Number(s.age_weeks)}`] = s;
+      lMap[`${breedRaw}_${w}`] = s;
+      if (breedRaw.includes("white")) {
+        lMap[`white_${w}`] = s;
+      } else {
+        lMap[`brown_${w}`] = s;
+      }
+      if (!lMap[`any_${w}`]) {
+        lMap[`any_${w}`] = s;
       }
     });
     setLayerStds(lMap);
@@ -651,7 +814,6 @@ export default function VetVisitsPage() {
       ]);
       if (visitErr) throw visitErr;
 
-      // Build visit-level & farmer-level report metadata (count + last visit date)
       const vMetaMap: Record<string, { count: number; lastDate: string }> = {};
       const fMetaMap: Record<string, { count: number; lastDate: string }> = {};
 
@@ -668,14 +830,20 @@ export default function VetVisitsPage() {
         if (vKey) {
           if (!vMetaMap[vKey]) vMetaMap[vKey] = { count: 0, lastDate: "" };
           vMetaMap[vKey].count += 1;
-          if (dStr && (!vMetaMap[vKey].lastDate || dStr > vMetaMap[vKey].lastDate)) {
+          if (
+            dStr &&
+            (!vMetaMap[vKey].lastDate || dStr > vMetaMap[vKey].lastDate)
+          ) {
             vMetaMap[vKey].lastDate = dStr;
           }
         }
         if (fKey) {
           if (!fMetaMap[fKey]) fMetaMap[fKey] = { count: 0, lastDate: "" };
           fMetaMap[fKey].count += 1;
-          if (dStr && (!fMetaMap[fKey].lastDate || dStr > fMetaMap[fKey].lastDate)) {
+          if (
+            dStr &&
+            (!fMetaMap[fKey].lastDate || dStr > fMetaMap[fKey].lastDate)
+          ) {
             fMetaMap[fKey].lastDate = dStr;
           }
         }
@@ -704,7 +872,9 @@ export default function VetVisitsPage() {
             upazila: "",
           },
         farmers:
-          farmersList.find((f: any) => String(f.id) === String(v.farmer_id)) || {
+          farmersList.find(
+            (f: any) => String(f.id) === String(v.farmer_id)
+          ) || {
             farmer_name: "Unknown Farmer",
             mobile: "-",
             village: "-",
@@ -719,7 +889,6 @@ export default function VetVisitsPage() {
             String(a.created_at || "").localeCompare(String(b.created_at || ""))
           );
 
-        // Assign sequential batch numbers chronologically across all batches of this farmer
         const numberedVisits = fv.map((v: any, index: number) => {
           const seqNum = index + 1;
           const autoBatchTitle = `${f.farmer_name} Batch ${seqNum}`;
@@ -772,7 +941,7 @@ export default function VetVisitsPage() {
           closedType: latestClosed?.status || "",
           closedCategory: latestClosed?.category || "",
           category: runningVisits[0]?.category || normalizeCategory(f),
-          allBatches: [...numberedVisits].reverse(), // Newest first
+          allBatches: [...numberedVisits].reverse(),
           runningVisits,
           runningCount: runningVisits.length,
           latestClosed,
@@ -818,20 +987,59 @@ export default function VetVisitsPage() {
     const catLower = (category || "").toLowerCase();
     if (catLower.includes("layer")) {
       const totalWeeks = (diffDays / 7).toFixed(1);
-      return `${totalWeeks} Wks (${diffDays}d)`;
+      return `${totalWeeks}W (${diffDays}d)`;
     }
-    return `${diffDays} Days`;
+    return `${diffDays}d`;
   }
 
+  // Standard Lookup for Broiler OR Sonali (Returns null for Sonali until sonali_standards has data)
+  function getMeatStdForVisit(categoryName?: string, ageDays?: number) {
+    const d = Number(ageDays || 0);
+    const cat = String(categoryName || "Broiler")
+      .trim()
+      .toLowerCase();
+    if (cat === "sonali") {
+      return sonaliStds[d] || null;
+    }
+    if (cat === "broiler") {
+      return broilerStds[d] || null;
+    }
+    return null;
+  }
+
+  // Standard Lookup for Layer (Correctly matches ANY White Layer breed to white standard & Brown to brown)
   function getLayerStdForVisit(breedName?: string, ageWks?: number) {
     const w = Math.min(100, Math.max(1, ageWks || 1));
-    const isBovans = String(breedName || "").toLowerCase().includes("bovans");
-    const targetBreedKey = isBovans
-      ? "bovans white"
-      : "shaver star cross 579 brown";
+    const bLower = String(breedName || "")
+      .trim()
+      .toLowerCase();
+    const isWhite =
+      bLower.includes("white") ||
+      bLower.includes("bovans white") ||
+      bLower.includes("decalb") ||
+      bLower.includes("bb 300");
+
+    if (lMapHasExact(layerStds, `${bLower}_${w}`)) {
+      return layerStds[`${bLower}_${w}`];
+    }
+    if (isWhite) {
+      return (
+        layerStds[`white_${w}`] ||
+        layerStds[`bovans white_${w}`] ||
+        layerStds[`any_${w}`] ||
+        null
+      );
+    }
     return (
-      layerStds[`${targetBreedKey}_${w}`] || layerStds[`any_${w}`] || null
+      layerStds[`brown_${w}`] ||
+      layerStds[`shaver star cross 579 brown_${w}`] ||
+      layerStds[`any_${w}`] ||
+      null
     );
+  }
+
+  function lMapHasExact(map: Record<string, any>, key: string): boolean {
+    return Boolean(map && map[key]);
   }
 
   function getVaccineInfoForVisit(visit: any) {
@@ -1019,7 +1227,6 @@ export default function VetVisitsPage() {
     }));
   }
 
-  // Layer Dual Feed Intake Calculation (uses live birds after subtracting layer mortality)
   function handleLayerFeedChange(
     mode: "total_kg" | "gm_bird",
     rawValue: string,
@@ -1053,7 +1260,6 @@ export default function VetVisitsPage() {
     }
   }
 
-  // Mandatory Input Validation Helpers
   function validateBeforeSaleInputs(formObj: any): boolean {
     if (
       String(formObj.mortality_pcs ?? "").trim() === "" ||
@@ -1104,7 +1310,6 @@ export default function VetVisitsPage() {
     return true;
   }
 
-  // Build WhatsApp Header Title based on whether Hatchery & Feed Company are both Nourish
   function buildWhatsAppHeaderLine(
     hatcheryName: string,
     feedCompName: string,
@@ -1125,6 +1330,7 @@ export default function VetVisitsPage() {
   }
 
   // Generate Broiler / Sonali WhatsApp Observation Message
+  // (For Sonali: if no standard is set in database, Std lines & comparison line are omitted automatically)
   function generateBroilerWhatsAppText(
     visit: any,
     rep: any,
@@ -1135,26 +1341,28 @@ export default function VetVisitsPage() {
 
     const farmer = visit.farmers || {};
     const agent = visit.agents || {};
+    const catName = visit.category || "Broiler";
     const ageDays = getAgeDays(visit.hatch_date, vDate);
-    const std = broilerStds[ageDays];
+    const std = getMeatStdForVisit(catName, ageDays);
+    const hasStd = Boolean(std && Number(std.weight) > 0);
 
     const actualWt = Number(rep.weight_gm_b || 0);
     const stdWt = Number(std?.weight || 0);
     const wtDiff = actualWt - stdWt;
     const wtDiffText =
-      stdWt > 0
+      hasStd && stdWt > 0
         ? `${Math.abs(wtDiff).toFixed(0)}gm ${wtDiff >= 0 ? "more" : "less"}`
-        : "N/A";
+        : "";
 
     const actualFeed = Number(rep.feed_gm_b || 0);
     const stdFeed = Number(std?.feed_intake || 0);
     const feedDiff = actualFeed - stdFeed;
     const feedDiffText =
-      stdFeed > 0
+      hasStd && stdFeed > 0
         ? `${Math.abs(feedDiff).toFixed(0)}gm ${
             feedDiff >= 0 ? "more" : "less"
           }`
-        : "N/A";
+        : "";
 
     const findingsList: string[] = [];
     if (rep.indigestion && String(rep.indigestion).trim() !== "") {
@@ -1185,12 +1393,11 @@ export default function VetVisitsPage() {
           )}\n`
         : "";
 
-    const remarksBlock =
-      rep.remarks && String(rep.remarks).trim() !== ""
-        ? `Remarks: ${String(rep.remarks).trim()}\n`
-        : "";
+    const rmkText = getRemarkText(rep);
+    const remarksBlock = rmkText
+      ? `--------------------------------------------\nRemarks: ${rmkText}\n`
+      : "";
 
-    const catName = visit.category || "Broiler";
     const headerTitle = buildWhatsAppHeaderLine(
       visit.hatchery || "Nourish",
       rep.feed_company || "Nourish",
@@ -1198,8 +1405,28 @@ export default function VetVisitsPage() {
       `${catName} Farm visit Observation Report`
     );
 
-    const actualFarmerName =
-      farmer.farmer_name || visit.batch_label || "-";
+    const actualFarmerName = farmer.farmer_name || visit.batch_label || "-";
+
+    const weightSection = hasStd
+      ? `Body Weight - ${actualWt} gm/bird.\nStd - ${stdWt} gm/bird.`
+      : `Body Weight - ${actualWt} gm/bird.`;
+
+    const feedSection = hasStd
+      ? `Feed Intake - ${actualFeed} gm/bird.\nStd - ${stdFeed} gm/bird.`
+      : `Feed Intake - ${actualFeed} gm/bird.`;
+
+    const fcrSection = hasStd
+      ? `FCR (without mortality): ${rep.fcr_w_out_m || "-"}\nStd - ${
+          std?.fcr || "-"
+        }\nFCR (with mortality): ${rep.fcr_with_m || "-"}`
+      : `FCR (without mortality): ${
+          rep.fcr_w_out_m || "-"
+        }\nFCR (with mortality): ${rep.fcr_with_m || "-"}`;
+
+    const summaryLine =
+      hasStd && wtDiffText && feedDiffText
+        ? `\n*Body weight (${wtDiffText}) than standard and Feed intake (${feedDiffText}) than standard*\n`
+        : "";
 
     const msg = `Assalamu Alaikum sir.
 ${headerTitle}
@@ -1217,23 +1444,17 @@ Total Bird (Pcs) - ${visit.t_birds || 0}
 Age (Day) - ${ageDays} days
 Mortality (Pcs) - ${rep.mortality_pcs ?? 0} pcs
 
-Body Weight - ${actualWt} gm/bird.
-Std - ${stdWt || "-"} gm/bird.
+${weightSection}
 
-Feed Intake - ${actualFeed} gm/bird.
-Std - ${stdFeed || "-"} gm/bird.
+${feedSection}
 
-FCR (without mortality): ${rep.fcr_w_out_m || "-"}
-Std - ${std?.fcr || "-"}
-FCR (with mortality): ${rep.fcr_with_m || "-"}
+${fcrSection}
 --------------------------------------------
 Feed - ${rep.feed_company || "-"}
 Feed Type - ${rep.feed_type || "-"}
 MFG: ${rep.pro_date ? formatDmy(rep.pro_date) : "-"}
 Batch: ${rep.batch_no || "-"}
-${findingsBlock}${remarksBlock}
-*Body weight (${wtDiffText}) than standard and Feed intake (${feedDiffText}) than standard*
-
+${findingsBlock}${remarksBlock}${summaryLine}
 Thanks.
 ${currentUserProfile.fullName}
 ${currentUserProfile.designation}
@@ -1243,7 +1464,7 @@ ${currentUserProfile.region}`;
     setWhatsappPopupText(msg);
   }
 
-  // Generate Layer WhatsApp Observation Message (Exact Farmer Name + Standards + Header Rule)
+  // Generate Layer WhatsApp Observation Message (Uses exact Breed White/Brown Standard + Remarks)
   function generateLayerWhatsAppText(
     visit: any,
     rep: any,
@@ -1255,7 +1476,8 @@ ${currentUserProfile.region}`;
     const agent = visit.agents || {};
     const vDate = rep.visit_date || reportVisitDate;
     const ageWks = getAgeWeeks(visit.hatch_date, vDate);
-    const breedName = rep.breed || visit.breed || "Shaver Star Cross 579 Brown";
+    const breedName =
+      rep.breed || visit.breed || "Shaver Star Cross 579 Brown";
     const std = getLayerStdForVisit(breedName, ageWks);
 
     const hatcheryName = rep.hatchery || visit.hatchery || "Nourish";
@@ -1267,8 +1489,7 @@ ${currentUserProfile.region}`;
       "Layer farm visit report"
     );
 
-    const actualFarmerName =
-      farmer.farmer_name || visit.batch_label || "-";
+    const actualFarmerName = farmer.farmer_name || visit.batch_label || "-";
 
     const mortVal = Number(rep.mortality ?? rep.mortality_pcs ?? 0);
     const baseBirds = Number(visit.t_birds || 0);
@@ -1276,10 +1497,8 @@ ${currentUserProfile.region}`;
       ? Math.max(0, baseBirds - mortVal)
       : baseBirds;
 
-    const remarksLine =
-      rep.remarks && String(rep.remarks).trim() !== ""
-        ? `\nRemarks: ${String(rep.remarks).trim()}\n`
-        : "";
+    const rmkText = getRemarkText(rep);
+    const remarksLine = rmkText ? `\nRemarks: ${rmkText}\n` : "";
 
     const msg = `Assalamu Alaikum sir.
 ${headerTitle}
@@ -1614,22 +1833,32 @@ ${currentUserProfile.region}`;
     }
   }
 
+  // Layer Submit: If markAsCulled is true, report fields are NOT mandatory (only Reason + Confirm warning required)
   async function handleLayerReportSubmit(markAsCulled = false) {
     if (!activeReportVisit) return;
-    if (!validateLayerInputs(layerForm)) return;
 
-    if (markAsCulled && !cullReasonText.trim()) {
-      alert("Please enter the Reason for culling this layer batch.");
-      return;
+    if (!markAsCulled) {
+      if (!validateLayerInputs(layerForm)) return;
+    } else {
+      if (!cullReasonText.trim()) {
+        alert("Please enter the Reason for culling this layer batch.");
+        return;
+      }
+      const ok = window.confirm(
+        `Are you sure you want to mark this Layer batch as CULLED?\nReason: ${cullReasonText.trim()}`
+      );
+      if (!ok) return;
     }
 
     try {
-      await processFeedCompanyChangeIfNeeded(
-        activeReportVisit,
-        layerForm.feed_company,
-        transferAgentId,
-        reportVisitDate
-      );
+      if (layerForm.feed_company) {
+        await processFeedCompanyChangeIfNeeded(
+          activeReportVisit,
+          layerForm.feed_company,
+          transferAgentId,
+          reportVisitDate
+        );
+      }
 
       const mortNum = Math.max(0, Number(layerForm.mortality_pcs || 0));
       const prevBirds = Number(activeReportVisit.t_birds || 0);
@@ -1638,49 +1867,57 @@ ${currentUserProfile.region}`;
       const cleanRemarks = String(layerForm.remarks || "").trim();
       const finalRemarks =
         markAsCulled && cullReasonText.trim()
-          ? [
-              cleanRemarks,
-              `[Culled Reason: ${cullReasonText.trim()}]`,
-            ]
+          ? [cleanRemarks, `[Culled Reason: ${cullReasonText.trim()}]`]
               .filter(Boolean)
               .join(" | ")
           : cleanRemarks;
 
-      const payload: any = {
-        vet_visit_id: activeReportVisit.id,
-        farmer_id: String(activeReportVisit.farmer_id),
-        agent_id: String(transferAgentId || activeReportVisit.agent_id),
-        company_id: String(activeReportVisit.company_id),
-        visit_date: reportVisitDate,
-        mortality: mortNum,
-        b_weight_g: Number(layerForm.b_weight_g) || 0,
-        feed_total_kg: Number(layerForm.feed_total_kg) || 0,
-        feed_intake_g: Number(layerForm.feed_intake_g) || 0,
-        egg_production: Number(layerForm.egg_production) || 0,
-        egg_weight: Number(layerForm.egg_weight) || 0,
-        feed_company: layerForm.feed_company,
-        feed_type: layerForm.feed_type,
-        pro_date: layerForm.pro_date || null,
-        batch_no: layerForm.batch_no,
-        hatchery: layerForm.hatchery,
-        breed: layerForm.breed,
-        disease: layerForm.disease,
-        vaccine: activeReportVisit.last_vaccine_name || "",
-        remarks: finalRemarks,
-      };
+      const hasAnyLayerMetrics =
+        Number(layerForm.b_weight_g) > 0 ||
+        Number(layerForm.feed_intake_g) > 0 ||
+        Number(layerForm.egg_production) > 0 ||
+        Number(layerForm.egg_weight) > 0 ||
+        mortNum > 0 ||
+        Boolean(finalRemarks);
 
-      const { error } = await supabase.from("layer_reports").insert([payload]);
+      if (!markAsCulled || hasAnyLayerMetrics) {
+        const payload: any = {
+          vet_visit_id: activeReportVisit.id,
+          farmer_id: String(activeReportVisit.farmer_id),
+          agent_id: String(transferAgentId || activeReportVisit.agent_id),
+          company_id: String(activeReportVisit.company_id),
+          visit_date: reportVisitDate,
+          mortality: mortNum,
+          b_weight_g: Number(layerForm.b_weight_g) || 0,
+          feed_total_kg: Number(layerForm.feed_total_kg) || 0,
+          feed_intake_g: Number(layerForm.feed_intake_g) || 0,
+          egg_production: Number(layerForm.egg_production) || 0,
+          egg_weight: Number(layerForm.egg_weight) || 0,
+          feed_company: layerForm.feed_company,
+          feed_type: layerForm.feed_type,
+          pro_date: layerForm.pro_date || null,
+          batch_no: layerForm.batch_no,
+          hatchery: layerForm.hatchery,
+          breed: layerForm.breed,
+          disease: layerForm.disease,
+          vaccine: activeReportVisit.last_vaccine_name || "",
+          remarks: finalRemarks,
+        };
 
-      if (error) {
-        delete payload.feed_total_kg;
-        delete payload.mortality;
-        const { error: retryErr } = await supabase
+        const { error } = await supabase
           .from("layer_reports")
           .insert([payload]);
-        if (retryErr) throw retryErr;
+
+        if (error) {
+          delete payload.feed_total_kg;
+          delete payload.mortality;
+          const { error: retryErr } = await supabase
+            .from("layer_reports")
+            .insert([payload]);
+          if (retryErr) throw retryErr;
+        }
       }
 
-      // Deduct layer mortality from vet_visits.t_birds and farmers.layer stock
       if (mortNum > 0) {
         await supabase
           .from("vet_visits")
@@ -1769,92 +2006,266 @@ ${currentUserProfile.region}`;
     await loadVaccinesList();
   }
 
-  function handleEditClick(visit: any) {
-    setEditingVisit(visit);
-    setEditForm({
-      hatch_date: visit.hatch_date || "",
-      hatchery: visit.hatchery || "",
-      breed: visit.breed || "",
-      box_no: visit.box_no || "",
-      t_birds: visit.t_birds || "",
-      category: visit.category || "Broiler",
-      batch_label: visit.batch_label || "",
+  // Open Add Farmer Modal (Pre-filled with Agent from Agent Header "+ 👨‍🌾" button)
+  function openAddFarmerUnderAgent(agentGroup: any) {
+    const agentObj = allAgents.find(
+      (a) => String(a.id) === String(agentGroup.agentId)
+    );
+    const nourishComp = companies.find((c) =>
+      c.company_name?.toLowerCase().includes("nourish")
+    );
+    const compId = String(
+      agentObj?.company_id || nourishComp?.id || companies[0]?.id || ""
+    );
+    const defDist =
+      agentObj?.district ||
+      agentObj?.district_name ||
+      (geoDistricts.length > 0 ? geoDistricts[0].name : "Mymensingh");
+    const defUpa =
+      agentObj?.upazila ||
+      agentObj?.upazila_name ||
+      (!isFullAccess && assignedUpazilas.length === 1
+        ? assignedUpazilas[0]
+        : "");
+
+    setEditingFarmerId(null);
+    setEditingBatchVisit(null);
+    setFarmerForm({
+      ...EMPTY_FARMER_FORM,
+      company_id: compId,
+      agent_id: agentObj ? String(agentObj.id) : "",
+      district: defDist,
+      upazila: defUpa,
+      farm_category: "Poultry",
     });
-    setShowEditModal(true);
+    setShowFarmerFormModal(true);
   }
 
-  async function handleDeleteBatchOrFarmerRow(row: any) {
-    if (row.kind === "batch" && row.visit) {
-      if (
-        !window.confirm(
-          `Delete batch "${
-            row.visit.displayBatchName || row.farmer.farmer_name
-          }"?`
-        )
-      )
-        return;
-      const { error } = await supabase
-        .from("vet_visits")
-        .delete()
-        .eq("id", row.visit.id);
-      if (error) {
-        alert(error.message || "Failed to delete batch.");
-        return;
-      }
-      loadVetVisits();
-    } else {
-      if (
-        !window.confirm(
-          `Delete farmer "${row.farmer.farmer_name}" from database?`
-        )
-      )
-        return;
-      const { error } = await supabase
-        .from("farmers")
-        .delete()
-        .eq("id", row.farmer.id);
-      if (error) {
-        alert(error.message || "Failed to delete farmer.");
-        return;
-      }
-      loadVetVisits();
+  // Open Full Farmer + Batch Edit Modal (Triggered from Action -> Edit)
+  function handleFullEditRow(row: any) {
+    const f = row.farmer;
+    const v = row.visit;
+
+    setEditingFarmerId(f.id);
+    setEditingBatchVisit(v || null);
+
+    setFarmerForm({
+      company_id: String(f.company_id || ""),
+      agent_id: String(f.agent_id || ""),
+      farmer_name: f.farmer_name || "",
+      mobile: f.mobile || "",
+      village: f.village || "",
+      union_name: f.union_name || "",
+      upazila: f.upazila || "",
+      district:
+        f.district ||
+        (geoDistricts.length > 0 ? geoDistricts[0].name : "Mymensingh"),
+      farm_category: f.farm_category || "Poultry",
+      broiler: String(f.broiler || ""),
+      layer: String(f.layer || ""),
+      sonali: String(f.sonali || ""),
+      duck: String(f.duck || ""),
+      quail: String(f.quail || ""),
+      deshi_chicken: String(f.deshi_chicken || ""),
+      dairy_cow: String(f.dairy_cow || ""),
+      bull: String(f.bull || ""),
+      calf_heifer: String(f.calf_heifer || ""),
+      pangus: String(f.pangus || ""),
+      tilapia: String(f.tilapia || ""),
+      koi: String(f.koi || ""),
+      shing: String(f.shing || ""),
+      pabda: String(f.pabda || ""),
+      gulsha: String(f.gulsha || ""),
+      magur: String(f.magur || ""),
+      carp: String(f.carp || ""),
+      golda: String(f.golda || ""),
+      bagda: String(f.bagda || ""),
+      tengra: String(f.tengra || ""),
+      feed_type: f.feed_type || "",
+      latitude: f.latitude !== null && f.latitude !== undefined ? String(f.latitude) : "",
+      longitude:
+        f.longitude !== null && f.longitude !== undefined
+          ? String(f.longitude)
+          : "",
+      status: f.status || "Active",
+      remarks: f.remarks || "",
+    });
+
+    if (v) {
+      setBatchEditSubForm({
+        hatch_date: v.hatch_date || "",
+        hatchery: v.hatchery || "",
+        breed: v.breed || "",
+        box_no: v.box_no || "",
+        t_birds: String(v.t_birds || ""),
+        category: v.category || "Broiler",
+        batch_label: v.batch_label || "",
+      });
     }
+
+    setShowFarmerFormModal(true);
   }
 
-  async function handleUpdateSubmit() {
-    if (!editingVisit) return;
-    try {
-      const updatePayload: Record<string, any> = {
-        hatch_date: editForm.hatch_date,
-        hatchery: editForm.hatchery,
-        breed: editForm.breed,
-        box_no: editForm.box_no,
-        t_birds: Number(editForm.t_birds),
-        category: editForm.category,
-        batch_label: editForm.batch_label,
-      };
-      const { error } = await supabase
-        .from("vet_visits")
-        .update(updatePayload)
-        .eq("id", editingVisit.id);
+  async function handleSaveFarmerAndBatch() {
+    if (
+      !farmerForm.company_id ||
+      !farmerForm.agent_id ||
+      !farmerForm.farmer_name.trim() ||
+      !farmerForm.farm_category ||
+      !farmerForm.district ||
+      !farmerForm.upazila
+    ) {
+      alert(
+        "Company, District, Upazila, Agent, Farmer Name, and Farm Category are required."
+      );
+      return;
+    }
 
-      if (error) {
-        delete updatePayload.batch_label;
-        const { error: retryErr } = await supabase
-          .from("vet_visits")
-          .update(updatePayload)
-          .eq("id", editingVisit.id);
-        if (retryErr) throw retryErr;
+    try {
+      const payload: any = {
+        ...farmerForm,
+        company_id: Number(farmerForm.company_id),
+        agent_id: Number(farmerForm.agent_id),
+        latitude:
+          farmerForm.latitude === "" ? null : Number(farmerForm.latitude),
+        longitude:
+          farmerForm.longitude === "" ? null : Number(farmerForm.longitude),
+      };
+
+      [...POULTRY_FIELDS, ...CATTLE_FIELDS, ...FISH_FIELDS].forEach((field) => {
+        payload[field] = Number((farmerForm as any)[field] || 0);
+      });
+
+      if (editingFarmerId) {
+        const { error: fErr } = await supabase
+          .from("farmers")
+          .update(payload)
+          .eq("id", editingFarmerId);
+        if (fErr) throw fErr;
+
+        if (editingBatchVisit) {
+          const visitUpd: Record<string, any> = {
+            company_id: String(farmerForm.company_id),
+            agent_id: String(farmerForm.agent_id),
+            hatch_date: batchEditSubForm.hatch_date,
+            hatchery: batchEditSubForm.hatchery,
+            breed: batchEditSubForm.breed,
+            box_no: batchEditSubForm.box_no,
+            t_birds: Number(batchEditSubForm.t_birds) || 0,
+            category: batchEditSubForm.category,
+            batch_label: batchEditSubForm.batch_label,
+          };
+          const { error: vErr } = await supabase
+            .from("vet_visits")
+            .update(visitUpd)
+            .eq("id", editingBatchVisit.id);
+          if (vErr) {
+            delete visitUpd.batch_label;
+            await supabase
+              .from("vet_visits")
+              .update(visitUpd)
+              .eq("id", editingBatchVisit.id);
+          }
+        }
+        alert("Farmer & Batch details updated!");
+      } else {
+        const { error: insErr } = await supabase
+          .from("farmers")
+          .insert([payload]);
+        if (insErr) throw insErr;
+        alert("New Farmer saved!");
       }
-      alert("Batch details updated!");
-      setShowEditModal(false);
+
+      setShowFarmerFormModal(false);
+      setEditingFarmerId(null);
+      setEditingBatchVisit(null);
       loadVetVisits();
     } catch (err: any) {
-      alert(err.message || "Failed to update");
+      alert(err.message || "Failed to save farmer details");
     }
   }
 
-  // Open History Modal: loads all batches of this farmer (newest first) + all reports
+  function handleLocateMeInPicker() {
+    if (!navigator.geolocation) {
+      alert("Geolocation is not supported by your browser.");
+      return;
+    }
+    setLocatingInPicker(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        setPickerCenterOverride([lat, lng]);
+        setFarmerForm((prev) => ({
+          ...prev,
+          latitude: lat.toFixed(6),
+          longitude: lng.toFixed(6),
+        }));
+        setLocatingInPicker(false);
+      },
+      () => {
+        setLocatingInPicker(false);
+        alert("Unable to retrieve your location. Please allow GPS access.");
+      },
+      { enableHighAccuracy: true }
+    );
+  }
+
+  // Remove Running Batch (Deletes the running batch & its reports after warning, then reverts farmer status to Active/Inactive)
+  async function handleRemoveFromRunning(row: any) {
+    if (row.kind !== "batch" || !row.visit) return;
+    const visit = row.visit;
+    const farmer = row.farmer;
+
+    const ok = window.confirm(
+      `Warning: Remove "${
+        visit.displayBatchName || farmer.farmer_name
+      }" from Running?\n\nAny visit reports saved under this running batch will also be removed, and the farmer will return to Active/Inactive status based on previous history.`
+    );
+    if (!ok) return;
+
+    try {
+      const vId = String(visit.id);
+      await Promise.all([
+        supabase.from("before_sale_reports").delete().eq("vet_visit_id", vId),
+        supabase.from("after_sale_reports").delete().eq("vet_visit_id", vId),
+        supabase.from("layer_reports").delete().eq("vet_visit_id", vId),
+      ]);
+
+      const { error: delErr } = await supabase
+        .from("vet_visits")
+        .delete()
+        .eq("id", visit.id);
+      if (delErr) throw delErr;
+
+      // Check remaining running batches of this farmer
+      const remainingRunning = (farmer.runningVisits || []).filter(
+        (rv: any) => String(rv.id) !== vId
+      );
+
+      if (remainingRunning.length === 0) {
+        const lastSaleDate =
+          farmer.last_sale_date ||
+          farmer.latestClosed?.closed_date ||
+          (farmer.latestClosed?.created_at
+            ? String(farmer.latestClosed.created_at).slice(0, 10)
+            : null);
+        const daysSince = getDaysSince(lastSaleDate);
+        const revertedStatus =
+          daysSince !== null && daysSince <= 60 ? "Active" : "Inactive";
+
+        await supabase
+          .from("farmers")
+          .update({ status: revertedStatus })
+          .eq("id", farmer.id);
+      }
+
+      loadVetVisits();
+    } catch (err: any) {
+      alert(err.message || "Failed to remove batch from running.");
+    }
+  }
+
   async function handleHistoryClick(visitOrBatch: any, farmerObj?: any) {
     const farmer =
       farmerObj ||
@@ -1863,9 +2274,7 @@ ${currentUserProfile.region}`;
       ) ||
       visitOrBatch?.farmers;
 
-    const farmerIdStr = String(
-      farmer?.id || visitOrBatch?.farmer_id || ""
-    );
+    const farmerIdStr = String(farmer?.id || visitOrBatch?.farmer_id || "");
 
     const batchesForFarmer =
       farmer?.allBatches && farmer.allBatches.length > 0
@@ -1917,7 +2326,6 @@ ${currentUserProfile.region}`;
     });
   }
 
-  // Active batch reports filtered from allReportsForFarmer
   const activeBatchBeforeReports = allReportsForFarmer.before.filter(
     (r) => String(r.vet_visit_id) === String(selectedHistoryVisit?.id)
   );
@@ -1928,14 +2336,13 @@ ${currentUserProfile.region}`;
     (r) => String(r.vet_visit_id) === String(selectedHistoryVisit?.id)
   );
 
-  // Extract Culled Reason from selectedHistoryVisit or its layer reports
   const selectedBatchCulledReason = (() => {
     if (!selectedHistoryVisit) return "";
     if (selectedHistoryVisit.culled_reason) {
       return selectedHistoryVisit.culled_reason;
     }
     for (const r of activeBatchLayerReports) {
-      const m = String(r.remarks || "").match(/\[Culled Reason:\s*(.+?)\]/i);
+      const m = getRemarkText(r).match(/\[Culled Reason:\s*(.+?)\]/i);
       if (m && m[1]) return m[1];
     }
     return "";
@@ -1969,7 +2376,10 @@ ${currentUserProfile.region}`;
       ]);
       activeBatchLayerReports.forEach((r: any) => {
         const wks = getAgeWeeks(selectedHistoryVisit.hatch_date, r.visit_date);
-        const std = getLayerStdForVisit(selectedHistoryVisit.breed, wks);
+        const std = getLayerStdForVisit(
+          r.breed || selectedHistoryVisit.breed,
+          wks
+        );
         s.addRow([
           r.visit_date,
           selectedHistoryVisit.hatch_date,
@@ -1986,7 +2396,7 @@ ${currentUserProfile.region}`;
           std?.egg_weight || "-",
           r.feed_company,
           r.feed_type,
-          r.remarks,
+          getRemarkText(r),
         ]);
       });
     } else {
@@ -2011,7 +2421,7 @@ ${currentUserProfile.region}`;
       ]);
       activeBatchBeforeReports.forEach((r: any) => {
         const d = getAgeDays(selectedHistoryVisit.hatch_date, r.visit_date);
-        const std = broilerStds[d];
+        const std = getMeatStdForVisit(selectedHistoryVisit.category, d);
         b.addRow([
           r.visit_date,
           selectedHistoryVisit.hatch_date,
@@ -2028,7 +2438,7 @@ ${currentUserProfile.region}`;
           r.fcr_with_m,
           r.feed_company,
           r.feed_type,
-          r.remarks,
+          getRemarkText(r),
         ]);
       });
 
@@ -2053,7 +2463,7 @@ ${currentUserProfile.region}`;
       ]);
       activeBatchAfterReports.forEach((r: any) => {
         const d = getAgeDays(selectedHistoryVisit.hatch_date, r.visit_date);
-        const std = broilerStds[d];
+        const std = getMeatStdForVisit(selectedHistoryVisit.category, d);
         a.addRow([
           r.visit_date,
           selectedHistoryVisit.hatch_date,
@@ -2070,7 +2480,7 @@ ${currentUserProfile.region}`;
           r.fcr_with_m,
           r.feed_mill,
           r.feed,
-          r.remarks,
+          getRemarkText(r),
         ]);
       });
     }
@@ -2086,7 +2496,6 @@ ${currentUserProfile.region}`;
     );
   }
 
-  // Upazila list for filter dropdown (strictly user's assigned upazilas)
   const filterUpazilaOptions = Array.from(
     new Set(
       (!isFullAccess && assignedUpazilas.length > 0
@@ -2099,7 +2508,6 @@ ${currentUserProfile.region}`;
     )
   ).sort();
 
-  // Agents scoped by selected Company AND selected Upazila (and assigned upazilas)
   const availableAgentsForDropdown = allAgents.filter((a) => {
     if (
       selectedCompany !== "all" &&
@@ -2117,6 +2525,23 @@ ${currentUserProfile.region}`;
           String(f.agent_id) === String(a.id) && f.upazila === selectedUpazila
       );
       if (!matchAgentUpa && !hasFarmerInUpa) return false;
+    }
+    return true;
+  });
+
+  const modalAvailableAgents = allAgents.filter((a) => {
+    if (
+      farmerForm.company_id &&
+      String(a.company_id) !== String(farmerForm.company_id)
+    ) {
+      return false;
+    }
+    if (
+      farmerForm.upazila &&
+      a.upazila &&
+      a.upazila !== farmerForm.upazila
+    ) {
+      return false;
     }
     return true;
   });
@@ -2190,8 +2615,6 @@ ${currentUserProfile.region}`;
     },
   ];
 
-  // One row per running batch; one row per non-running farmer
-  // Also mark isLastRunningBatchOfFarmer so only the LAST batch of a multi-batch farmer shows "Add Batch"
   const tableRows: any[] = [];
   companyScopedFarmers.forEach((f) => {
     if (f.runningVisits.length > 0) {
@@ -2259,7 +2682,7 @@ ${currentUserProfile.region}`;
         String(a.farmer.farmer_name || "").localeCompare(
           String(b.farmer.farmer_name || "")
         ) ||
-        (Number(a.visit?.seqNum || 0) - Number(b.visit?.seqNum || 0))
+        Number(a.visit?.seqNum || 0) - Number(b.visit?.seqNum || 0)
     );
 
   const filteredAgentsList = Object.values(
@@ -2267,6 +2690,7 @@ ${currentUserProfile.region}`;
       const key = String(r.farmer.agent_id || "unknown");
       if (!acc[key]) {
         acc[key] = {
+          agentId: key,
           agentName: r.farmer.agentName,
           rows: [],
           counts: {} as Record<string, number>,
@@ -2561,7 +2985,11 @@ ${currentUserProfile.region}`;
   function openEditReport(table: string, rep: any) {
     const form: Record<string, any> = {};
     (REPORT_FIELDS[table] || []).forEach((fld) => {
-      form[fld.key] = rep[fld.key] ?? "";
+      if (fld.key === "remarks") {
+        form[fld.key] = getRemarkText(rep);
+      } else {
+        form[fld.key] = rep[fld.key] ?? "";
+      }
     });
     setEditReport({ table, id: rep.id, form });
   }
@@ -2597,7 +3025,13 @@ ${currentUserProfile.region}`;
     activeReportVisit?.hatch_date,
     reportVisitDate
   );
-  const activeBroilerStd = broilerStds[activeAgeDays] || null;
+
+  // For Before/After Sale Modal: Broiler gets Broiler Std, Sonali gets Sonali Std (blank if not set in DB)
+  const activeMeatStd = getMeatStdForVisit(
+    activeReportVisit?.category,
+    activeAgeDays
+  );
+
   const activeLayerStd = getLayerStdForVisit(
     layerForm.breed || activeReportVisit?.breed,
     activeAgeWeeks
@@ -2617,7 +3051,7 @@ ${currentUserProfile.region}`;
       Math.max(0, Number(layerForm.mortality_pcs || 0))
   );
 
-  // Dynamic optional columns check for History tables (only show columns that have non-blank values in at least 1 row)
+  // Dynamic optional columns (Remarks is ALWAYS shown as a fixed column so it never hides)
   const beforeExtraCols = [
     { key: "pro_date", label: "MFG Date" },
     { key: "batch_no", label: "Batch No" },
@@ -2632,13 +3066,8 @@ ${currentUserProfile.region}`;
     { key: "ventilation", label: "Ventilation" },
     { key: "feed_scattering", label: "Scattering" },
     { key: "feed_hardness", label: "Hardness" },
-    { key: "remarks", label: "Remarks" },
   ].filter((col) =>
     activeBatchBeforeReports.some((r) => hasValue(r[col.key]))
-  );
-
-  const afterExtraCols = [{ key: "remarks", label: "Remarks" }].filter((col) =>
-    activeBatchAfterReports.some((r) => hasValue(r[col.key]))
   );
 
   const layerExtraCols = [
@@ -2648,13 +3077,13 @@ ${currentUserProfile.region}`;
     { key: "batch_no", label: "Batch No" },
     { key: "disease", label: "Disease" },
     { key: "vaccine", label: "Vaccine" },
-    { key: "remarks", label: "Remarks" },
   ].filter((col) =>
     activeBatchLayerReports.some((r) => hasValue(r[col.key]))
   );
 
-  const frontTwoHistoryBatches = historyBatches.slice(0, 2);
-  const olderHistoryBatches = historyBatches.slice(2);
+  // History Batch Bar: 1 Primary Batch upfront + Dropdown for all other batches
+  const primaryHistoryBatch = historyBatches[0] || null;
+  const otherHistoryBatches = historyBatches.slice(1);
 
   return (
     <div className="p-3 sm:p-5 max-w-7xl mx-auto space-y-4">
@@ -2696,7 +3125,7 @@ ${currentUserProfile.region}`;
         </div>
       </div>
 
-      {/* Compact status summary cards + Filter Bar (Assigned Upazila & Agent, No duplicate status dropdown) */}
+      {/* Compact status summary cards + Filter Bar */}
       <div className="bg-white p-2 sm:p-2.5 rounded-xl border border-slate-300 shadow-sm space-y-2">
         <div className="flex flex-wrap gap-1.5">
           {summaryCards.map((card) => {
@@ -2778,7 +3207,6 @@ ${currentUserProfile.region}`;
             ))}
           </select>
 
-          {/* Assigned Upazila Dropdown */}
           <select
             value={selectedUpazila}
             onChange={(e) => {
@@ -2795,7 +3223,6 @@ ${currentUserProfile.region}`;
             ))}
           </select>
 
-          {/* Agent Dropdown (Filtered by Selected Upazila) */}
           <select
             value={selectedAgent}
             onChange={(e) => setSelectedAgent(e.target.value)}
@@ -2846,7 +3273,7 @@ ${currentUserProfile.region}`;
         </div>
       </div>
 
-      {/* Agent-wise Table */}
+      {/* Agent-wise Table (Strictly <= 2 lines per cell, horizontal expansion) */}
       {filteredAgentsList.length === 0 ? (
         <div className="bg-white border border-slate-300 rounded-xl p-8 text-center text-xs text-slate-400">
           {_loading ? "Loading..." : "No farmers found for the selected filter."}
@@ -2862,13 +3289,25 @@ ${currentUserProfile.region}`;
               key={idx}
               className="bg-white border border-slate-300 rounded-xl shadow-sm overflow-hidden"
             >
+              {/* Agent Header with small + Farmer icon beside Agent Name */}
               <div className="bg-slate-100 px-3 py-1.5 border-b border-slate-300 flex flex-wrap justify-between items-center gap-2">
-                <h2 className="font-bold text-xs sm:text-sm text-slate-800">
-                  Agent:{" "}
-                  <span className="text-emerald-700">
-                    {agentGroup.agentName}
-                  </span>
-                </h2>
+                <div className="flex items-center gap-2">
+                  <h2 className="font-bold text-xs sm:text-sm text-slate-800">
+                    Agent:{" "}
+                    <span className="text-emerald-700">
+                      {agentGroup.agentName}
+                    </span>
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={() => openAddFarmerUnderAgent(agentGroup)}
+                    title={`Add new Farmer under ${agentGroup.agentName}`}
+                    className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold shadow-sm transition"
+                  >
+                    <Plus size={11} />
+                    <UserPlus size={12} />
+                  </button>
+                </div>
                 <span className="text-[11px] bg-white border border-slate-300 text-slate-700 px-2 py-0.5 rounded font-semibold">
                   {agentGroup.rows.length} ({countsText})
                 </span>
@@ -2876,42 +3315,42 @@ ${currentUserProfile.region}`;
 
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs">
-                  <thead className="bg-slate-50 text-slate-700">
+                  <thead className="bg-slate-50 text-slate-700 whitespace-nowrap">
                     <tr>
-                      <th className="border border-slate-300 px-2 py-1.5">
+                      <th className="border border-slate-300 px-2 py-1">
                         Status & Date
                       </th>
-                      <th className="border border-slate-300 px-2 py-1.5 text-center font-bold text-emerald-700">
+                      <th className="border border-slate-300 px-2 py-1 text-center font-bold text-emerald-700">
                         Age
                       </th>
-                      <th className="border border-slate-300 px-2 py-1.5">
+                      <th className="border border-slate-300 px-2 py-1">
                         Category
                       </th>
-                      <th className="border border-slate-300 px-2 py-1.5">
+                      <th className="border border-slate-300 px-2 py-1">
                         Farmer
                       </th>
-                      <th className="border border-slate-300 px-2 py-1.5">
+                      <th className="border border-slate-300 px-2 py-1">
                         Mobile & Address
                       </th>
-                      <th className="border border-slate-300 px-2 py-1.5">
+                      <th className="border border-slate-300 px-2 py-1">
                         H.Date
                       </th>
-                      <th className="border border-slate-300 px-2 py-1.5">
+                      <th className="border border-slate-300 px-2 py-1">
                         Hatchery & Breed
                       </th>
-                      <th className="border border-slate-300 px-2 py-1.5 text-center">
+                      <th className="border border-slate-300 px-2 py-1 text-center">
                         Birds
                       </th>
-                      <th className="border border-slate-300 px-2 py-1.5">
+                      <th className="border border-slate-300 px-2 py-1">
                         Vaccine / Alert
                       </th>
-                      <th className="border border-slate-300 px-2 py-1.5 text-center">
+                      <th className="border border-slate-300 px-2 py-1 text-center">
                         Take Report
                       </th>
-                      <th className="border border-slate-300 px-2 py-1.5 text-center">
+                      <th className="border border-slate-300 px-2 py-1 text-center">
                         History
                       </th>
-                      <th className="border border-slate-300 px-2 py-1.5 text-center">
+                      <th className="border border-slate-300 px-2 py-1 text-center">
                         Action
                       </th>
                     </tr>
@@ -2947,12 +3386,11 @@ ${currentUserProfile.region}`;
                           ? ""
                           : days === 0
                           ? "today"
-                          : `${days} day${days === 1 ? "" : "s"} before`;
+                          : `${days}d ago`;
                       const afterBtnRing = isFocused
                         ? "ring-4 ring-yellow-400 animate-pulse"
                         : "";
 
-                      // Check if this batch/farmer has any saved visit report
                       const repMeta = isBatch
                         ? visitReportMeta[String(visit.id)] ||
                           farmerReportMeta[String(farmer.id)]
@@ -2972,13 +3410,13 @@ ${currentUserProfile.region}`;
                         <tr
                           key={row.key}
                           id={isBatch ? `visit-row-${visit.id}` : undefined}
-                          className={`hover:bg-slate-50 ${
+                          className={`hover:bg-slate-50 leading-tight ${
                             isFocused ? "bg-yellow-50" : ""
                           }`}
                         >
-                          {/* 1. STATUS & DATE */}
-                          <td className="border border-slate-300 px-2 py-1.5 whitespace-nowrap">
-                            <div className="flex items-center gap-1.5">
+                          {/* 1. STATUS & DATE (Max 2 lines, whitespace-nowrap) */}
+                          <td className="border border-slate-300 px-2 py-1 whitespace-nowrap">
+                            <div className="flex items-center gap-1">
                               {!isBatch && (
                                 <input
                                   type="checkbox"
@@ -2992,7 +3430,7 @@ ${currentUserProfile.region}`;
                                 />
                               )}
                               <span
-                                className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                                className={`inline-block px-1.5 py-0 rounded-full text-[10px] font-bold ${
                                   row.status === "Running"
                                     ? "bg-emerald-100 text-emerald-800"
                                     : row.status === "Active"
@@ -3004,7 +3442,7 @@ ${currentUserProfile.region}`;
                               </span>
                               {farmer.nourishTag && (
                                 <span
-                                  className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                  className={`px-1 py-0 rounded text-[9px] font-bold ${
                                     farmer.nourishTag === "Convert to Nourish"
                                       ? "bg-teal-100 text-teal-800 border border-teal-300"
                                       : "bg-red-100 text-red-800 border border-red-300"
@@ -3014,12 +3452,12 @@ ${currentUserProfile.region}`;
                                 </span>
                               )}
                             </div>
-                            <div className="text-[10px] text-slate-500 mt-0.5">
+                            <div className="text-[10px] text-slate-500 truncate">
                               {isBatch ? (
                                 <>H.Date: {formatDmy(visit.hatch_date)}</>
                               ) : farmer.statusDate ? (
                                 <>
-                                  {farmer.closedType || "Sale/Cull"}:{" "}
+                                  {farmer.closedType || "Sale"}:{" "}
                                   {formatDmy(farmer.statusDate)}
                                   {daysText && (
                                     <span className="ml-1 font-semibold text-slate-600">
@@ -3034,32 +3472,31 @@ ${currentUserProfile.region}`;
                           </td>
 
                           {/* 2. AGE */}
-                          <td className="border border-slate-300 px-2 py-1.5 text-center font-bold text-emerald-700 whitespace-nowrap">
+                          <td className="border border-slate-300 px-2 py-1 text-center font-bold text-emerald-700 whitespace-nowrap">
                             {isBatch
                               ? calculateAge(visit.hatch_date, category)
                               : "-"}
                           </td>
 
                           {/* 3. CATEGORY */}
-                          <td className="border border-slate-300 px-2 py-1.5 font-semibold">
+                          <td className="border border-slate-300 px-2 py-1 font-semibold whitespace-nowrap">
                             {category}
                           </td>
 
-                          {/* 4. FARMER + AUTO BATCH NUMBER TAG */}
-                          <td className="border border-slate-300 px-2 py-1.5 font-bold text-slate-800">
-                            {farmer.farmer_name || "N/A"}
+                          {/* 4. FARMER (Max 2 lines) */}
+                          <td className="border border-slate-300 px-2 py-1 font-bold text-slate-800 whitespace-nowrap">
+                            <div>{farmer.farmer_name || "N/A"}</div>
                             {tag && (
-                              <div className="mt-0.5">
-                                <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-semibold">
-                                  {tag}
-                                </span>
+                              <div className="text-[10px] font-semibold text-emerald-700">
+                                {tag}
                               </div>
                             )}
                           </td>
 
-                          <td className="border border-slate-300 px-2 py-1.5 text-slate-600">
+                          {/* 5. MOBILE & ADDRESS (Max 2 lines) */}
+                          <td className="border border-slate-300 px-2 py-1 text-slate-600 whitespace-nowrap">
                             <div>{farmer.mobile || "-"}</div>
-                            <div className="text-[11px] text-slate-500">
+                            <div className="text-[10px] text-slate-500">
                               {[farmer.village, farmer.upazila]
                                 .filter(Boolean)
                                 .join(", ")}
@@ -3068,51 +3505,57 @@ ${currentUserProfile.region}`;
 
                           {isBatch ? (
                             <>
-                              <td className="border border-slate-300 px-2 py-1.5 whitespace-nowrap">
+                              {/* 6. H.DATE */}
+                              <td className="border border-slate-300 px-2 py-1 whitespace-nowrap">
                                 {visit.hatch_date || "-"}
                               </td>
 
-                              <td className="border border-slate-300 px-2 py-1.5">
+                              {/* 7. HATCHERY & BREED (Max 2 lines) */}
+                              <td className="border border-slate-300 px-2 py-1 whitespace-nowrap">
                                 <div className="font-medium text-slate-800">
                                   {visit.hatchery || "-"}
                                 </div>
-                                <div className="text-[11px] text-slate-500">
+                                <div className="text-[10px] text-slate-500">
                                   {visit.breed || "-"}
                                 </div>
                               </td>
 
-                              <td className="border border-slate-300 px-2 py-1.5 text-center font-bold text-slate-800">
+                              {/* 8. BIRDS */}
+                              <td className="border border-slate-300 px-2 py-1 text-center font-bold text-slate-800 whitespace-nowrap">
                                 {visit.t_birds || 0}
                               </td>
 
-                              <td className="border border-slate-300 px-2 py-1.5 min-w-[190px]">
-                                <div className="flex items-start justify-between gap-1.5">
-                                  <div className="space-y-0.5 flex-1">
-                                    {visit.last_vaccine_name ? (
-                                      <div className="text-[11px] text-emerald-800 px-1.5 py-0.5 rounded">
-                                        <b>Last:</b> {visit.last_vaccine_name}{" "}
-                                        {visit.last_vaccine_date
-                                          ? `(${formatDmy(
-                                              visit.last_vaccine_date
-                                            )})`
-                                          : ""}
-                                      </div>
-                                    ) : (
-                                      <div className="text-[11px] text-slate-400 italic">
-                                        No vaccine recorded yet
-                                      </div>
-                                    )}
+                              {/* 9. VACCINE / ALERT (Strictly <= 2 lines, side-by-side badges) */}
+                              <td className="border border-slate-300 px-2 py-1 whitespace-nowrap">
+                                <div className="flex items-center justify-between gap-1.5">
+                                  <div className="leading-tight">
+                                    <div className="text-[10px] text-emerald-800 flex items-center gap-1">
+                                      {visit.last_vaccine_name ? (
+                                        <span>
+                                          <b>Last:</b> {visit.last_vaccine_name}{" "}
+                                          {visit.last_vaccine_date
+                                            ? `(${formatDmy(
+                                                visit.last_vaccine_date
+                                              )})`
+                                            : ""}
+                                        </span>
+                                      ) : (
+                                        <span className="text-slate-400 italic">
+                                          No vaccine yet
+                                        </span>
+                                      )}
+                                      {isSellTime && (
+                                        <span className="bg-red-100 border border-red-300 text-red-700 text-[9px] px-1.5 py-0 rounded font-bold">
+                                          Time to Sale
+                                        </span>
+                                      )}
+                                    </div>
                                     {vacInfo?.upcoming && (
-                                      <div className="text-[11px] text-slate-600 bg-emerald-100 border border-emerald-200 mt-0.5">
+                                      <div className="text-[10px] text-slate-600 bg-emerald-50 border border-emerald-200 px-1 rounded inline-block">
                                         <b>Next:</b>{" "}
-                                        {vacInfo.upcoming.vaccine_name} (Day{" "}
+                                        {vacInfo.upcoming.vaccine_name} (D
                                         {vacInfo.upcoming.age_days} •{" "}
                                         {formatDmy(vacInfo.upcomingDateStr)})
-                                      </div>
-                                    )}
-                                    {isSellTime && (
-                                      <div className="mt-1 inline-block bg-red-100 border border-red-300 text-red-700 text-[11px] px-2 py-0.5 rounded font-bold">
-                                        Time to Sale
                                       </div>
                                     )}
                                   </div>
@@ -3122,14 +3565,15 @@ ${currentUserProfile.region}`;
                                       handleOpenLogVaccineModal(visit)
                                     }
                                     title="Add Given Vaccine"
-                                    className="w-6 h-6 shrink-0 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm flex items-center justify-center shadow-sm transition"
+                                    className="w-5 h-5 shrink-0 rounded bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs flex items-center justify-center shadow-sm transition"
                                   >
                                     +
                                   </button>
                                 </div>
                               </td>
 
-                              <td className="border border-slate-300 px-2 py-1.5 text-center whitespace-nowrap">
+                              {/* 10. TAKE REPORT (Side-by-side buttons to keep <= 2 lines) */}
+                              <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap">
                                 {isLayer ? (
                                   <button
                                     type="button"
@@ -3137,42 +3581,42 @@ ${currentUserProfile.region}`;
                                     onClick={() =>
                                       openReportModal("layer_report", visit)
                                     }
-                                    className={`bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded text-[11px] font-semibold ${afterBtnRing}`}
+                                    className={`bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-0.5 rounded text-[10px] font-semibold ${afterBtnRing}`}
                                   >
                                     Layer Report
                                   </button>
                                 ) : isSellTime ? (
-                                  <div className="flex flex-col gap-1">
+                                  <div className="inline-flex items-center gap-1">
                                     <button
                                       type="button"
                                       id={`after-sale-btn-${visit.id}`}
                                       onClick={() =>
                                         openReportModal("after_sale", visit)
                                       }
-                                      className={`bg-red-600 hover:bg-red-700 text-white px-2.5 py-1 rounded text-[11px] font-bold shadow-sm ${afterBtnRing}`}
+                                      className={`bg-red-600 hover:bg-red-700 text-white px-2 py-0.5 rounded text-[10px] font-bold shadow-sm ${afterBtnRing}`}
                                     >
-                                      After Sale Report
+                                      After Sale
                                     </button>
                                     <button
                                       type="button"
                                       onClick={() =>
                                         openReportModal("before_sale", visit)
                                       }
-                                      className="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 px-2 py-0.5 rounded text-[10px] font-semibold"
+                                      className="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 px-1.5 py-0.5 rounded text-[10px] font-semibold"
                                     >
                                       Before Sale
                                     </button>
                                   </div>
                                 ) : (
-                                  <div className="flex flex-col gap-1">
+                                  <div className="inline-flex items-center gap-1">
                                     <button
                                       type="button"
                                       onClick={() =>
                                         openReportModal("before_sale", visit)
                                       }
-                                      className="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded text-[11px] font-semibold shadow-sm"
+                                      className="bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-0.5 rounded text-[10px] font-semibold shadow-sm"
                                     >
-                                      Before Sale Report
+                                      Before Sale
                                     </button>
                                     <button
                                       type="button"
@@ -3180,7 +3624,7 @@ ${currentUserProfile.region}`;
                                       onClick={() =>
                                         openReportModal("after_sale", visit)
                                       }
-                                      className={`bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300 px-2 py-0.5 rounded text-[10px] ${afterBtnRing}`}
+                                      className={`bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300 px-1.5 py-0.5 rounded text-[10px] ${afterBtnRing}`}
                                     >
                                       After Sale
                                     </button>
@@ -3191,14 +3635,14 @@ ${currentUserProfile.region}`;
                           ) : (
                             <td
                               colSpan={5}
-                              className="border border-slate-300 px-2 py-1.5 text-[11px] text-slate-400 italic"
+                              className="border border-slate-300 px-2 py-1 text-[11px] text-slate-400 italic whitespace-nowrap"
                             >
                               No running batch
                             </td>
                           )}
 
-                          {/* HISTORY COLUMN: Active if report exists + shows "Last visit: Date" below */}
-                          <td className="border border-slate-300 px-2 py-1.5 text-center whitespace-nowrap">
+                          {/* 11. HISTORY (Max 2 lines: Button + Last visit date) */}
+                          <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap">
                             <button
                               type="button"
                               disabled={!hasVisitHistory}
@@ -3218,7 +3662,7 @@ ${currentUserProfile.region}`;
                                   );
                                 }
                               }}
-                              className={`px-2.5 py-1 rounded text-[11px] font-semibold border transition ${
+                              className={`px-2 py-0.5 rounded text-[10px] font-semibold border transition ${
                                 hasVisitHistory
                                   ? "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 cursor-pointer"
                                   : "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"
@@ -3227,34 +3671,28 @@ ${currentUserProfile.region}`;
                               History
                             </button>
                             {hasVisitHistory && repMeta?.lastDate && (
-                              <div className="text-[9px] text-slate-500 mt-0.5 font-medium">
-                                Last visit: {formatDmy(repMeta.lastDate)}
+                              <div className="text-[9px] text-slate-500 font-medium">
+                                Last: {formatDmy(repMeta.lastDate)}
                               </div>
                             )}
                           </td>
 
-                          {/* ACTION COLUMN: 3-Option Dropdown (Edit, Delete, Add Batch/Run Farm/Activate) */}
-                          <td className="border border-slate-300 px-2 py-1.5 text-center whitespace-nowrap">
+                          {/* 12. ACTION (Edit full farmer/batch, Remove from running, Add Batch/Run Farm/Activate) */}
+                          <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap">
                             <select
                               value=""
                               onChange={(e) => {
                                 const val = e.target.value;
                                 e.target.value = "";
                                 if (val === "edit") {
-                                  if (isBatch) handleEditClick(visit);
-                                  else if (farmer.latestClosed)
-                                    handleEditClick(farmer.latestClosed);
-                                  else
-                                    alert(
-                                      "No batch record available to edit yet."
-                                    );
-                                } else if (val === "delete") {
-                                  handleDeleteBatchOrFarmerRow(row);
+                                  handleFullEditRow(row);
+                                } else if (val === "remove_running") {
+                                  handleRemoveFromRunning(row);
                                 } else if (val === "run") {
                                   openActivateModal(farmer);
                                 }
                               }}
-                              className="rounded-lg border border-slate-300 bg-white hover:bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-700 outline-none cursor-pointer shadow-sm"
+                              className="rounded-lg border border-slate-300 bg-white hover:bg-slate-50 px-2 py-0.5 text-[10px] font-bold text-slate-700 outline-none cursor-pointer shadow-sm"
                             >
                               <option value="">
                                 {row.isLastBatchOfFarmer
@@ -3267,7 +3705,11 @@ ${currentUserProfile.region}`;
                                 </option>
                               )}
                               <option value="edit">✎ Edit</option>
-                              <option value="delete">🗑 Delete</option>
+                              {isBatch && (
+                                <option value="remove_running">
+                                  ✖ Remove
+                                </option>
+                              )}
                             </select>
                           </td>
                         </tr>
@@ -3279,6 +3721,570 @@ ${currentUserProfile.region}`;
             </div>
           );
         })
+      )}
+
+      {/* ==================================================
+          ADD / FULL EDIT FARMER (+ BATCH) MODAL WITH MAP PICKER
+      ================================================== */}
+      {showFarmerFormModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[65] p-2 sm:p-4">
+          <div className="bg-white rounded-xl p-4 sm:p-5 w-full max-w-2xl max-h-[92vh] overflow-y-auto shadow-2xl border border-slate-300">
+            <div className="flex justify-between items-center pb-2.5 mb-3 border-b">
+              <h2 className="text-sm sm:text-base font-bold text-slate-800">
+                {editingFarmerId
+                  ? `Edit Farmer${editingBatchVisit ? " & Batch" : ""}`
+                  : "Add Farmer"}
+              </h2>
+              <button onClick={() => setShowFarmerFormModal(false)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3 text-xs">
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">
+                  Company *
+                </label>
+                <select
+                  value={farmerForm.company_id}
+                  onChange={(e) =>
+                    setFarmerForm({
+                      ...farmerForm,
+                      company_id: e.target.value,
+                      agent_id: "",
+                    })
+                  }
+                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5"
+                >
+                  <option value="">Select Company</option>
+                  {companies.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.company_name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">
+                  District *
+                </label>
+                <select
+                  value={farmerForm.district}
+                  onChange={(e) =>
+                    setFarmerForm({
+                      ...farmerForm,
+                      district: e.target.value,
+                      upazila: "",
+                      union_name: "",
+                    })
+                  }
+                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5"
+                >
+                  <option value="">Select District</option>
+                  {geoDistricts.map((d) => (
+                    <option key={d.id} value={d.name}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">
+                  Upazila *
+                </label>
+                <select
+                  value={farmerForm.upazila}
+                  onChange={(e) =>
+                    setFarmerForm({
+                      ...farmerForm,
+                      upazila: e.target.value,
+                      union_name: "",
+                    })
+                  }
+                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5"
+                >
+                  <option value="">Select Upazila</option>
+                  {geoUpazilas.map((u) => (
+                    <option key={u.id} value={u.name}>
+                      {u.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">
+                  Agent *
+                </label>
+                <select
+                  value={farmerForm.agent_id}
+                  onChange={(e) =>
+                    setFarmerForm({ ...farmerForm, agent_id: e.target.value })
+                  }
+                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5"
+                >
+                  <option value="">Select Agent</option>
+                  {modalAvailableAgents.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.agent_name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">
+                  Farmer Name *
+                </label>
+                <input
+                  placeholder="Farmer Name"
+                  value={farmerForm.farmer_name}
+                  onChange={(e) =>
+                    setFarmerForm({
+                      ...farmerForm,
+                      farmer_name: e.target.value,
+                    })
+                  }
+                  className="w-full rounded border border-slate-300 px-2.5 py-1.5"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">
+                  Mobile
+                </label>
+                <input
+                  placeholder="017XXXXXXXX"
+                  value={farmerForm.mobile}
+                  onChange={(e) =>
+                    setFarmerForm({ ...farmerForm, mobile: e.target.value })
+                  }
+                  className="w-full rounded border border-slate-300 px-2.5 py-1.5"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">
+                  Union
+                </label>
+                <select
+                  value={farmerForm.union_name}
+                  onChange={(e) =>
+                    setFarmerForm({
+                      ...farmerForm,
+                      union_name: e.target.value,
+                    })
+                  }
+                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5"
+                >
+                  <option value="">Select Union</option>
+                  {geoUnions.map((u) => (
+                    <option key={u.id} value={u.name}>
+                      {u.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">
+                  Village
+                </label>
+                <input
+                  placeholder="Village"
+                  value={farmerForm.village}
+                  onChange={(e) =>
+                    setFarmerForm({ ...farmerForm, village: e.target.value })
+                  }
+                  className="w-full rounded border border-slate-300 px-2.5 py-1.5"
+                />
+              </div>
+            </div>
+
+            {/* Map Location Trigger */}
+            <div className="mb-3 flex flex-wrap items-center gap-2 bg-slate-50 border border-slate-200 rounded p-2.5 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  setPickerCenterOverride(null);
+                  setShowMapPicker(true);
+                }}
+                className="inline-flex items-center gap-1.5 bg-blue-600 text-white px-3 py-1.5 rounded font-semibold"
+              >
+                <MapPin size={13} /> Select Location from Map
+              </button>
+
+              {farmerForm.latitude && farmerForm.longitude && (
+                <span className="text-emerald-700 font-semibold">
+                  📍 Selected ({Number(farmerForm.latitude).toFixed(4)},{" "}
+                  {Number(farmerForm.longitude).toFixed(4)})
+                </span>
+              )}
+            </div>
+
+            {/* Farm Category & Capacities */}
+            <div className="mb-3 text-xs">
+              <label className="block font-bold text-slate-600 mb-1">
+                Farm Category *
+              </label>
+              <select
+                value={farmerForm.farm_category || ""}
+                onChange={(e) =>
+                  setFarmerForm({
+                    ...farmerForm,
+                    farm_category: e.target.value,
+                  })
+                }
+                className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5"
+              >
+                <option value="">Select Category</option>
+                <option value="Poultry">🐔 Poultry</option>
+                <option value="Cattle">🐄 Cattle</option>
+                <option value="Fish">🐟 Fish</option>
+              </select>
+            </div>
+
+            {farmerForm.farm_category === "Poultry" && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3 bg-amber-50 border border-amber-200 rounded p-2.5 text-xs">
+                {POULTRY_FIELDS.map((item) => (
+                  <div key={item}>
+                    <label className="block text-[11px] font-semibold capitalize">
+                      {item.replace("_", " ")}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={(farmerForm as any)[item] || ""}
+                      onChange={(e) =>
+                        setFarmerForm({
+                          ...farmerForm,
+                          [item]: e.target.value,
+                        })
+                      }
+                      className="w-full rounded border border-slate-300 bg-white px-2 py-1"
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {farmerForm.farm_category === "Cattle" && (
+              <div className="grid grid-cols-3 gap-2 mb-3 bg-emerald-50 border border-emerald-200 rounded p-2.5 text-xs">
+                {CATTLE_FIELDS.map((item) => (
+                  <div key={item}>
+                    <label className="block text-[11px] font-semibold capitalize">
+                      {item.replace("_", " ")}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={(farmerForm as any)[item] || ""}
+                      onChange={(e) =>
+                        setFarmerForm({
+                          ...farmerForm,
+                          [item]: e.target.value,
+                        })
+                      }
+                      className="w-full rounded border border-slate-300 bg-white px-2 py-1"
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {farmerForm.farm_category === "Fish" && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3 bg-sky-50 border border-sky-200 rounded p-2.5 text-xs">
+                {FISH_FIELDS.map((item) => (
+                  <div key={item}>
+                    <label className="block text-[11px] font-semibold capitalize">
+                      {item}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={(farmerForm as any)[item] || ""}
+                      onChange={(e) =>
+                        setFarmerForm({
+                          ...farmerForm,
+                          [item]: e.target.value,
+                        })
+                      }
+                      className="w-full rounded border border-slate-300 bg-white px-2 py-1"
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3 text-xs">
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">
+                  Feed Type
+                </label>
+                <input
+                  placeholder="Feed Type"
+                  value={farmerForm.feed_type}
+                  onChange={(e) =>
+                    setFarmerForm({ ...farmerForm, feed_type: e.target.value })
+                  }
+                  className="w-full rounded border border-slate-300 px-2.5 py-1.5"
+                />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">
+                  Remarks
+                </label>
+                <input
+                  placeholder="Remarks"
+                  value={farmerForm.remarks}
+                  onChange={(e) =>
+                    setFarmerForm({ ...farmerForm, remarks: e.target.value })
+                  }
+                  className="w-full rounded border border-slate-300 px-2.5 py-1.5"
+                />
+              </div>
+            </div>
+
+            {/* If editing a running batch row, also show batch fields */}
+            {editingBatchVisit && (
+              <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-3 mb-3 space-y-2.5 text-xs">
+                <div className="font-bold text-emerald-900 border-b border-emerald-200 pb-1">
+                  Running Batch Details
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-0.5">
+                      Batch Name / Mark
+                    </label>
+                    <input
+                      type="text"
+                      value={batchEditSubForm.batch_label}
+                      onChange={(e) =>
+                        setBatchEditSubForm({
+                          ...batchEditSubForm,
+                          batch_label: e.target.value,
+                        })
+                      }
+                      className="w-full rounded border border-slate-300 bg-white px-2 py-1"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-0.5">
+                      Batch Category
+                    </label>
+                    <select
+                      value={batchEditSubForm.category}
+                      onChange={(e) => {
+                        const cat = e.target.value;
+                        setBatchEditSubForm({
+                          ...batchEditSubForm,
+                          category: cat,
+                          breed: (BREEDS_BY_CATEGORY[cat] || [])[0] || "",
+                        });
+                      }}
+                      className="w-full rounded border border-slate-300 bg-white px-2 py-1"
+                    >
+                      {CATEGORIES.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-0.5">
+                      Hatch Date
+                    </label>
+                    <input
+                      type="date"
+                      value={batchEditSubForm.hatch_date}
+                      onChange={(e) =>
+                        setBatchEditSubForm({
+                          ...batchEditSubForm,
+                          hatch_date: e.target.value,
+                        })
+                      }
+                      className="w-full rounded border border-slate-300 bg-white px-2 py-1"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-0.5">
+                      Hatchery
+                    </label>
+                    <select
+                      value={batchEditSubForm.hatchery}
+                      onChange={(e) =>
+                        setBatchEditSubForm({
+                          ...batchEditSubForm,
+                          hatchery: e.target.value,
+                        })
+                      }
+                      className="w-full rounded border border-slate-300 bg-white px-2 py-1"
+                    >
+                      <option value="">Select Hatchery</option>
+                      {companies.map((c) => (
+                        <option key={c.id} value={c.company_name}>
+                          {c.company_name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-0.5">
+                      Breed
+                    </label>
+                    <select
+                      value={batchEditSubForm.breed}
+                      onChange={(e) =>
+                        setBatchEditSubForm({
+                          ...batchEditSubForm,
+                          breed: e.target.value,
+                        })
+                      }
+                      className="w-full rounded border border-slate-300 bg-white px-2 py-1"
+                    >
+                      <option value="">Select Breed</option>
+                      {(
+                        BREEDS_BY_CATEGORY[batchEditSubForm.category] || []
+                      ).map((b) => (
+                        <option key={b} value={b}>
+                          {b}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-0.5">
+                      Total Birds
+                    </label>
+                    <input
+                      type="number"
+                      value={batchEditSubForm.t_birds}
+                      onChange={(e) =>
+                        setBatchEditSubForm({
+                          ...batchEditSubForm,
+                          t_birds: e.target.value,
+                        })
+                      }
+                      className="w-full rounded border border-slate-300 bg-white px-2 py-1"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2 border-t text-xs">
+              <button
+                type="button"
+                onClick={() => setShowFarmerFormModal(false)}
+                className="px-4 py-1.5 rounded border border-slate-300 font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveFarmerAndBatch}
+                className="px-4 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+              >
+                {editingFarmerId ? "Update Farmer" : "Save Farmer"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================
+          MAP LOCATION PICKER MODAL FOR ADD/EDIT FARMER
+      ================================================== */}
+      {showMapPicker && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[75] p-2 sm:p-4">
+          <div className="bg-white p-3 sm:p-4 rounded-xl w-full max-w-4xl shadow-2xl space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="font-bold text-sm sm:text-base">
+                Select Farm Location
+              </h2>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleLocateMeInPicker}
+                  disabled={locatingInPicker}
+                  className="inline-flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-xs font-semibold"
+                >
+                  <Navigation size={13} />
+                  {locatingInPicker ? "Locating..." : "Locate Me"}
+                </button>
+
+                {farmerForm.latitude && farmerForm.longitude && (
+                  <button
+                    type="button"
+                    onClick={() => setShowMapPicker(false)}
+                    className="inline-flex items-center gap-1 bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-xs font-semibold"
+                  >
+                    <CheckCircle2 size={13} /> Use Selected Location
+                  </button>
+                )}
+
+                <button onClick={() => setShowMapPicker(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            <LocationPicker
+              key={
+                pickerCenterOverride
+                  ? `${pickerCenterOverride[0]}_${pickerCenterOverride[1]}`
+                  : "visit_default_picker"
+              }
+              center={
+                pickerCenterOverride
+                  ? pickerCenterOverride
+                  : selectedFormUpazila &&
+                    selectedFormUpazila.lat &&
+                    selectedFormUpazila.lon
+                  ? [
+                      Number(selectedFormUpazila.lat),
+                      Number(selectedFormUpazila.lon),
+                    ]
+                  : selectedFormDistrict &&
+                    selectedFormDistrict.lat &&
+                    selectedFormDistrict.lon
+                  ? [
+                      Number(selectedFormDistrict.lat),
+                      Number(selectedFormDistrict.lon),
+                    ]
+                  : [24.7471, 90.4203]
+              }
+              zoom={
+                pickerCenterOverride
+                  ? 17
+                  : selectedFormUpazila
+                  ? 13
+                  : selectedFormDistrict
+                  ? 11
+                  : 7
+              }
+              selectedPosition={
+                farmerForm.latitude && farmerForm.longitude
+                  ? [
+                      Number(farmerForm.latitude),
+                      Number(farmerForm.longitude),
+                    ]
+                  : null
+              }
+              onSelect={(lat, lng) => {
+                setFarmerForm({
+                  ...farmerForm,
+                  latitude: lat.toString(),
+                  longitude: lng.toString(),
+                });
+                setShowMapPicker(false);
+              }}
+            />
+          </div>
+        </div>
       )}
 
       {/* ==================================================
@@ -3698,7 +4704,7 @@ ${currentUserProfile.region}`;
       )}
 
       {/* ==================================================
-          MODAL 1: BEFORE SALE REPORT (HATCHERY 1ST, MANDATORY FIELDS)
+          MODAL 1: BEFORE SALE REPORT (SONALI STD BLANK IF NOT IN DB)
       ================================================== */}
       {showBeforeSaleModal && activeReportVisit && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
@@ -3801,7 +4807,7 @@ ${currentUserProfile.region}`;
                   type="text"
                   disabled
                   value={
-                    activeBroilerStd ? `${activeBroilerStd.weight} g` : "N/A"
+                    activeMeatStd?.weight ? `${activeMeatStd.weight} g` : ""
                   }
                   className="w-full border border-emerald-200 rounded-lg px-2.5 py-1.5 bg-emerald-50/50 text-emerald-900 font-bold"
                 />
@@ -3840,9 +4846,9 @@ ${currentUserProfile.region}`;
                   type="text"
                   disabled
                   value={
-                    activeBroilerStd
-                      ? `${activeBroilerStd.feed_intake} g`
-                      : "N/A"
+                    activeMeatStd?.feed_intake
+                      ? `${activeMeatStd.feed_intake} g`
+                      : ""
                   }
                   className="w-full border border-emerald-200 rounded-lg px-2.5 py-1.5 bg-emerald-50/50 text-emerald-900 font-bold"
                 />
@@ -3866,7 +4872,7 @@ ${currentUserProfile.region}`;
                 <input
                   type="text"
                   disabled
-                  value={activeBroilerStd ? `${activeBroilerStd.fcr}` : "N/A"}
+                  value={activeMeatStd?.fcr ? `${activeMeatStd.fcr}` : ""}
                   className="w-full border border-emerald-200 rounded-lg px-2.5 py-1.5 bg-emerald-50/50 text-emerald-900 font-bold"
                 />
               </div>
@@ -4113,7 +5119,7 @@ ${currentUserProfile.region}`;
       )}
 
       {/* ==================================================
-          MODAL 2: AFTER SALE REPORT (HATCHERY 1ST, LAST FEED, MANDATORY FIELDS)
+          MODAL 2: AFTER SALE REPORT (SONALI STD BLANK IF NOT IN DB)
       ================================================== */}
       {showAfterSaleModal && activeReportVisit && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
@@ -4214,7 +5220,7 @@ ${currentUserProfile.region}`;
                   type="text"
                   disabled
                   value={
-                    activeBroilerStd ? `${activeBroilerStd.weight} g` : "N/A"
+                    activeMeatStd?.weight ? `${activeMeatStd.weight} g` : ""
                   }
                   className="w-full border border-emerald-200 rounded-lg px-2.5 py-1.5 bg-emerald-50/50 text-emerald-900 font-bold"
                 />
@@ -4256,9 +5262,9 @@ ${currentUserProfile.region}`;
                   type="text"
                   disabled
                   value={
-                    activeBroilerStd
-                      ? `${activeBroilerStd.feed_intake} g`
-                      : "N/A"
+                    activeMeatStd?.feed_intake
+                      ? `${activeMeatStd.feed_intake} g`
+                      : ""
                   }
                   className="w-full border border-emerald-200 rounded-lg px-2.5 py-1.5 bg-emerald-50/50 text-emerald-900 font-bold"
                 />
@@ -4282,7 +5288,7 @@ ${currentUserProfile.region}`;
                 <input
                   type="text"
                   disabled
-                  value={activeBroilerStd ? `${activeBroilerStd.fcr}` : "N/A"}
+                  value={activeMeatStd?.fcr ? `${activeMeatStd.fcr}` : ""}
                   className="w-full border border-emerald-200 rounded-lg px-2.5 py-1.5 bg-emerald-50/50 text-emerald-900 font-bold"
                 />
               </div>
@@ -4398,7 +5404,7 @@ ${currentUserProfile.region}`;
       )}
 
       {/* ==================================================
-          MODAL 3: LAYER PERFORMANCE REPORT (HATCHERY 1ST, MORTALITY AUTO DEDUCT, CULLED REASON)
+          MODAL 3: LAYER PERFORMANCE REPORT (CULLED BUTTON DISABLED WHEN REASON OPEN)
       ================================================== */}
       {showLayerModal && activeReportVisit && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
@@ -4753,7 +5759,7 @@ ${currentUserProfile.region}`;
               </div>
             </div>
 
-            {/* Culled Reason Prompt Box when user clicks Culled */}
+            {/* Culled Reason Prompt Box (Report fields NOT mandatory when confirming culled) */}
             {showCullReasonInput && (
               <div className="bg-red-50 border border-red-300 rounded-xl p-3 space-y-2 text-xs">
                 <label className="block font-bold text-red-900">
@@ -4770,7 +5776,7 @@ ${currentUserProfile.region}`;
                   <button
                     type="button"
                     onClick={() => handleLayerReportSubmit(true)}
-                    className="px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold shrink-0"
+                    className="px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold shrink-0 shadow-sm"
                   >
                     Confirm Culled
                   </button>
@@ -4796,8 +5802,13 @@ ${currentUserProfile.region}`;
 
                 <button
                   type="button"
-                  onClick={() => setShowCullReasonInput(!showCullReasonInput)}
-                  className="px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm"
+                  disabled={showCullReasonInput}
+                  onClick={() => setShowCullReasonInput(true)}
+                  className={`px-3.5 py-1.5 rounded-lg text-xs font-bold shadow-sm transition ${
+                    showCullReasonInput
+                      ? "bg-slate-200 text-slate-400 cursor-not-allowed"
+                      : "bg-red-600 hover:bg-red-700 text-white"
+                  }`}
                 >
                   Culled
                 </button>
@@ -4982,7 +5993,7 @@ ${currentUserProfile.region}`;
       )}
 
       {/* ==================================================
-          MODAL 5: BATCH-WISE HISTORY MODAL (2 FRONT BATCH TABS + OLDER BATCHES DROPDOWN + DYNAMIC COLUMNS)
+          MODAL 5: BATCH-WISE HISTORY MODAL (1 PRIMARY BATCH BUTTON + OTHER BATCHES DROPDOWN + PERMANENT REMARKS COLUMN)
       ================================================== */}
       {showHistoryModal && selectedHistoryVisit && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-3">
@@ -5025,40 +6036,39 @@ ${currentUserProfile.region}`;
               </div>
             </div>
 
-            {/* Batch Selector Bar: Shows Latest 2 Batches upfront + Dropdown for older batches */}
-            {historyBatches.length > 0 && (
+            {/* Batch Selector Bar: Shows ONLY 1 Primary Batch upfront + Dropdown for other batches */}
+            {primaryHistoryBatch && (
               <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-bold text-slate-600">Batches:</span>
-                  {frontTwoHistoryBatches.map((b: any) => {
-                    const isSelected =
-                      String(b.id) === String(selectedHistoryVisit.id);
-                    return (
-                      <button
-                        key={b.id}
-                        type="button"
-                        onClick={() => setSelectedHistoryVisit(b)}
-                        className={`px-3 py-1 rounded-lg font-bold border transition ${
-                          isSelected
-                            ? "bg-emerald-600 text-white border-emerald-600 shadow-sm"
-                            : "bg-white text-slate-700 border-slate-300 hover:bg-slate-100"
-                        }`}
-                      >
-                        {b.displayBatchName || b.batch_label} ({b.category} •{" "}
-                        {b.status === "Activated" ? "Running" : b.status})
-                      </button>
-                    );
-                  })}
+                  <span className="font-bold text-slate-600">Batch:</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedHistoryVisit(primaryHistoryBatch)}
+                    className={`px-3 py-1 rounded-lg font-bold border transition ${
+                      String(primaryHistoryBatch.id) ===
+                      String(selectedHistoryVisit.id)
+                        ? "bg-emerald-600 text-white border-emerald-600 shadow-sm"
+                        : "bg-white text-slate-700 border-slate-300 hover:bg-slate-100"
+                    }`}
+                  >
+                    {primaryHistoryBatch.displayBatchName ||
+                      primaryHistoryBatch.batch_label}{" "}
+                    ({primaryHistoryBatch.category} •{" "}
+                    {primaryHistoryBatch.status === "Activated"
+                      ? "Running"
+                      : primaryHistoryBatch.status}
+                    )
+                  </button>
                 </div>
 
-                {olderHistoryBatches.length > 0 && (
+                {otherHistoryBatches.length > 0 && (
                   <div className="flex items-center gap-1.5">
                     <span className="font-semibold text-slate-600">
-                      Previous Batches ({olderHistoryBatches.length}):
+                      Other Batches ({otherHistoryBatches.length}):
                     </span>
                     <select
                       value={
-                        olderHistoryBatches.some(
+                        otherHistoryBatches.some(
                           (b) =>
                             String(b.id) === String(selectedHistoryVisit.id)
                         )
@@ -5073,11 +6083,12 @@ ${currentUserProfile.region}`;
                       }}
                       className="border border-slate-300 rounded-lg px-2.5 py-1 bg-white font-semibold text-slate-800 outline-none"
                     >
-                      <option value="">-- Select Older Batch --</option>
-                      {olderHistoryBatches.map((b: any) => (
+                      <option value="">-- Select Batch --</option>
+                      {otherHistoryBatches.map((b: any) => (
                         <option key={b.id} value={String(b.id)}>
                           {b.displayBatchName || b.batch_label} — {b.category} (
-                          {b.status} • H.Date: {b.hatch_date})
+                          {b.status === "Activated" ? "Running" : b.status} •
+                          H.Date: {b.hatch_date})
                         </option>
                       ))}
                     </select>
@@ -5086,7 +6097,6 @@ ${currentUserProfile.region}`;
               </div>
             )}
 
-            {/* Show Culled Reason Banner if this batch was Culled */}
             {(selectedHistoryVisit.status === "Culled" ||
               selectedBatchCulledReason) && (
               <div className="bg-red-50 border border-red-200 rounded-xl p-2.5 text-xs text-red-900">
@@ -5157,6 +6167,9 @@ ${currentUserProfile.region}`;
                             {col.label}
                           </th>
                         ))}
+                        <th className="border border-slate-300 px-2 py-1.5">
+                          Remarks
+                        </th>
                         <th className="border border-slate-300 px-2 py-1.5 text-center">
                           Action
                         </th>
@@ -5166,7 +6179,7 @@ ${currentUserProfile.region}`;
                       {activeBatchLayerReports.length === 0 ? (
                         <tr>
                           <td
-                            colSpan={10 + layerExtraCols.length}
+                            colSpan={11 + layerExtraCols.length}
                             className="border border-slate-300 py-4 text-center text-slate-400"
                           >
                             No layer reports found for this batch.
@@ -5179,7 +6192,7 @@ ${currentUserProfile.region}`;
                             rep.visit_date
                           );
                           const std = getLayerStdForVisit(
-                            selectedHistoryVisit.breed,
+                            rep.breed || selectedHistoryVisit.breed,
                             wks
                           );
                           return (
@@ -5223,6 +6236,9 @@ ${currentUserProfile.region}`;
                                   {hasValue(rep[col.key]) ? rep[col.key] : "-"}
                                 </td>
                               ))}
+                              <td className="border border-slate-300 px-2 py-1">
+                                {getRemarkText(rep) || "-"}
+                              </td>
                               <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap">
                                 <button
                                   type="button"
@@ -5306,6 +6322,9 @@ ${currentUserProfile.region}`;
                               {col.label}
                             </th>
                           ))}
+                          <th className="border border-slate-300 px-2 py-1.5">
+                            Remarks
+                          </th>
                           <th className="border border-slate-300 px-2 py-1.5 text-center">
                             Action
                           </th>
@@ -5315,7 +6334,7 @@ ${currentUserProfile.region}`;
                         {activeBatchBeforeReports.length === 0 ? (
                           <tr>
                             <td
-                              colSpan={12 + beforeExtraCols.length}
+                              colSpan={13 + beforeExtraCols.length}
                               className="border border-slate-300 py-4 text-center text-slate-400"
                             >
                               No before sale reports found for this batch.
@@ -5328,7 +6347,10 @@ ${currentUserProfile.region}`;
                                 selectedHistoryVisit.hatch_date,
                                 rep.visit_date
                               );
-                              const std = broilerStds[d];
+                              const std = getMeatStdForVisit(
+                                selectedHistoryVisit.category,
+                                d
+                              );
                               return (
                                 <tr key={i} className="hover:bg-slate-50">
                                   <td className="border border-slate-300 px-2 py-1">
@@ -5377,6 +6399,9 @@ ${currentUserProfile.region}`;
                                         : "-"}
                                     </td>
                                   ))}
+                                  <td className="border border-slate-300 px-2 py-1">
+                                    {getRemarkText(rep) || "-"}
+                                  </td>
                                   <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap">
                                     <button
                                       type="button"
@@ -5456,14 +6481,9 @@ ${currentUserProfile.region}`;
                           <th className="border border-slate-300 px-2 py-1.5">
                             Feed Company & Last Feed
                           </th>
-                          {afterExtraCols.map((col) => (
-                            <th
-                              key={col.key}
-                              className="border border-slate-300 px-2 py-1.5"
-                            >
-                              {col.label}
-                            </th>
-                          ))}
+                          <th className="border border-slate-300 px-2 py-1.5">
+                            Remarks
+                          </th>
                           <th className="border border-slate-300 px-2 py-1.5 text-center">
                             Edit
                           </th>
@@ -5473,7 +6493,7 @@ ${currentUserProfile.region}`;
                         {activeBatchAfterReports.length === 0 ? (
                           <tr>
                             <td
-                              colSpan={12 + afterExtraCols.length}
+                              colSpan={13}
                               className="border border-slate-300 py-4 text-center text-slate-400"
                             >
                               No after sale reports found for this batch.
@@ -5485,7 +6505,10 @@ ${currentUserProfile.region}`;
                               selectedHistoryVisit.hatch_date,
                               rep.visit_date
                             );
-                            const std = broilerStds[d];
+                            const std = getMeatStdForVisit(
+                              selectedHistoryVisit.category,
+                              d
+                            );
                             const tB = Number(
                               selectedHistoryVisit.t_birds || 0
                             );
@@ -5536,16 +6559,9 @@ ${currentUserProfile.region}`;
                                     ? `(Last Feed: ${rep.feed})`
                                     : ""}
                                 </td>
-                                {afterExtraCols.map((col) => (
-                                  <td
-                                    key={col.key}
-                                    className="border border-slate-300 px-2 py-1"
-                                  >
-                                    {hasValue(rep[col.key])
-                                      ? rep[col.key]
-                                      : "-"}
-                                  </td>
-                                ))}
+                                <td className="border border-slate-300 px-2 py-1">
+                                  {getRemarkText(rep) || "-"}
+                                </td>
                                 <td className="border border-slate-300 px-2 py-1 text-center">
                                   <button
                                     type="button"
@@ -5613,158 +6629,6 @@ ${currentUserProfile.region}`;
                 className="px-4 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-bold shadow-sm"
               >
                 {copiedWa ? "✓ Copied!" : "Copy Message"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ==================================================
-          MODAL 7: EDIT VISIT MODAL
-      ================================================== */}
-      {showEditModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-3">
-          <div className="bg-white p-5 rounded-xl w-full max-w-md shadow-2xl border border-slate-300 space-y-3 text-xs">
-            <div className="flex justify-between items-center border-b pb-2">
-              <h3 className="text-sm font-bold text-slate-800">
-                Edit Batch Details
-              </h3>
-              <button onClick={() => setShowEditModal(false)}>✖</button>
-            </div>
-
-            <div>
-              <label className="block font-bold text-slate-600 mb-1">
-                Batch Name / Mark
-              </label>
-              <input
-                type="text"
-                value={editForm.batch_label}
-                onChange={(e) =>
-                  setEditForm({ ...editForm, batch_label: e.target.value })
-                }
-                className="w-full rounded border px-2.5 py-1.5"
-              />
-            </div>
-
-            <div>
-              <label className="block font-bold text-slate-600 mb-1">
-                Category
-              </label>
-              <select
-                value={editForm.category}
-                onChange={(e) => {
-                  const cat = e.target.value;
-                  setEditForm({
-                    ...editForm,
-                    category: cat,
-                    breed: (BREEDS_BY_CATEGORY[cat] || [])[0] || "",
-                  });
-                }}
-                className="w-full rounded border px-2.5 py-1.5 bg-white"
-              >
-                {CATEGORIES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block font-bold text-slate-600 mb-1">
-                Hatch Date
-              </label>
-              <input
-                type="date"
-                value={editForm.hatch_date}
-                onChange={(e) =>
-                  setEditForm({ ...editForm, hatch_date: e.target.value })
-                }
-                className="w-full rounded border px-2.5 py-1.5"
-              />
-            </div>
-
-            <div>
-              <label className="block font-bold text-slate-600 mb-1">
-                Hatchery
-              </label>
-              <select
-                value={editForm.hatchery}
-                onChange={(e) =>
-                  setEditForm({ ...editForm, hatchery: e.target.value })
-                }
-                className="w-full rounded border px-2.5 py-1.5 bg-white"
-              >
-                <option value="">Select Hatchery</option>
-                {companies.map((c) => (
-                  <option key={c.id} value={c.company_name}>
-                    {c.company_name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block font-bold text-slate-600 mb-1">
-                Breed
-              </label>
-              <select
-                value={editForm.breed}
-                onChange={(e) =>
-                  setEditForm({ ...editForm, breed: e.target.value })
-                }
-                className="w-full rounded border px-2.5 py-1.5 bg-white"
-              >
-                <option value="">Select Breed</option>
-                {(BREEDS_BY_CATEGORY[editForm.category] || []).map((b) => (
-                  <option key={b} value={b}>
-                    {b}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Box No
-                </label>
-                <input
-                  type="text"
-                  value={editForm.box_no}
-                  onChange={(e) =>
-                    setEditForm({ ...editForm, box_no: e.target.value })
-                  }
-                  className="w-full rounded border px-2.5 py-1.5"
-                />
-              </div>
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Total Birds
-                </label>
-                <input
-                  type="number"
-                  value={editForm.t_birds}
-                  onChange={(e) =>
-                    setEditForm({ ...editForm, t_birds: e.target.value })
-                  }
-                  className="w-full rounded border px-2.5 py-1.5"
-                />
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-3 border-t">
-              <button
-                onClick={() => setShowEditModal(false)}
-                className="px-4 py-1.5 rounded bg-slate-200 text-slate-700 font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleUpdateSubmit}
-                className="px-4 py-1.5 rounded bg-emerald-600 text-white font-semibold"
-              >
-                Update
               </button>
             </div>
           </div>

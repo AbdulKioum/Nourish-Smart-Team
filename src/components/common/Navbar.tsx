@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
-import { FaBell, FaBars, FaTimes } from "react-icons/fa";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import { FaBell, FaBars, FaTimes, FaHome, } from "react-icons/fa";
 import { supabase } from "../../lib/supabase";
 
 function getAgeDays(hatchDateStr?: string, refDateStr?: string): number {
@@ -355,6 +355,15 @@ export default function Navbar({
           <h2 className="text-base sm:text-xl font-bold text-slate-800 truncate">
             {pageTitle}
           </h2>
+
+          <Link
+              to="/"
+              className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-600 flex items-center justify-center transition active:scale-95 shrink-0"
+              title="Home"
+            >
+              <FaHome size={16} />
+            </Link>
+            
         </div>
 
         {/* Right: Notification Icon with Badge */}

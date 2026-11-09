@@ -5,8 +5,43 @@ import { useAuth } from "../context/AuthContext";
 import Sidebar from "../components/common/Sidebar";
 import Navbar from "../components/common/Navbar";
 
-// একবার ওয়ার্কস্পেস লোড হয়ে গেলে মিনিমাইজ বা ট্যাব সুইচে আর লোডিং স্ক্রিন দেখাবে না
+// একবার ওয়ার্কস্পেস লোড হয়ে গেলে মিনিমাইজ বা ট্যাব সুইচে আর লোডিং স্ক্রিন দেখাবে না
 let workspaceInitialized = false;
+
+// প্রিমিয়াম সিম্পল লোডার কম্পোনেন্ট (ক্রিম/অফ-হোয়াইট ব্যাকগ্রাউন্ড ও লিনিয়ার মুভিং প্রোগ্রেস বার সহ)
+function SimpleLoader() {
+  return (
+    <div className="fixed inset-0 z-50 bg-[#F9F8F6] flex flex-col items-center justify-center space-y-4">
+      {/* লোগো ও হালকা পাল্সিং গ্লো */}
+      <div className="relative flex items-center justify-center">
+        <div className="absolute w-20 h-20 rounded-full bg-emerald-500/10 animate-ping" />
+        <img
+          src="/logo smart team.png"
+          alt="Loading..."
+          className="w-14 h-14 object-contain relative z-10 drop-shadow-sm"
+        />
+      </div>
+
+      {/* ব্র্যান্ডিং ও বাম থেকে ডানে মুভ করা স্মুথ লাইন অ্যানিমেশন */}
+      <div className="flex flex-col items-center space-y-2 bg-white px-5 py-3 rounded-2xl shadow-sm border border-slate-200/80 w-52">
+        <span className="text-xs font-bold text-slate-700 tracking-wide">Preparing workspace...</span>
+        
+        {/* প্রোগ্রেস বার কন্টেইনার */}
+        <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden relative">
+          <div className="absolute top-0 bottom-0 w-1/2 bg-emerald-600 rounded-full animate-[shimmer_1.5s_infinite_linear]" />
+        </div>
+      </div>
+
+      {/* অ্যানিমেশনের জন্য কাস্টম স্টাইল */}
+      <style>{`
+        @keyframes shimmer {
+          0% { left: -60%; }
+          100% { left: 100%; }
+        }
+      `}</style>
+    </div>
+  );
+}
 
 export default function MainLayout() {
   const { role, userName, email, loading } = useAuth();
@@ -18,31 +53,12 @@ export default function MainLayout() {
     lastKnownEmailRef.current = email;
   }
 
-  // শুধুমাত্র প্রথমবার অ্যাপ ওপেন করার সময় লোডিং স্ক্রিন দেখাবে
+  // শুধুমাত্র প্রথমবার অ্যাপ ওপেন করার সময় এই প্রিমিয়াম লোডার স্ক্রিন দেখাবে
   if (loading && !workspaceInitialized) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-orange-50 via-white to-amber-100 p-4">
-        <div className="w-full max-w-md text-center">
-          <img
-            src="/logo smart team.png"
-            alt="Smart Team"
-            className="w-24 sm:w-28 mx-auto mb-4 object-contain"
-          />
-          <p className="mt-3 text-gray-700 font-semibold text-base sm:text-lg">
-            Nourish Smart Team
-          </p>
-          <p className="mt-6 text-xs sm:text-sm text-gray-500">
-            Preparing your workspace...
-          </p>
-          <div className="mt-4 h-2 rounded-full bg-gray-200 overflow-hidden max-w-xs mx-auto">
-            <div className="h-full w-1/2 bg-emerald-600 animate-pulse rounded-full" />
-          </div>
-        </div>
-      </div>
-    );
+    return <SimpleLoader />;
   }
 
-  // ব্যাকগ্রাউন্ড রিফ্রেশের সময় যদি সাময়িক loading থাকে কিন্তু আগে ইমেইল ছিল, তাহলে পেজ আনমাউন্ট করবে না
+  // ব্যাকগ্রাউন্ড রিফ্রেশের সময় যদি সাময়িক loading থাকে কিন্তু আগে ইমেইল ছিল, তাহলে পেজ আনমাউন্ট করবে না
   const activeEmail = email || (loading ? lastKnownEmailRef.current : null);
 
   if (!activeEmail) {

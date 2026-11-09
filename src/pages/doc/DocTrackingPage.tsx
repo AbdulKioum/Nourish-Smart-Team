@@ -1062,6 +1062,9 @@ export default function DocTrackingPage() {
           throw new Error("Permission denied to edit this tracking.");
         }
 
+        const oldQty = Number(editingTracking.qty || 0);
+        const qtyDiff = numQty - oldQty; // আগের পরিমাণ ও নতুন পরিমাণের পার্থক্য
+
         const updateData: Record<string, any> = {
           farmer_name: trackForm.farmer_name.trim(),
           address: trackForm.address.trim(),
@@ -1090,6 +1093,57 @@ export default function DocTrackingPage() {
             .update(updateData)
             .eq("id", editingTracking.id);
           if (retryErr) throw retryErr;
+        }
+
+        // --- Farmer Page & Vet Visits Stock Sync on Edit ---
+        const targetFarmerId = editingTracking.farmer_id || selectedFarmerId;
+        if (targetFarmerId && qtyDiff !== 0) {
+          const { data: frmRec } = await supabase
+            .from("farmers")
+            .select("*")
+            .eq("id", targetFarmerId)
+            .single();
+
+          if (frmRec) {
+            const stockKey = STOCK_KEY_BY_CATEGORY[finalCategory];
+            if (stockKey) {
+              const currentStock = Number(frmRec[stockKey] || 0);
+              // বক্সের বোনাসসহ এফেক্টিভ পার্থক্য হিসাব
+              const boxDiff = numBoxes - Number(editingTracking.b_qty || 0);
+              const effectiveDiff = qtyDiff + boxDiff;
+
+              const newStock = Math.max(0, currentStock + effectiveDiff);
+              await supabase
+                .from("farmers")
+                .update({ [stockKey]: newStock })
+                .eq("id", targetFarmerId);
+            }
+          }
+
+          // Vet Visits running batch birds update
+          const { data: runningVisit } = await supabase
+            .from("vet_visits")
+            .select("id, t_birds")
+            .eq("farmer_id", String(targetFarmerId))
+            .in("status", ["Activated", "Running"])
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .single();
+
+          if (runningVisit) {
+            const currentVisitBirds = Number(runningVisit.t_birds || 0);
+            const boxDiff = numBoxes - Number(editingTracking.b_qty || 0);
+            const effectiveVisitDiff = qtyDiff + boxDiff;
+            const newVisitBirds = Math.max(0, currentVisitBirds + effectiveVisitDiff);
+
+            await supabase
+              .from("vet_visits")
+              .update({
+                t_birds: newVisitBirds,
+                box_no: numBoxes > 0 ? String(numBoxes) : "",
+              })
+              .eq("id", runningVisit.id);
+          }
         }
 
         setTrackings((prev) =>

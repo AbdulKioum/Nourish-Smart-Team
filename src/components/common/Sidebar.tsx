@@ -14,8 +14,11 @@ import {
   FaTimes,
   FaSignOutAlt,
   FaUserCircle,
+  FaMapMarkerAlt,
+  FaStethoscope,
 } from "react-icons/fa";
 import { supabase } from "../../lib/supabase";
+
 
 function parseList(val: any): string[] {
   if (!val) return [];
@@ -249,11 +252,21 @@ export default function Sidebar({
           </Link>
 
           <Link
+            to="/farmer-tracking"
+            onClick={handleMenuClick}
+            className={menuClass("/farmer-tracking")}
+          >
+            <FaMapMarkerAlt className="text-base shrink-0" />
+            <span>Farmer Tracking</span>
+          </Link>
+
+        
+          <Link
             to="/visits"
             onClick={handleMenuClick}
             className={menuClass("/visits")}
           >
-            <FaClipboardList className="text-base shrink-0" />
+            <FaStethoscope className="text-base shrink-0" />
             <span>Vet Visits</span>
           </Link>
 

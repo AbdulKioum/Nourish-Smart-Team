@@ -22,6 +22,42 @@ import UsersPage from "../pages/users/UsersPage";
 import FarmerStatusPage from "../pages/farmers/FarmerStatusPage";
 import DocAgentsPage from "../pages/doc/DocAgentsPage";
 import DocTrackingPage from "../pages/doc/DocTrackingPage";
+import FarmerTrackingPage from "../pages/farmers/FarmerTrackingPage"; 
+
+// Loader
+function SimpleLoader() {
+  return (
+    <div className="fixed inset-0 z-50 bg-[#F9F8F6] flex flex-col items-center justify-center space-y-4">
+      
+      <div className="relative flex items-center justify-center">
+        <div className="absolute w-20 h-20 rounded-full bg-emerald-500/10 animate-ping" />
+        <img
+          src="/logo smart team.png"
+          alt="Loading..."
+          className="w-14 h-14 object-contain relative z-10 drop-shadow-sm"
+        />
+      </div>
+
+      
+      <div className="flex flex-col items-center space-y-2 bg-white px-5 py-3 rounded-2xl shadow-sm border border-slate-200/80 w-48">
+        <span className="text-xs font-bold text-slate-700 tracking-wide">Loading Smart Team...</span>
+        
+        
+        <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden relative">
+          <div className="absolute top-0 bottom-0 w-1/2 bg-emerald-600 rounded-full animate-[shimmer_1.5s_infinite_linear]" />
+        </div>
+      </div>
+
+      
+      <style>{`
+        @keyframes shimmer {
+          0% { left: -60%; }
+          100% { left: 100%; }
+        }
+      `}</style>
+    </div>
+  );
+}
 
 export default function AppRoutes() {
   const [loading, setLoading] = useState(true);
@@ -39,8 +75,6 @@ export default function AppRoutes() {
       (event, newSession) => {
         const newUserId = newSession?.user?.id || null;
 
-        // Browser minimize ba tab switch korle TOKEN_REFRESHED / SIGNED_IN fire hoy.
-        // Jodi aki user thake, tahole state update kore reload/re-render korbo na.
         if (event === "SIGNED_OUT") {
           currentUserIdRef.current = null;
           setSession(null);
@@ -55,11 +89,7 @@ export default function AppRoutes() {
   }, []);
 
   if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-slate-500 text-sm">
-        Loading...
-      </div>
-    );
+    return <SimpleLoader />;
   }
 
   return (
@@ -89,6 +119,7 @@ export default function AppRoutes() {
           <Route path="/farmer-status" element={<FarmerStatusPage />} />
           <Route path="/doc-agents" element={<DocAgentsPage />} />
           <Route path="/doc-tracking" element={<DocTrackingPage />} />
+          <Route path="/farmer-tracking" element={<FarmerTrackingPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

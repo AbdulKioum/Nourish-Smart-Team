@@ -34,6 +34,9 @@ import {
   Navigation,
 } from "lucide-react";
 import ExcelJS from "exceljs";
+import { Filesystem, Directory } from "@capacitor/filesystem";
+import { Share } from "@capacitor/share";
+import { Capacitor } from "@capacitor/core";
 
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 
@@ -932,15 +935,77 @@ export default function FarmersPage() {
     worksheet.pageSetup.fitToHeight = 0;
   }
 
-  async function saveWorkbook(workbook: ExcelJS.Workbook, filename: string) {
-    const buffer = await workbook.xlsx.writeBuffer();
-    saveAs(
-      new Blob([buffer], {
-        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      }),
-      filename
-    );
+
+
+  async function saveWorkbook(workbook: ExcelJS.Workbook, fileName: string) {
+  const buffer = await workbook.xlsx.writeBuffer();
+  await saveBufferOrBlob(buffer, fileName);
+}
+
+// XLSX বা Blob বাইনারি সেভ করার কমন ফাংশন (DOC Tracking স্টাইল)
+async function saveBufferOrBlob(bufferOrBlob: ArrayBuffer | Blob, fileName: string) {
+  try {
+    const arrayBuffer =
+      bufferOrBlob instanceof Blob
+        ? await bufferOrBlob.arrayBuffer()
+        : bufferOrBlob;
+
+    if (Capacitor.isNativePlatform()) {
+      let binary = "";
+      const bytes = new Uint8Array(arrayBuffer);
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(
+          null,
+          Array.from(bytes.subarray(i, i + chunkSize))
+        );
+      }
+      const base64Data = window.btoa(binary);
+
+      const savedFile = await Filesystem.writeFile({
+        path: fileName,
+        data: base64Data,
+        directory: Directory.Documents,
+        recursive: true,
+      });
+
+      alert(`File saved successfully:\n📁 Documents/${fileName}`);
+
+      if (savedFile.uri) {
+        try {
+          await Share.share({
+            title: fileName,
+            url: savedFile.uri,
+            dialogTitle: "Open or View Excel File",
+          });
+        } catch {
+          // user cancelled share dialog, ignore
+        }
+      }
+    } else {
+      // for web, create a temporary link to download the file
+      const blob =
+        bufferOrBlob instanceof Blob
+          ? bufferOrBlob
+          : new Blob([arrayBuffer], {
+              type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    }
+  } catch (err: any) {
+    console.error("Export save error:", err);
+    alert("Export save error: " + (err?.message || ""));
   }
+}
+
+
 
   async function exportAllFarmersExcel() {
     try {
@@ -1103,7 +1168,8 @@ export default function FarmersPage() {
         workbook,
         `All_Farmers_Report_${new Date().toISOString().slice(0, 10)}.xlsx`
       );
-    } catch {
+    } catch (err: any) {
+      console.error("All farmers export error:", err);
       alert("Excel export failed.");
     }
   }
@@ -1169,7 +1235,8 @@ export default function FarmersPage() {
         workbook,
         `Poultry_Farmers_${new Date().toISOString().slice(0, 10)}.xlsx`
       );
-    } catch {
+    } catch (err: any) {
+      console.error("Poultry export error:", err);
       alert("Poultry export failed.");
     }
   }
@@ -1239,7 +1306,8 @@ export default function FarmersPage() {
         workbook,
         `Cattle_Farmers_${new Date().toISOString().slice(0, 10)}.xlsx`
       );
-    } catch {
+    } catch (err: any) {
+      console.error("Cattle export error:", err);
       alert("Cattle export failed.");
     }
   }
@@ -1314,12 +1382,13 @@ export default function FarmersPage() {
         workbook,
         `Fish_Farmers_${new Date().toISOString().slice(0, 10)}.xlsx`
       );
-    } catch {
+    } catch (err: any) {
+      console.error("Fish export error:", err);
       alert("Fish export failed.");
     }
   }
 
-  function exportFarmerSummaryExcel() {
+  async function exportFarmerSummaryExcel() {
     try {
       const exportData = companySummary.map((row: any) => ({
         Company: row.company,
@@ -1338,18 +1407,18 @@ export default function FarmersPage() {
       ];
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, "Company Summary");
+      
+      const today = new Date().toISOString().split("T")[0];
+      const fileName = `Company_Farmer_Summary_${today}.xlsx`;
+
       const excelBuffer = XLSX.write(workbook, {
         bookType: "xlsx",
         type: "array",
       });
-      const today = new Date().toISOString().split("T")[0];
-      saveAs(
-        new Blob([excelBuffer], {
-          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        }),
-        `Company_Farmer_Summary_${today}.xlsx`
-      );
-    } catch {
+
+      await saveBufferOrBlob(excelBuffer, fileName);
+    } catch (err: any) {
+      console.error("Summary export error:", err);
       alert("Company Summary export failed.");
     }
   }

@@ -13,6 +13,9 @@ import {
 } from "lucide-react";
 import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
+import { Filesystem, Directory } from "@capacitor/filesystem";
+import { Share } from "@capacitor/share";
+import { Capacitor } from "@capacitor/core";
 
 export const CATEGORIES = [
   "Broiler",
@@ -2348,6 +2351,68 @@ ${currentUserProfile.region}`;
     return "";
   })();
 
+  async function saveBufferOrBlob(
+  bufferOrBlob: ArrayBuffer | Blob,
+  fileName: string
+) {
+  try {
+    const arrayBuffer =
+      bufferOrBlob instanceof Blob
+        ? await bufferOrBlob.arrayBuffer()
+        : bufferOrBlob;
+
+    if (Capacitor.isNativePlatform()) {
+      let binary = "";
+      const bytes = new Uint8Array(arrayBuffer);
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(
+          null,
+          Array.from(bytes.subarray(i, i + chunkSize))
+        );
+      }
+      const base64Data = window.btoa(binary);
+
+      const savedFile = await Filesystem.writeFile({
+        path: fileName,
+        data: base64Data,
+        directory: Directory.Documents,
+        recursive: true,
+      });
+
+      alert(`File saved successfully:\n📁 Documents/${fileName}`);
+
+      if (savedFile.uri) {
+        try {
+          await Share.share({
+            title: fileName,
+            url: savedFile.uri,
+            dialogTitle: "Open or View Excel File",
+          });
+        } catch {}
+      }
+    } else {
+      const blob =
+        bufferOrBlob instanceof Blob
+          ? bufferOrBlob
+          : new Blob([arrayBuffer], {
+              type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    }
+  } catch (err: any) {
+    console.error("Export save error:", err);
+    alert("File save error: " + (err?.message || ""));
+  }
+}
+
   async function exportVisitHistoryExcel() {
     if (!selectedHistoryVisit) return;
     const workbook = new ExcelJS.Workbook();
@@ -2485,15 +2550,23 @@ ${currentUserProfile.region}`;
       });
     }
 
-    const buf = await workbook.xlsx.writeBuffer();
-    saveAs(
-      new Blob([buf]),
-      `Batch_History_${
-        selectedHistoryVisit.displayBatchName ||
-        selectedHistoryVisit.batch_label ||
-        selectedHistoryVisit.farmers?.farmer_name
-      }.xlsx`
-    );
+    const batchName =
+      selectedHistoryVisit.displayBatchName ||
+      selectedHistoryVisit.batch_label ||
+      selectedHistoryVisit.farmers?.farmer_name ||
+      "Report";
+    const fileName = `Batch_History_${batchName.replace(
+      /[\\/:*?"<>|]/g,
+      "_"
+    )}.xlsx`;
+
+    try {
+      const excelBuffer = await workbook.xlsx.writeBuffer();
+      await saveBufferOrBlob(excelBuffer, fileName);
+    } catch (err: any) {
+      console.error("Visit history export error:", err);
+      alert("Visit history export failed.");
+    }
   }
 
   const filterUpazilaOptions = Array.from(
@@ -2875,51 +2948,55 @@ ${currentUserProfile.region}`;
   }
 
   async function exportFilteredFarmersExcel() {
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet("Farmer Status");
-    sheet.addRow([
-      "SL",
-      "Status",
-      "Date",
-      "Category",
-      "Agent",
-      "Farmer Name",
-      "Mobile",
-      "Address",
-      "Nourish Conversion",
-    ]);
-    sheet.getRow(1).eachCell((c) => {
-      c.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "0F172A" },
-      };
-      c.font = { bold: true, color: { argb: "FFFFFFFF" } };
-    });
-    tableFilteredRows.forEach((r, idx) => {
-      const f = r.farmer;
+    try {
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet("Farmer Status");
       sheet.addRow([
-        idx + 1,
-        r.status,
-        r.kind === "batch" ? r.visit.hatch_date || "-" : f.statusDate || "-",
-        r.category,
-        f.agentName,
-        r.visit?.displayBatchName || f.farmer_name,
-        f.mobile || "-",
-        [f.village, f.upazila].filter(Boolean).join(", "),
-        f.nourishTag
-          ? `${f.nourishTag}${f.nourishTagDate ? ` (${f.nourishTagDate})` : ""}`
-          : "-",
+        "SL",
+        "Status",
+        "Date",
+        "Category",
+        "Agent",
+        "Farmer Name",
+        "Mobile",
+        "Address",
+        "Nourish Conversion",
       ]);
-    });
-    sheet.columns.forEach((col) => (col.width = 20));
-    const buf = await workbook.xlsx.writeBuffer();
-    saveAs(
-      new Blob([buf]),
-      `Farmer_Status_${selectedStatusFilter}_${new Date()
-        .toISOString()
-        .slice(0, 10)}.xlsx`
-    );
+      sheet.getRow(1).eachCell((c) => {
+        c.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "0F172A" },
+        };
+        c.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      });
+      tableFilteredRows.forEach((r, idx) => {
+        const f = r.farmer;
+        sheet.addRow([
+          idx + 1,
+          r.status,
+          r.kind === "batch" ? r.visit.hatch_date || "-" : f.statusDate || "-",
+          r.category,
+          f.agentName,
+          r.visit?.displayBatchName || f.farmer_name,
+          f.mobile || "-",
+          [f.village, f.upazila].filter(Boolean).join(", "),
+          f.nourishTag
+            ? `${f.nourishTag}${f.nourishTagDate ? ` (${f.nourishTagDate})` : ""}`
+            : "-",
+        ]);
+      });
+      sheet.columns.forEach((col) => (col.width = 20));
+
+      const today = new Date().toISOString().slice(0, 10);
+      const fileName = `Farmer_Status_${selectedStatusFilter || "All"}_${today}.xlsx`;
+
+      const excelBuffer = await workbook.xlsx.writeBuffer();
+      await saveBufferOrBlob(excelBuffer, fileName);
+    } catch (err: any) {
+      console.error("Filtered farmers export error:", err);
+      alert("Farmer Status export failed.");
+    }
   }
 
   const REPORT_FIELDS: Record<

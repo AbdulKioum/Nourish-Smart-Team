@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import XLSX from "xlsx-js-style";
+import ExcelJS from "exceljs";
 import { supabase } from "../../lib/supabase";
 import {
   FaFileUpload,
@@ -17,6 +18,7 @@ import { RotateCcw } from "lucide-react";
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
 import { Capacitor } from "@capacitor/core";
+
 
 const FARM_CATEGORIES = [
   "Broiler",
@@ -1693,200 +1695,258 @@ export default function DocTrackingPage() {
 
 
 
-  async function handleExportExcel() {
-    if (exportSelectedTypes.length === 0) {
-      alert("Please select at least one DOC Type to export.");
-      return;
-    }
+ async function handleExportExcel() {
+  if (exportSelectedTypes.length === 0) {
+    alert("Please select at least one DOC Type to export.");
+    return;
+  }
 
-    const exportRows: Record<string, any>[] = [];
-    let grandTotalSupply = 0;
-    let grandTotalTracked = 0;
+  const exportRows: Record<string, any>[] = [];
+  let grandTotalSupply = 0;
+  let grandTotalTracked = 0;
 
-    visibleAgents.forEach((agent) => {
-      const agentSupplies = filteredSupplies.filter(
-        (s) =>
-          normStr(s.doc_id) === normStr(agent.doc_id) &&
-          exportSelectedTypes.includes(normCode(s.pcd))
+  visibleAgents.forEach((agent) => {
+    const agentSupplies = filteredSupplies.filter(
+      (s) =>
+        normStr(s.doc_id) === normStr(agent.doc_id) &&
+        exportSelectedTypes.includes(normCode(s.pcd))
+    );
+
+    const groups = new Map<
+      string,
+      { h_date: string; pcd: string; qty: number; b_qty: number }
+    >();
+    agentSupplies.forEach((s) => {
+      const key = `${normDate(s.h_date)}_${normCode(s.pcd)}`;
+      const prev = groups.get(key);
+      if (prev) {
+        prev.qty += Number(s.qty) || 0;
+        prev.b_qty += Number(s.b_qty) || 0;
+      } else {
+        groups.set(key, {
+          h_date: normDate(s.h_date),
+          pcd: normCode(s.pcd),
+          qty: Number(s.qty) || 0,
+          b_qty: Number(s.b_qty) || 0,
+        });
+      }
+    });
+
+    groups.forEach((g) => {
+      grandTotalSupply += g.qty;
+      const docPerBox = g.qty > 0 && g.b_qty > 0 ? g.qty / g.b_qty : 0;
+
+      const matchingTracks = filteredTrackings.filter(
+        (t) =>
+          normStr(t.doc_id) === normStr(agent.doc_id) &&
+          normDate(t.h_date) === g.h_date &&
+          normCode(t.pcd) === g.pcd
       );
 
-      const groups = new Map<
-        string,
-        { h_date: string; pcd: string; qty: number; b_qty: number }
-      >();
-      agentSupplies.forEach((s) => {
-        const key = `${normDate(s.h_date)}_${normCode(s.pcd)}`;
-        const prev = groups.get(key);
-        if (prev) {
-          prev.qty += Number(s.qty) || 0;
-          prev.b_qty += Number(s.b_qty) || 0;
-        } else {
-          groups.set(key, {
-            h_date: normDate(s.h_date),
-            pcd: normCode(s.pcd),
-            qty: Number(s.qty) || 0,
-            b_qty: Number(s.b_qty) || 0,
-          });
-        }
-      });
+      if (matchingTracks.length === 0) {
+        exportRows.push({
+          "H.Date": g.h_date,
+          "DOC.ID": agent.doc_id,
+          Agent: agent.agent_name,
+          "Agent Address": `${agent.upazila}, ${agent.district}`,
+          "DOC Qty": g.qty,
+          "DOC Type": g.pcd,
+          "AG/B+": "-",
+          Farmer: "-",
+          "Farmer Address": "-",
+          "Farmer Mobile": "-",
+          "Tracked Qty": 0,
+          "Box Qty": 0,
+          "Feed Company": "-",
+          "Tracked By": "-",
+          Remark: "Untracked",
+        });
+      } else {
+        matchingTracks.forEach((t, index) => {
+          grandTotalTracked += Number(t.qty) || 0;
+          const trBox =
+            t.b_qty !== undefined && t.b_qty !== null
+              ? Number(t.b_qty)
+              : docPerBox > 0
+              ? Math.round(Number(t.qty || 0) / docPerBox)
+              : 0;
 
-      groups.forEach((g) => {
-        grandTotalSupply += g.qty;
-        const docPerBox = g.qty > 0 && g.b_qty > 0 ? g.qty / g.b_qty : 0;
-
-        const matchingTracks = filteredTrackings.filter(
-          (t) =>
-            normStr(t.doc_id) === normStr(agent.doc_id) &&
-            normDate(t.h_date) === g.h_date &&
-            normCode(t.pcd) === g.pcd
-        );
-
-        if (matchingTracks.length === 0) {
           exportRows.push({
             "H.Date": g.h_date,
             "DOC.ID": agent.doc_id,
             Agent: agent.agent_name,
             "Agent Address": `${agent.upazila}, ${agent.district}`,
-            "DOC Qty": g.qty,
+            "DOC Qty": index === 0 ? g.qty : "",
             "DOC Type": g.pcd,
-            "AG/B+": "-",
-            Farmer: "-",
-            "Farmer Address": "-",
-            "Farmer Mobile": "-",
-            "Tracked Qty": 0,
-            "Box Qty": 0,
-            "Feed Company": "-",
-            "Tracked By": "-",
-            Remark: "Untracked",
+            "AG/B+": t.ag_b || "-",
+            Farmer: t.farmer_name,
+            "Farmer Address": t.address || "-",
+            "Farmer Mobile": t.mobile || "-",
+            "Tracked Qty": Number(t.qty) || 0,
+            "Box Qty": trBox,
+            "Feed Company": t.feed_company,
+            "Tracked By": t.tracked_by_name || "-",
+            Remark: t.remark || "-",
           });
-        } else {
-          matchingTracks.forEach((t, index) => {
-            grandTotalTracked += Number(t.qty) || 0;
-            const trBox =
-              t.b_qty !== undefined && t.b_qty !== null
-                ? Number(t.b_qty)
-                : docPerBox > 0
-                ? Math.round(Number(t.qty || 0) / docPerBox)
-                : 0;
-
-            exportRows.push({
-              "H.Date": g.h_date,
-              "DOC.ID": agent.doc_id,
-              Agent: agent.agent_name,
-              "Agent Address": `${agent.upazila}, ${agent.district}`,
-              "DOC Qty": index === 0 ? g.qty : "",
-              "DOC Type": g.pcd,
-              "AG/B+": t.ag_b || "-",
-              Farmer: t.farmer_name,
-              "Farmer Address": t.address || "-",
-              "Farmer Mobile": t.mobile || "-",
-              "Tracked Qty": Number(t.qty) || 0,
-              "Box Qty": trBox,
-              "Feed Company": t.feed_company,
-              "Tracked By": t.tracked_by_name || "-",
-              Remark: t.remark || "-",
-            });
-          });
-        }
-      });
-    });
-
-    if (exportRows.length === 0) {
-      alert("No tracking data found for the selected DOC Type(s).");
-      return;
-    }
-
-    exportRows.push({
-      "H.Date": "TOTAL",
-      "DOC.ID": "",
-      Agent: "",
-      "Agent Address": "",
-      "DOC Qty": grandTotalSupply,
-      "DOC Type": "",
-      "AG/B+": "",
-      Farmer: "",
-      "Farmer Address": "",
-      "Farmer Mobile": "",
-      "Tracked Qty": grandTotalTracked,
-      "Box Qty": "",
-      "Feed Company": "",
-      "Tracked By": "",
-      Remark: `Untracked: ${Math.max(
-        0,
-        grandTotalSupply - grandTotalTracked
-      )}`,
-    });
-
-    const worksheet = XLSX.utils.json_to_sheet(exportRows);
-    const headers = Object.keys(exportRows[0]);
-    worksheet["!cols"] = headers.map((header) => {
-      let maxLen = header.length;
-      exportRows.forEach((row) => {
-        const val =
-          row[header] !== undefined && row[header] !== null
-            ? String(row[header])
-            : "";
-        if (val.length > maxLen) maxLen = val.length;
-      });
-      return { wch: Math.max(maxLen + 5, 12) };
-    });
-
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "DOC_Tracking");
-
-    const fileName = `DOC_Tracking_${dateRangeLabel || "Report"}_${exportSelectedTypes.join("-")}.xlsx`;
-
-    try {
-      // XLSX দিয়ে বাইনারি বাফার তৈরি করা
-      const excelBuffer = XLSX.write(workbook, {
-        bookType: "xlsx",
-        type: "array",
-      });
-
-      if (Capacitor.isNativePlatform()) {
-        // মোবাইল অ্যাপের জন্য (Capacitor Filesystem দিয়ে Documents ফোল্ডারে সেভ করা)
-        let binary = "";
-        const bytes = new Uint8Array(excelBuffer);
-        const chunkSize = 0x8000;
-        for (let i = 0; i < bytes.length; i += chunkSize) {
-          binary += String.fromCharCode.apply(
-            null,
-            Array.from(bytes.subarray(i, i + chunkSize))
-          );
-        }
-        const base64Data = window.btoa(binary);
-
-        const savedFile = await Filesystem.writeFile({
-          path: fileName,
-          data: base64Data,
-          directory: Directory.Documents,
-          recursive: true,
         });
-
-        alert(`ফাইল সফলভাবে সেভ হয়েছে:\n📁 Documents/${fileName}`);
-
-        if (savedFile.uri) {
-          try {
-            await Share.share({
-              title: fileName,
-              url: savedFile.uri,
-              dialogTitle: "Open or Share Excel Report",
-            });
-          } catch {
-            // ইউজার শেয়ার বক্স ক্লোজ করলে ইগনোর করবে
-          }
-        }
-      } else {
-        // পিসি বা ব্রাউজারের জন্য সাধারণ ডাউনলোড
-        XLSX.writeFile(workbook, fileName);
       }
-    } catch (err: any) {
-      console.error("Export error:", err);
-      alert("এক্সেল ফাইল ডাউনলোড করতে সমস্যা হয়েছে: " + (err?.message || ""));
-    } finally {
-      setIsExportModalOpen(false);
-    }
+    });
+  });
+
+  if (exportRows.length === 0) {
+    alert("No tracking data found for the selected DOC Type(s).");
+    return;
   }
+
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet("DOC_Tracking");
+  worksheet.views = [{ state: "frozen", ySplit: 1 }];
+
+  // ১. হেডার রো অ্যাড ও স্টাইলিং (ডিপ নেভী ব্লু কালার)
+  const headers = Object.keys(exportRows[0]);
+  const headerRow = worksheet.addRow(headers);
+  headerRow.eachCell((cell) => {
+    cell.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "1E3A8A" },
+    };
+    cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    cell.border = {
+      top: { style: "thin", color: { argb: "CBD5E1" } },
+      left: { style: "thin", color: { argb: "CBD5E1" } },
+      bottom: { style: "medium", color: { argb: "0F172A" } },
+      right: { style: "thin", color: { argb: "CBD5E1" } },
+    };
+  });
+  headerRow.height = 26;
+
+  // ২. ডাটা রো গুলো অ্যাড ও হালকা জেব্রা শেড
+  exportRows.forEach((r, idx) => {
+    const rowValues = headers.map((h) => r[h]);
+    const row = worksheet.addRow(rowValues);
+    const rowBg = idx % 2 === 0 ? "FFFFFF" : "F8FAFC";
+
+    row.eachCell((cell) => {
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: rowBg },
+      };
+      cell.font = { color: { argb: "0F172A" } };
+      cell.alignment = { vertical: "middle", wrapText: true };
+      cell.border = {
+        top: { style: "thin", color: { argb: "E2E8F0" } },
+        left: { style: "thin", color: { argb: "E2E8F0" } },
+        bottom: { style: "thin", color: { argb: "E2E8F0" } },
+        right: { style: "thin", color: { argb: "E2E8F0" } },
+      };
+    });
+    row.height = 22;
+  });
+
+  // ৩. টোটাল রো (সফট অ্যাম্বার ব্যাকগ্রাউন্ড)
+  const totalRowValues = headers.map((h) => {
+    if (h === "H.Date") return "TOTAL";
+    if (h === "DOC Qty") return grandTotalSupply;
+    if (h === "Tracked Qty") return grandTotalTracked;
+    if (h === "Remark")
+      return `Untracked: ${Math.max(0, grandTotalSupply - grandTotalTracked)}`;
+    return "";
+  });
+
+  const totalRow = worksheet.addRow(totalRowValues);
+  totalRow.eachCell((cell) => {
+    cell.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FEF3C7" },
+    };
+    cell.font = { bold: true, color: { argb: "92400E" } };
+    cell.alignment = { vertical: "middle", wrapText: true };
+    cell.border = {
+      top: { style: "medium", color: { argb: "D97706" } },
+      left: { style: "thin", color: { argb: "CBD5E1" } },
+      bottom: { style: "medium", color: { argb: "D97706" } },
+      right: { style: "thin", color: { argb: "CBD5E1" } },
+    };
+  });
+  totalRow.height = 25;
+
+  // ৪. কলাম উইডথ সেট করা
+  worksheet.columns.forEach((column, i) => {
+    let maxLen = headers[i].length;
+    exportRows.forEach((row) => {
+      const val =
+        row[headers[i]] !== undefined && row[headers[i]] !== null
+          ? String(row[headers[i]])
+          : "";
+      if (val.length > maxLen) maxLen = val.length;
+    });
+    column.width = Math.max(maxLen + 5, 12);
+  });
+
+  worksheet.autoFilter = {
+    from: "A1",
+    to: `${String.fromCharCode(64 + headers.length)}1`,
+  };
+
+  const fileName = `DOC_Tracking_${dateRangeLabel || "Report"}_${exportSelectedTypes.join("-")}.xlsx`;
+
+  try {
+    const excelBuffer = await workbook.xlsx.writeBuffer();
+
+    if (Capacitor.isNativePlatform()) {
+      let binary = "";
+      const bytes = new Uint8Array(excelBuffer);
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(
+          null,
+          Array.from(bytes.subarray(i, i + chunkSize))
+        );
+      }
+      const base64Data = window.btoa(binary);
+
+      const savedFile = await Filesystem.writeFile({
+        path: fileName,
+        data: base64Data,
+        directory: Directory.Documents,
+        recursive: true,
+      });
+
+      alert(`File saved successfully:\n📁 Documents/${fileName}`);
+
+      if (savedFile.uri) {
+        try {
+          await Share.share({
+            title: fileName,
+            url: savedFile.uri,
+            dialogTitle: "Open or View Excel File",
+          });
+        } catch {}
+      }
+    } else {
+      const blob = new Blob([excelBuffer], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    }
+  } catch (err: any) {
+    console.error("Export error:", err);
+    alert("Failed to export: " + (err?.message || ""));
+  } finally {
+    setIsExportModalOpen(false);
+  }
+}
 
   const reportSupplies = supplies.filter((s) => {
     if (!matchingAgentDocIds.has(normStr(s.doc_id))) return false;

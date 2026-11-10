@@ -684,7 +684,7 @@ function FarmerMapModal({
           perm = await Geolocation.requestPermissions();
         }
         if (perm.location !== "granted") {
-          alert("লোকেশন পারমিশন দেওয়া হয়নি।");
+          alert("Location permission is required. Please enable it in your phone settings.");
           setLocating(false);
           return;
         }
@@ -699,12 +699,12 @@ function FarmerMapModal({
           (p) => {
             setMyLoc([p.coords.latitude, p.coords.longitude]);
           },
-          () => alert("ব্রাউজারে লোকেশন পাওয়া যায়নি।"),
+          () => alert("Failed to get location from browser."),
           { enableHighAccuracy: true }
         );
       }
     } catch (err: any) {
-      alert("লোকেশন এরর: " + err.message);
+      alert("Location error: " + err.message);
     } finally {
       setLocating(false);
     }
@@ -760,7 +760,7 @@ function FarmerMapModal({
         </div>
 
         <div className="relative min-h-0 flex-1">
-          {/* ম্যাপের ওপর ভাসমান Locate Me ও দূরত্ব ব্যাজ */}
+          {/* locate me floating */}
           <div className="absolute top-3 right-3 z-[1000] flex flex-col items-end gap-1.5">
             <button
               type="button"

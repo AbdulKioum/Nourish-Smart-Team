@@ -35,6 +35,9 @@ import {
   CheckCircle2,
   Navigation,
 } from "lucide-react";
+import { Filesystem, Directory } from "@capacitor/filesystem";
+import { Share } from "@capacitor/share";
+import { Capacitor } from "@capacitor/core";
 
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 
@@ -756,131 +759,165 @@ export default function RetailerPage() {
   // ==================================================
   // EXCEL EXPORT
   // ==================================================
+ 
   async function exportRetailersExcel() {
-    try {
-      const workbook = new ExcelJS.Workbook();
-      const worksheet = workbook.addWorksheet("Retailers");
+  try {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("Retailers");
 
-      worksheet.getRow(1).values = [
-        "Company",
-        "Parent Agent",
-        "Retailer Name",
-        "Proprietor",
-        "Mobile",
-        "Bazar",
-        "District",
-        "Upazila",
-        "Union",
-        "Broiler Sale",
-        "Layer Sale",
-        "Sonali Sale",
-        "Cattle Sale",
-        "Fish Sale",
-        "Total Monthly Sale",
-        "Focus Item",
-        "Status",
-      ];
+    worksheet.getRow(1).values = [
+      "Company",
+      "Parent Agent",
+      "Retailer Name",
+      "Proprietor",
+      "Mobile",
+      "Bazar",
+      "District",
+      "Upazila",
+      "Union",
+      "Broiler Sale",
+      "Layer Sale",
+      "Sonali Sale",
+      "Cattle Sale",
+      "Fish Sale",
+      "Total Monthly Sale",
+      "Focus Item",
+      "Status",
+    ];
 
-      sortedRetailers.forEach((r: any) => {
-        worksheet.addRow([
-          r.companies?.company_name || "",
-          r.agents?.agent_name || "",
-          r.retailer_name || "",
-          r.proprietor || "",
-          r.mobile || "",
-          r.bazar || "",
-          r.district || "",
-          r.upazila || "",
-          r.union_name || "",
-          Number(r.broiler_sale || 0),
-          Number(r.layer_sale || 0),
-          Number(r.sonali_sale || 0),
-          Number(r.cattle_sale || 0),
-          Number(r.fish_sale || 0),
-          Number(r.monthly_sale || 0),
-          r.focus_item || "",
-          r.status || "",
-        ]);
-      });
+    sortedRetailers.forEach((r: any) => {
+      worksheet.addRow([
+        r.companies?.company_name || "",
+        r.agents?.agent_name || "",
+        r.retailer_name || "",
+        r.proprietor || "",
+        r.mobile || "",
+        r.bazar || "",
+        r.district || "",
+        r.upazila || "",
+        r.union_name || "",
+        Number(r.broiler_sale || 0),
+        Number(r.layer_sale || 0),
+        Number(r.sonali_sale || 0),
+        Number(r.cattle_sale || 0),
+        Number(r.fish_sale || 0),
+        Number(r.monthly_sale || 0),
+        r.focus_item || "",
+        r.status || "",
+      ]);
+    });
 
-      for (let col = 1; col <= 17; col++) {
-        const cell = worksheet.getCell(1, col);
-        cell.fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: {
-            argb:
-              col === 15
-                ? "15803D"
-                : col >= 10 && col <= 14
-                ? "D97706"
-                : "1E3A8A",
-          },
-        };
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.alignment = {
+    for (let col = 1; col <= 17; col++) {
+      const cell = worksheet.getCell(1, col);
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: {
+          argb:
+            col === 15
+              ? "15803D"
+              : col >= 10 && col <= 14
+              ? "D97706"
+              : "1E3A8A",
+        },
+      };
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+        wrapText: true,
+      };
+      cell.border = {
+        top: { style: "thin", color: { argb: "FFFFFF" } },
+        left: { style: "thin", color: { argb: "FFFFFF" } },
+        bottom: { style: "thin", color: { argb: "FFFFFF" } },
+        right: { style: "thin", color: { argb: "FFFFFF" } },
+      };
+    }
+
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber >= 2) {
+        row.eachCell((cell) => {
+          cell.border = {
+            top: { style: "thin", color: { argb: "D1D5DB" } },
+            left: { style: "thin", color: { argb: "D1D5DB" } },
+            bottom: { style: "thin", color: { argb: "D1D5DB" } },
+            right: { style: "thin", color: { argb: "D1D5DB" } },
+          };
+          cell.alignment = { vertical: "middle", wrapText: true };
+        });
+      }
+    });
+
+    for (let row = 2; row <= worksheet.rowCount; row++) {
+      for (let col = 10; col <= 15; col++) {
+        worksheet.getCell(row, col).numFmt = "#,##0";
+        worksheet.getCell(row, col).alignment = {
           horizontal: "center",
           vertical: "middle",
-          wrapText: true,
-        };
-        cell.border = {
-          top: { style: "thin", color: { argb: "FFFFFF" } },
-          left: { style: "thin", color: { argb: "FFFFFF" } },
-          bottom: { style: "thin", color: { argb: "FFFFFF" } },
-          right: { style: "thin", color: { argb: "FFFFFF" } },
         };
       }
+    }
 
-      worksheet.eachRow((row, rowNumber) => {
-        if (rowNumber >= 2) {
-          row.eachCell((cell) => {
-            cell.border = {
-              top: { style: "thin", color: { argb: "D1D5DB" } },
-              left: { style: "thin", color: { argb: "D1D5DB" } },
-              bottom: { style: "thin", color: { argb: "D1D5DB" } },
-              right: { style: "thin", color: { argb: "D1D5DB" } },
-            };
-            cell.alignment = { vertical: "middle", wrapText: true };
-          });
-        }
+    const widths = [
+      24, 22, 22, 18, 16, 18, 16, 16, 16, 14, 14, 14, 14, 14, 18, 18, 14,
+    ];
+    widths.forEach((w, idx) => (worksheet.getColumn(idx + 1).width = w));
+    worksheet.getRow(1).height = 30;
+    worksheet.views = [{ state: "frozen", ySplit: 1 }];
+    worksheet.autoFilter = { from: "A1", to: "Q1" };
+    worksheet.pageSetup.orientation = "landscape";
+    worksheet.pageSetup.fitToPage = true;
+    worksheet.pageSetup.fitToWidth = 1;
+    worksheet.pageSetup.fitToHeight = 0;
+
+    const today = new Date().toISOString().split("T")[0];
+    const safeCompanyName = (selectedCompanyName || "Report").replace(/[\s\/\\:@?*]+/g, "_");
+    const fileName = `Retailers_${safeCompanyName}_${today}.xlsx`;
+
+    const excelBuffer = await workbook.xlsx.writeBuffer();
+
+    if (Capacitor.isNativePlatform()) {
+      let binary = "";
+      const bytes = new Uint8Array(excelBuffer);
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(
+          null,
+          Array.from(bytes.subarray(i, i + chunkSize))
+        );
+      }
+      const base64Data = window.btoa(binary);
+
+      const savedFile = await Filesystem.writeFile({
+        path: fileName,
+        data: base64Data,
+        directory: Directory.Documents,
+        recursive: true,
       });
 
-      for (let row = 2; row <= worksheet.rowCount; row++) {
-        for (let col = 10; col <= 15; col++) {
-          worksheet.getCell(row, col).numFmt = "#,##0";
-          worksheet.getCell(row, col).alignment = {
-            horizontal: "center",
-            vertical: "middle",
-          };
-        }
+      alert(`File saved successfully:\n📁 Documents/${fileName}`);
+
+      if (savedFile.uri) {
+        try {
+          await Share.share({
+            title: fileName,
+            url: savedFile.uri,
+            dialogTitle: "Open or View Excel File",
+          });
+        } catch {}
       }
-
-      const widths = [
-        24, 22, 22, 18, 16, 18, 16, 16, 16, 14, 14, 14, 14, 14, 18, 18, 14,
-      ];
-      widths.forEach((w, idx) => (worksheet.getColumn(idx + 1).width = w));
-      worksheet.getRow(1).height = 30;
-      worksheet.views = [{ state: "frozen", ySplit: 1 }];
-      worksheet.autoFilter = { from: "A1", to: "Q1" };
-      worksheet.pageSetup.orientation = "landscape";
-      worksheet.pageSetup.fitToPage = true;
-      worksheet.pageSetup.fitToWidth = 1;
-      worksheet.pageSetup.fitToHeight = 0;
-
-      const buffer = await workbook.xlsx.writeBuffer();
-      const blob = new Blob([buffer], {
+    } else {
+      const blob = new Blob([excelBuffer], {
         type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       });
-      const today = new Date().toISOString().split("T")[0];
-      saveAs(
-        blob,
-        `Retailers_${selectedCompanyName.replace(/\s+/g, "_")}_${today}.xlsx`
-      );
-    } catch (error) {
-      console.error("Retailer Excel Export Error:", error);
-      alert("Retailer Excel export failed.");
+      saveAs(blob, fileName);
     }
+  } catch (error) {
+    console.error("Retailer Excel Export Error:", error);
+    alert("Retailer Excel export failed.");
   }
+}
 
   function openEditForm(r: any) {
     setEditingId(r.id);

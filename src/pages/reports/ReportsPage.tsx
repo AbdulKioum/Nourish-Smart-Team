@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import ExcelJS from "exceljs";
-import { saveAs } from "file-saver";
+
+import { Filesystem, Directory } from "@capacitor/filesystem";
+import { Share } from "@capacitor/share";
+import { Capacitor } from "@capacitor/core";
 
 function calcAgeDays(hatchDate?: string, visitDate?: string): number {
   if (!hatchDate) return 0;
@@ -493,6 +496,69 @@ export default function ReportsPage() {
     });
   }
 
+
+async function saveBufferOrBlob(
+  bufferOrBlob: ArrayBuffer | Blob,
+  fileName: string
+) {
+  try {
+    const arrayBuffer =
+      bufferOrBlob instanceof Blob
+        ? await bufferOrBlob.arrayBuffer()
+        : bufferOrBlob;
+
+    if (Capacitor.isNativePlatform()) {
+      let binary = "";
+      const bytes = new Uint8Array(arrayBuffer);
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(
+          null,
+          Array.from(bytes.subarray(i, i + chunkSize))
+        );
+      }
+      const base64Data = window.btoa(binary);
+
+      const savedFile = await Filesystem.writeFile({
+        path: fileName,
+        data: base64Data,
+        directory: Directory.Documents,
+        recursive: true,
+      });
+
+      alert(`File successfully saved:\n📁 Documents/${fileName}`);
+
+      if (savedFile.uri) {
+        try {
+          await Share.share({
+            title: fileName,
+            url: savedFile.uri,
+            dialogTitle: "Open or View Excel File",
+          });
+        } catch {}
+      }
+    } else {
+      const blob =
+        bufferOrBlob instanceof Blob
+          ? bufferOrBlob
+          : new Blob([arrayBuffer], {
+              type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    }
+  } catch (err: any) {
+    console.error("Export save error:", err);
+    alert("Failed to save file: " + (err?.message || ""));
+  }
+}
+
   async function exportFilteredReportsExcel() {
     if (filteredReports.length === 0) {
       alert("No reports found to export.");
@@ -706,15 +772,17 @@ export default function ReportsPage() {
       );
     }
 
-    const buf = await workbook.xlsx.writeBuffer();
-    saveAs(
-      new Blob([buf], {
-        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      }),
-      `SmartTeam_Reports_${selectedCategory}_${new Date()
-        .toISOString()
-        .slice(0, 10)}.xlsx`
-    );
+    const today = new Date().toISOString().slice(0, 10);
+    const fileName = `SmartTeam_Reports_${selectedCategory || "All"}_${today}.xlsx`;
+
+    try {
+      const excelBuffer = await workbook.xlsx.writeBuffer();
+      // DOC Tracking বা Farmer পেজে তৈরি করা common saveBufferOrBlob ফাংশনটি এখানে কল করা হলো
+      await saveBufferOrBlob(excelBuffer, fileName);
+    } catch (err: any) {
+      console.error("Filtered reports export error:", err);
+      alert("Reports export failed.");
+    }
   }
 
   return (

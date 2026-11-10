@@ -35,6 +35,9 @@ import {
   CheckCircle2,
   Navigation,
 } from "lucide-react";
+import { Filesystem, Directory } from "@capacitor/filesystem";
+import { Share } from "@capacitor/share";
+import { Capacitor } from "@capacitor/core";
 
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 
@@ -794,116 +797,149 @@ export default function AgentsPage() {
   // EXCEL EXPORT
   // ==================================================
   async function exportAgentsExcel() {
-    try {
-      const workbook = new ExcelJS.Workbook();
-      const worksheet = workbook.addWorksheet("Agents");
+  try {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("Agents");
 
-      worksheet.getRow(1).values = [
-        "Company",
-        "Agent ID",
-        "Agent Name",
-        "Proprietor",
-        "Mobile",
-        "Bazar",
-        "District",
-        "Upazila",
-        "Union",
-        "Broiler Sale",
-        "Layer Sale",
-        "Sonali Sale",
-        "Cattle Sale",
-        "Fish Sale",
-        "Total Monthly Sale",
-        "Focus Item",
-        "Status",
-      ];
+    worksheet.getRow(1).values = [
+      "Company",
+      "Agent ID",
+      "Agent Name",
+      "Proprietor",
+      "Mobile",
+      "Bazar",
+      "District",
+      "Upazila",
+      "Union",
+      "Broiler Sale",
+      "Layer Sale",
+      "Sonali Sale",
+      "Cattle Sale",
+      "Fish Sale",
+      "Total Monthly Sale",
+      "Focus Item",
+      "Status",
+    ];
 
-      sortedAgents.forEach((agent: any) => {
-        worksheet.addRow([
-          agent.companies?.company_name || "",
-          agent.agent_code || "-",
-          agent.agent_name || "",
-          agent.proprietor || "",
-          agent.mobile || "",
-          agent.bazar || "",
-          agent.district || "",
-          agent.upazila || "",
-          agent.union_name || "",
-          Number(agent.broiler_sale || 0),
-          Number(agent.layer_sale || 0),
-          Number(agent.sonali_sale || 0),
-          Number(agent.cattle_sale || 0),
-          Number(agent.fish_sale || 0),
-          Number(agent.monthly_sale || 0),
-          agent.focus_item || "",
-          agent.status || "",
-        ]);
-      });
+    sortedAgents.forEach((agent: any) => {
+      worksheet.addRow([
+        agent.companies?.company_name || "",
+        agent.agent_code || "-",
+        agent.agent_name || "",
+        agent.proprietor || "",
+        agent.mobile || "",
+        agent.bazar || "",
+        agent.district || "",
+        agent.upazila || "",
+        agent.union_name || "",
+        Number(agent.broiler_sale || 0),
+        Number(agent.layer_sale || 0),
+        Number(agent.sonali_sale || 0),
+        Number(agent.cattle_sale || 0),
+        Number(agent.fish_sale || 0),
+        Number(agent.monthly_sale || 0),
+        agent.focus_item || "",
+        agent.status || "",
+      ]);
+    });
 
-      for (let col = 1; col <= 17; col++) {
-        const cell = worksheet.getCell(1, col);
-        cell.fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: {
-            argb:
-              col === 15
-                ? "15803D"
-                : col >= 10 && col <= 14
-                ? "D97706"
-                : "1E3A8A",
-          },
-        };
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.alignment = {
-          horizontal: "center",
-          vertical: "middle",
-          wrapText: true,
-        };
-        cell.border = {
-          top: { style: "thin", color: { argb: "FFFFFF" } },
-          left: { style: "thin", color: { argb: "FFFFFF" } },
-          bottom: { style: "thin", color: { argb: "FFFFFF" } },
-          right: { style: "thin", color: { argb: "FFFFFF" } },
-        };
+    for (let col = 1; col <= 17; col++) {
+      const cell = worksheet.getCell(1, col);
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: {
+          argb:
+            col === 15
+              ? "15803D"
+              : col >= 10 && col <= 14
+              ? "D97706"
+              : "1E3A8A",
+        },
+      };
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+        wrapText: true,
+      };
+      cell.border = {
+        top: { style: "thin", color: { argb: "FFFFFF" } },
+        left: { style: "thin", color: { argb: "FFFFFF" } },
+        bottom: { style: "thin", color: { argb: "FFFFFF" } },
+        right: { style: "thin", color: { argb: "FFFFFF" } },
+      };
+    }
+
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber >= 2) {
+        row.eachCell((cell) => {
+          cell.border = {
+            top: { style: "thin", color: { argb: "D1D5DB" } },
+            left: { style: "thin", color: { argb: "D1D5DB" } },
+            bottom: { style: "thin", color: { argb: "D1D5DB" } },
+            right: { style: "thin", color: { argb: "D1D5DB" } },
+          };
+          cell.alignment = { vertical: "middle", wrapText: true };
+        });
       }
+    });
 
-      worksheet.eachRow((row, rowNumber) => {
-        if (rowNumber >= 2) {
-          row.eachCell((cell) => {
-            cell.border = {
-              top: { style: "thin", color: { argb: "D1D5DB" } },
-              left: { style: "thin", color: { argb: "D1D5DB" } },
-              bottom: { style: "thin", color: { argb: "D1D5DB" } },
-              right: { style: "thin", color: { argb: "D1D5DB" } },
-            };
-            cell.alignment = { vertical: "middle", wrapText: true };
-          });
-        }
+    const widths = [
+      24, 14, 22, 20, 16, 20, 18, 18, 18, 15, 15, 15, 15, 15, 20, 20, 14,
+    ];
+    widths.forEach((w, idx) => (worksheet.getColumn(idx + 1).width = w));
+    worksheet.getRow(1).height = 30;
+    worksheet.views = [{ state: "frozen", ySplit: 1 }];
+    worksheet.autoFilter = { from: "A1", to: "Q1" };
+
+    const today = new Date().toISOString().split("T")[0];
+    const safeCompanyName = (selectedCompanyName || "Report").replace(/[\s\/\\:@?*]+/g, "_");
+    const fileName = `Agents_${safeCompanyName}_${today}.xlsx`;
+
+    const excelBuffer = await workbook.xlsx.writeBuffer();
+
+    if (Capacitor.isNativePlatform()) {
+      let binary = "";
+      const bytes = new Uint8Array(excelBuffer);
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(
+          null,
+          Array.from(bytes.subarray(i, i + chunkSize))
+        );
+      }
+      const base64Data = window.btoa(binary);
+
+      const savedFile = await Filesystem.writeFile({
+        path: fileName,
+        data: base64Data,
+        directory: Directory.Documents,
+        recursive: true,
       });
 
-      const widths = [
-        24, 14, 22, 20, 16, 20, 18, 18, 18, 15, 15, 15, 15, 15, 20, 20, 14,
-      ];
-      widths.forEach((w, idx) => (worksheet.getColumn(idx + 1).width = w));
-      worksheet.getRow(1).height = 30;
-      worksheet.views = [{ state: "frozen", ySplit: 1 }];
-      worksheet.autoFilter = { from: "A1", to: "Q1" };
+      alert(`File saved successfully:\n📁 Documents/${fileName}`);
 
-      const buffer = await workbook.xlsx.writeBuffer();
-      const blob = new Blob([buffer], {
+      if (savedFile.uri) {
+        try {
+          await Share.share({
+            title: fileName,
+            url: savedFile.uri,
+            dialogTitle: "Open or View Excel File",
+          });
+        } catch {}
+      }
+    } else {
+      const blob = new Blob([excelBuffer], {
         type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       });
-      const today = new Date().toISOString().split("T")[0];
-      saveAs(
-        blob,
-        `Agents_${selectedCompanyName.replace(/\s+/g, "_")}_${today}.xlsx`
-      );
-    } catch (error) {
-      console.error("Agent Excel Export Error:", error);
-      alert("Agent Excel export failed.");
+      saveAs(blob, fileName);
     }
+  } catch (error) {
+    console.error("Agent Excel Export Error:", error);
+    alert("Agent Excel export failed.");
   }
+}
 
   function openEditForm(agent: any) {
     setEditingId(agent.id);

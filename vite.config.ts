@@ -8,9 +8,19 @@ export default defineConfig({
   server: {
     host: true,
   },
+  resolve: {
+    alias: {
+      // এক্সেল বা অন্যান্য লাইব্রেরির জন্য ব্রাউজার স্ট্রিম কম্প্যাটিবিলিটি ফিক্স
+      stream: "stream-browserify",
+    },
+  },
+  define: {
+    'process.env': {},
+  },
   plugins: [
     react(),
     tailwindcss(), 
+    
     VitePWA({
       registerType: "autoUpdate",
       includeAssets: ["logo smart team.png"],

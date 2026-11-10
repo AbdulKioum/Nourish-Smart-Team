@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "938537223574",
+    "project_id": "nourish-smart-team",
+    "storage_bucket": "nourish-smart-team.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:938537223574:android:5f9b3ec0a2b1fe517d49b7",
+        "android_client_info": {
+          "package_name": "com.nourish.smartteam"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyABiV1nfg3Bhm4sv4YTGnAy-QyMmqrsR8A"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

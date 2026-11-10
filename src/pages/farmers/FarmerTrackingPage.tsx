@@ -27,6 +27,8 @@ import {
   Crosshair,
 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
+import { Geolocation } from "@capacitor/geolocation";
+import { Capacitor } from "@capacitor/core";
 
 /* -------------------------------------------------------------------------- */
 /*  Helpers                                                                    */
@@ -459,28 +461,44 @@ function MapPickerModal({
     [withLoc]
   );
 
-  function handleLocateMe() {
-    if (!navigator.geolocation) {
-      alert("Geolocation is not supported by your browser.");
-      return;
-    }
+ async function handleLocateMe() {
     setLocating(true);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const coords: [number, number] = [
-          pos.coords.latitude,
-          pos.coords.longitude,
-        ];
+    try {
+      if (Capacitor.isNativePlatform()) {
+        let perm = await Geolocation.checkPermissions();
+        if (perm.location !== "granted") {
+          perm = await Geolocation.requestPermissions();
+        }
+        if (perm.location !== "granted") {
+          alert("অনুগ্রহ করে ফোনের Settings থেকে এই অ্যাপের Location Permission অন করুন।");
+          setLocating(false);
+          return;
+        }
+
+        const pos = await Geolocation.getCurrentPosition({
+          enableHighAccuracy: true,
+          timeout: 20000,
+        });
+        const coords: [number, number] = [pos.coords.latitude, pos.coords.longitude];
         setMyLoc(coords);
-        setFlyTarget([...coords]);
-        setLocating(false);
-      },
-      () => {
-        setLocating(false);
-        alert("Unable to retrieve your location. Please allow GPS access.");
-      },
-      { enableHighAccuracy: true, timeout: 15000 }
-    );
+        setFlyTarget([...coords]); // অথবা map center সেট করার স্টেট
+      } else {
+        // ব্রাউজারের জন্য
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const coords: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+            setMyLoc(coords);
+            setFlyTarget([...coords]);
+          },
+          () => alert("ব্রাউজারে লোকেশন পাওয়া যায়নি।"),
+          { enableHighAccuracy: true }
+        );
+      }
+    } catch (err: any) {
+      alert("লোকেশন পেতে সমস্যা হয়েছে: " + err.message);
+    } finally {
+      setLocating(false);
+    }
   }
 
   return (
@@ -657,23 +675,39 @@ function FarmerMapModal({
     [myLoc, pos]
   );
 
-  function handleLocateMe() {
-    if (!navigator.geolocation) {
-      alert("Geolocation is not supported by your browser.");
-      return;
-    }
+  async function handleLocateMe() {
     setLocating(true);
-    navigator.geolocation.getCurrentPosition(
-      (p) => {
-        setMyLoc([p.coords.latitude, p.coords.longitude]);
-        setLocating(false);
-      },
-      () => {
-        setLocating(false);
-        alert("Unable to retrieve your location. Please allow GPS access.");
-      },
-      { enableHighAccuracy: true, timeout: 15000 }
-    );
+    try {
+      if (Capacitor.isNativePlatform()) {
+        let perm = await Geolocation.checkPermissions();
+        if (perm.location !== "granted") {
+          perm = await Geolocation.requestPermissions();
+        }
+        if (perm.location !== "granted") {
+          alert("লোকেশন পারমিশন দেওয়া হয়নি।");
+          setLocating(false);
+          return;
+        }
+
+        const gpsPos = await Geolocation.getCurrentPosition({
+          enableHighAccuracy: true,
+          timeout: 20000,
+        });
+        setMyLoc([gpsPos.coords.latitude, gpsPos.coords.longitude]);
+      } else {
+        navigator.geolocation.getCurrentPosition(
+          (p) => {
+            setMyLoc([p.coords.latitude, p.coords.longitude]);
+          },
+          () => alert("ব্রাউজারে লোকেশন পাওয়া যায়নি।"),
+          { enableHighAccuracy: true }
+        );
+      }
+    } catch (err: any) {
+      alert("লোকেশন এরর: " + err.message);
+    } finally {
+      setLocating(false);
+    }
   }
 
   return (

@@ -14,6 +14,9 @@ import {
   FaCheck,
 } from "react-icons/fa";
 import { RotateCcw } from "lucide-react";
+import { Filesystem, Directory } from "@capacitor/filesystem";
+import { Share } from "@capacitor/share";
+import { Capacitor } from "@capacitor/core";
 
 const FARM_CATEGORIES = [
   "Broiler",
@@ -1688,7 +1691,9 @@ export default function DocTrackingPage() {
     );
   }
 
-  function handleExportExcel() {
+
+
+  async function handleExportExcel() {
     if (exportSelectedTypes.length === 0) {
       alert("Please select at least one DOC Type to export.");
       return;
@@ -1806,7 +1811,10 @@ export default function DocTrackingPage() {
       "Box Qty": "",
       "Feed Company": "",
       "Tracked By": "",
-      Remark: `Untracked: ${Math.max(0, grandTotalSupply - grandTotalTracked)}`,
+      Remark: `Untracked: ${Math.max(
+        0,
+        grandTotalSupply - grandTotalTracked
+      )}`,
     });
 
     const worksheet = XLSX.utils.json_to_sheet(exportRows);
@@ -1825,11 +1833,59 @@ export default function DocTrackingPage() {
 
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "DOC_Tracking");
-    XLSX.writeFile(
-      workbook,
-      `DOC_Tracking_${dateRangeLabel}_${exportSelectedTypes.join("-")}.xlsx`
-    );
-    setIsExportModalOpen(false);
+
+    const fileName = `DOC_Tracking_${dateRangeLabel || "Report"}_${exportSelectedTypes.join("-")}.xlsx`;
+
+    try {
+      // XLSX দিয়ে বাইনারি বাফার তৈরি করা
+      const excelBuffer = XLSX.write(workbook, {
+        bookType: "xlsx",
+        type: "array",
+      });
+
+      if (Capacitor.isNativePlatform()) {
+        // মোবাইল অ্যাপের জন্য (Capacitor Filesystem দিয়ে Documents ফোল্ডারে সেভ করা)
+        let binary = "";
+        const bytes = new Uint8Array(excelBuffer);
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(
+            null,
+            Array.from(bytes.subarray(i, i + chunkSize))
+          );
+        }
+        const base64Data = window.btoa(binary);
+
+        const savedFile = await Filesystem.writeFile({
+          path: fileName,
+          data: base64Data,
+          directory: Directory.Documents,
+          recursive: true,
+        });
+
+        alert(`ফাইল সফলভাবে সেভ হয়েছে:\n📁 Documents/${fileName}`);
+
+        if (savedFile.uri) {
+          try {
+            await Share.share({
+              title: fileName,
+              url: savedFile.uri,
+              dialogTitle: "Open or Share Excel Report",
+            });
+          } catch {
+            // ইউজার শেয়ার বক্স ক্লোজ করলে ইগনোর করবে
+          }
+        }
+      } else {
+        // পিসি বা ব্রাউজারের জন্য সাধারণ ডাউনলোড
+        XLSX.writeFile(workbook, fileName);
+      }
+    } catch (err: any) {
+      console.error("Export error:", err);
+      alert("এক্সেল ফাইল ডাউনলোড করতে সমস্যা হয়েছে: " + (err?.message || ""));
+    } finally {
+      setIsExportModalOpen(false);
+    }
   }
 
   const reportSupplies = supplies.filter((s) => {

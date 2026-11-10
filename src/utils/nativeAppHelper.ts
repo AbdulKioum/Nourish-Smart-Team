@@ -51,6 +51,7 @@ export async function triggerPhoneNotification(
           title,
           body,
           channelId: "smart_team_alerts",
+          smallIcon: "res://ic_stat_notification",
           schedule: { at: new Date(Date.now() + 300) },
           extra: { route: targetRoute },
         },
@@ -121,7 +122,6 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return window.btoa(binary);
 }
 
-// ফোনের Download / Documents ফোল্ডারে সেভ করার মূল ফাংশন
 export async function saveBlobToNativeDevice(
   blob: Blob,
   suggestedName?: string
@@ -130,12 +130,9 @@ export async function saveBlobToNativeDevice(
     const buffer = await blob.arrayBuffer();
     const base64Data = arrayBufferToBase64(buffer);
 
-    // ফাইলের নাম নির্ধারণ
     let ext = ".xlsx";
     if (blob.type.includes("pdf")) ext = ".pdf";
     else if (blob.type.includes("csv")) ext = ".csv";
-    else if (blob.type.includes("png")) ext = ".png";
-    else if (blob.type.includes("jpeg") || blob.type.includes("jpg")) ext = ".jpg";
 
     const cleanName = (
       suggestedName && suggestedName.trim()
@@ -143,46 +140,31 @@ export async function saveBlobToNativeDevice(
         : `Report_${new Date().toISOString().slice(0, 10)}${ext}`
     ).replace(/[\\/:*?"<>|]/g, "_");
 
-    let savedUri = "";
-    let folderLabel = "Download";
+    // অ্যান্ড্রয়েডের লেটেস্ট ভার্সনের জন্য Documents ফোল্ডার সবচেয়ে নিরাপদ (কোনো এক্সট্রা পারমিশন লাগে না)
+    const res = await Filesystem.writeFile({
+      path: cleanName,
+      data: base64Data,
+      directory: Directory.Documents,
+      recursive: true,
+    });
 
-    try {
-      // প্রথমে সরাসরি ফোনের Download ফোল্ডারে সেভ করার চেষ্টা করবে
-      const res = await Filesystem.writeFile({
-        path: `Download/${cleanName}`,
-        data: base64Data,
-        directory: Directory.ExternalStorage,
-        recursive: true,
-      });
-      savedUri = res.uri;
-    } catch {
-      // Android 11+ যদি ExternalStorage আটকে দেয়, তবে Documents ফোল্ডারে সেভ করবে
-      folderLabel = "Documents";
-      const resDoc = await Filesystem.writeFile({
-        path: cleanName,
-        data: base64Data,
-        directory: Directory.Documents,
-        recursive: true,
-      });
-      savedUri = resDoc.uri;
-    }
+    alert(`ফাইল সফলভাবে সেভ হয়েছে:\n📁 Documents/${cleanName}`);
 
-    alert(`ফাইলটি ফোনের ${folderLabel} ফোল্ডারে সেভ হয়েছে:\n${cleanName}`);
-
-    // ফাইলটি সাথে সাথে ওপেন বা শেয়ার করার অপশন
-    if (savedUri) {
+    // ফাইলটি সাথে সাথে ওপেন বা শেয়ার করার ডায়ালগ ওপেন করা
+    if (res.uri) {
       try {
         await Share.share({
           title: cleanName,
-          url: savedUri,
-          dialogTitle: "Open or Share File",
+          url: res.uri,
+          dialogTitle: "Open or Share Exported File",
         });
       } catch {
-        // ইউজার শেয়ার শীট বন্ধ করলে কিছু করার দরকার নেই
+        // ইউজার শেয়ার বক্স কেটে দিলে ইগনোর করবে
       }
     }
   } catch (err: any) {
-    alert("ফাইল ডাউনলোড করতে সমস্যা হয়েছে: " + (err?.message || ""));
+    console.error("File save error:", err);
+    alert("ফাইল সেভ করতে সমস্যা হয়েছে: " + (err?.message || ""));
   }
 }
 
@@ -234,4 +216,51 @@ export function setupGlobalNativeFileDownload() {
 
     return origAnchorClick.apply(this);
   };
+}
+
+export async function getCurrentLatLng(): Promise<[number, number] | null> {
+  try {
+    // Capacitor নেটিভ প্ল্যাটফর্ম হলে সরাসরি Geolocation প্লাগইন ব্যবহার করব
+    if (Capacitor.isNativePlatform()) {
+      let perm = await Geolocation.checkPermissions();
+      
+      if (perm.location !== "granted") {
+        perm = await Geolocation.requestPermissions();
+      }
+
+      if (perm.location !== "granted" && perm.coarseLocation !== "granted") {
+        alert("দয়া করে ফোনের Settings > Apps থেকে এই অ্যাপের Location Permission টি 'Allow only while using the app' বা 'Always' করে দিন।");
+        return null;
+      }
+
+      const pos = await Geolocation.getCurrentPosition({
+        enableHighAccuracy: true,
+        timeout: 20000,
+        maximumAge: 0,
+      });
+      return [pos.coords.latitude, pos.coords.longitude];
+    } else {
+      // ব্রাউজারের জন্য
+      return await new Promise((resolve) => {
+        if (!navigator.geolocation) {
+          alert("ব্রাউজারে লোকেশন সাপোর্ট করছে না।");
+          resolve(null);
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(
+          (p) => resolve([p.coords.latitude, p.coords.longitude]),
+          (err) => {
+            console.error(err);
+            alert("লোকেশন পাওয়া যায়নি। জিপিএস (GPS) অন আছে কিনা চেক করুন।");
+            resolve(null);
+          },
+          { enableHighAccuracy: true, timeout: 20000 }
+        );
+      });
+    }
+  } catch (err: any) {
+    console.error("GPS Error:", err);
+    alert("লোকেশন ফেচ করতে সমস্যা হয়েছে: " + (err?.message || ""));
+    return null;
+  }
 }

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { getFarmers } from "../../services/farmerService";
 import { useAuth } from "../../context/AuthContext";
-import { MapContainer, Marker, useMap } from "react-leaflet";
+import { MapContainer, Marker, Polyline, CircleMarker, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import MapLayers from "../../components/maps/MapLayers";
@@ -13,13 +13,17 @@ import {
   MapPin,
   Phone,
   RotateCcw,
-  Crosshair,
-  History,
   CheckCircle2,
+  Plus,
+  ChevronDown,
+  ChevronUp,
+  Navigation,
+  User,
 } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 
 /* -------------------------------------------------------------------------- */
-/*  Helpers (kept local so FarmersPage.tsx stays untouched)                    */
+/*  Helpers                                                                    */
 /* -------------------------------------------------------------------------- */
 
 const POULTRY_FIELDS = [
@@ -105,24 +109,53 @@ function esc(s: string) {
     .replace(/>/g, "&gt;");
 }
 
-function buildMarker(farmer: any, highlight = false) {
+function calcDistanceKm(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+): number {
+  const R = 6371; // km
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function formatDistance(km: number): string {
+  if (km < 1) return `${Math.round(km * 1000)} m`;
+  return `${km.toFixed(2)} km`;
+}
+
+function buildMarker(farmer: any, highlight = false, distText?: string) {
   const { emoji, border } = getFarmerBadgeInfo(farmer);
   const name = esc((farmer.farmer_name || "Farmer").slice(0, 16));
   const ring = highlight
     ? "box-shadow:0 0 0 4px rgba(16,185,129,0.35);"
     : "box-shadow:0 1px 2px rgba(0,0,0,0.15);";
+  const distBadge = distText
+    ? `<div style="margin-top:1px;background:#0f172a;color:#fff;font-size:9px;font-weight:700;padding:0 4px;border-radius:3px;white-space:nowrap;">${esc(
+        distText
+      )}</div>`
+    : "";
   const html = `
     <div style="display:flex;flex-direction:column;align-items:center;transform:translateY(-10px);">
       <span style="font-size:${highlight ? 30 : 24}px;line-height:1;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.35));">${emoji}</span>
       <div style="margin-top:2px;background:rgba(255,255,255,0.96);border:1px solid ${border};color:#0f172a;font-size:10px;font-weight:700;padding:0 5px;border-radius:4px;white-space:nowrap;${ring}">
         ${name}
       </div>
+      ${distBadge}
     </div>`;
   return L.divIcon({
     className: "ft-div-icon",
     html,
-    iconSize: [60, 48],
-    iconAnchor: [30, 38],
+    iconSize: [70, 56],
+    iconAnchor: [35, 42],
   });
 }
 
@@ -163,65 +196,109 @@ function uniqSorted(list: string[]) {
   );
 }
 
-function FitBounds({ positions }: { positions: [number, number][] }) {
+function FitBounds({
+  positions,
+  flyTarget,
+}: {
+  positions: [number, number][];
+  flyTarget?: { pos: [number, number]; zoom?: number; ts: number } | null;
+}) {
   const map = useMap();
+
   useEffect(() => {
+    if (flyTarget) {
+      map.flyTo(flyTarget.pos, flyTarget.zoom || 15, { duration: 0.8 });
+    }
+  }, [flyTarget, map]);
+
+  useEffect(() => {
+    if (flyTarget) return;
     if (positions.length === 0) return;
     if (positions.length === 1) {
       map.setView(positions[0], 15);
       return;
     }
     map.fitBounds(positions, { padding: [45, 45] });
-  }, [positions, map]);
+  }, [positions, map, flyTarget]);
+
   return null;
 }
 
 const selectCls =
-  "w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-800 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500";
-const labelCls = "block text-[11px] font-medium text-slate-500 mb-0.5";
+  "w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-800 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500";
+const labelCls = "block text-[11px] font-semibold text-slate-500 mb-0.5";
 
 /* -------------------------------------------------------------------------- */
-/*  Small shared pieces                                                        */
+/*  Shared Components                                                          */
 /* -------------------------------------------------------------------------- */
 
-function NoteThread({ notes }: { notes: any[] }) {
+function NoteThread({
+  notes,
+  initialLimit = 10,
+}: {
+  notes: any[];
+  initialLimit?: number;
+}) {
+  const [limit, setLimit] = useState(initialLimit);
+
   if (notes.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-center text-xs text-slate-400">
-        No tracking messages yet. Write the first one above.
+        No tracking messages yet.
       </div>
     );
   }
+
+  const visibleNotes = notes.slice(0, limit);
+  const remaining = notes.length - visibleNotes.length;
+
   return (
     <div className="space-y-2">
-      {notes.map((n, i) => (
+      {visibleNotes.map((n, i) => (
         <div
           key={n.id}
+          id={`track-note-${n.id}`}
           className={`rounded-lg border px-3 py-2 ${
             i === 0
-              ? "border-emerald-300 bg-emerald-50"
+              ? "border-emerald-400 bg-emerald-50/80 shadow-2xs"
               : "border-slate-200 bg-white"
           }`}
         >
-          <div className="flex items-center justify-between gap-2 text-[11px]">
-            <span className="flex items-center gap-1.5 font-semibold text-slate-800">
-              <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-800 text-[10px] font-bold text-white">
+          <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px]">
+            <span className="flex items-center gap-1.5 font-bold text-slate-800">
+              <span
+                className={`flex h-4.5 w-4.5 items-center justify-center rounded-full text-[9px] font-bold text-white ${
+                  i === 0 ? "bg-emerald-600" : "bg-slate-700"
+                }`}
+              >
                 {(n.user_name || "?").charAt(0).toUpperCase()}
               </span>
-              {n.user_name || "Unknown"}
+              <span>{n.user_name || "Officer"}</span>
               {i === 0 && (
-                <span className="rounded bg-emerald-600 px-1.5 py-px text-[10px] font-semibold text-white">
+                <span className="rounded bg-emerald-600 px-1.5 py-px text-[9px] font-bold text-white uppercase tracking-wide">
                   Latest
                 </span>
               )}
             </span>
-            <span className="text-slate-500">{fmtDateTime(n.created_at)}</span>
+            <span className="text-slate-500 font-medium">
+              {fmtDateTime(n.created_at)} ({timeAgo(n.created_at)})
+            </span>
           </div>
-          <p className="mt-1 whitespace-pre-wrap text-[13px] leading-snug text-slate-900">
+          <p className="mt-1 whitespace-pre-wrap break-words text-[13px] sm:text-sm font-medium leading-snug text-slate-900">
             {n.note}
           </p>
         </div>
       ))}
+
+      {remaining > 0 && (
+        <button
+          type="button"
+          onClick={() => setLimit((prev) => prev + 10)}
+          className="w-full rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 py-1.5 text-center text-xs font-semibold text-emerald-700 transition"
+        >
+          Load more messages ({remaining} older)
+        </button>
+      )}
     </div>
   );
 }
@@ -254,17 +331,24 @@ function FarmerInfoGrid({ farmer }: { farmer: any }) {
       ),
     },
     { label: "Address", value: address || "-" },
-    { label: "Feed", value: farmer.feed_type || "-" },
+    {
+      label: "Present Feed",
+      value:
+        farmer.last_feed_company ||
+        farmer.feed_type ||
+        farmer.companies?.company_name ||
+        "-",
+    },
     { label: "Status", value: farmer.status || "Active" },
   ];
 
   return (
     <div className="space-y-2 text-xs">
-      <div className="grid grid-cols-[84px_1fr] gap-x-2 gap-y-1">
+      <div className="grid grid-cols-[88px_1fr] gap-x-2 gap-y-1">
         {rows.map((r) => (
           <React.Fragment key={r.label}>
             <span className="text-slate-500">{r.label}</span>
-            <span className="text-slate-900">{r.value}</span>
+            <span className="text-slate-900 font-medium">{r.value}</span>
           </React.Fragment>
         ))}
       </div>
@@ -313,6 +397,13 @@ function MapPickerModal({
   const [d, setD] = useState(initDistrict);
   const [u, setU] = useState(initUpazila);
   const [a, setA] = useState(initAgent);
+  const [myLoc, setMyLoc] = useState<[number, number] | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [flyTarget, setFlyTarget] = useState<{
+    pos: [number, number];
+    zoom?: number;
+    ts: number;
+  } | null>(null);
 
   const districts = useMemo(
     () => uniqSorted(farmers.map((f) => f.district)),
@@ -359,30 +450,86 @@ function MapPickerModal({
     [withLoc]
   );
 
+  // Nearest farmer distance when user location is active
+  const nearestInfo = useMemo<{ farmer: any; km: number } | null>(() => {
+    if (!myLoc || withLoc.length === 0) return null;
+    let best: { farmer: any; km: number } | null = null;
+    for (const f of withLoc) {
+      const km = calcDistanceKm(
+        myLoc[0],
+        myLoc[1],
+        Number(f.latitude),
+        Number(f.longitude)
+      );
+      if (!best || km < best.km) {
+        best = { farmer: f, km };
+      }
+    }
+    return best;
+  }, [myLoc, withLoc]);
+
+  function handleLocateMe() {
+    if (!navigator.geolocation) {
+      alert("Geolocation is not supported by your browser.");
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const coords: [number, number] = [
+          pos.coords.latitude,
+          pos.coords.longitude,
+        ];
+        setMyLoc(coords);
+        setFlyTarget({ pos: coords, zoom: 14, ts: Date.now() });
+        setLocating(false);
+      },
+      (err) => {
+        setLocating(false);
+        alert(err.message || "Unable to retrieve your location.");
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/50 p-2 sm:p-4">
-      <div className="flex h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-slate-300 bg-white shadow-2xl">
-        <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-2.5">
+      <div className="flex h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-slate-300 bg-white shadow-2xl">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3.5 py-2.5">
           <div>
             <h2 className="text-sm font-bold text-slate-800">
-              Pick a farmer from the map
+              Pick a farmer from map
             </h2>
             <p className="text-[11px] text-slate-500">
-              {withLoc.length} on map
-              {shown.length - withLoc.length > 0 &&
-                `, ${shown.length - withLoc.length} without location`}
-              . Tap a farmer to select.
+              {withLoc.length} on map. Tap a farmer marker to select.
+              {nearestInfo && (
+                <span className="ml-1.5 font-semibold text-emerald-700">
+                  • Nearest: {nearestInfo.farmer.farmer_name} (
+                  {formatDistance(nearestInfo.km)} away)
+                </span>
+              )}
             </p>
           </div>
-          <button
-            onClick={onClose}
-            className="text-slate-500 hover:text-slate-800"
-          >
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleLocateMe}
+              disabled={locating}
+              className="inline-flex items-center gap-1 rounded-lg bg-blue-600 hover:bg-blue-700 px-2.5 py-1.5 text-xs font-semibold text-white shadow-xs disabled:opacity-60"
+            >
+              <Navigation size={12} />
+              {locating ? "Locating..." : "Locate Me"}
+            </button>
+            <button
+              onClick={onClose}
+              className="rounded-lg p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-800"
+            >
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-2 border-b border-slate-200 px-4 py-2">
+        <div className="grid grid-cols-3 gap-2 border-b border-slate-200 px-3.5 py-2">
           <div>
             <label className={labelCls}>District</label>
             <select
@@ -392,6 +539,7 @@ function MapPickerModal({
                 setD(e.target.value);
                 setU("");
                 setA("");
+                setFlyTarget(null);
               }}
             >
               <option value="">All</option>
@@ -410,6 +558,7 @@ function MapPickerModal({
               onChange={(e) => {
                 setU(e.target.value);
                 setA("");
+                setFlyTarget(null);
               }}
             >
               <option value="">All</option>
@@ -425,7 +574,10 @@ function MapPickerModal({
             <select
               className={selectCls}
               value={a}
-              onChange={(e) => setA(e.target.value)}
+              onChange={(e) => {
+                setA(e.target.value);
+                setFlyTarget(null);
+              }}
             >
               <option value="">All</option>
               {agentOptions.map(([id, name]) => (
@@ -437,22 +589,46 @@ function MapPickerModal({
           </div>
         </div>
 
-        <div className="min-h-0 flex-1">
+        <div className="min-h-0 flex-1 relative">
           <MapContainer
             center={[24.7471, 90.4203]}
             zoom={8}
             style={{ height: "100%", width: "100%", zIndex: 1 }}
           >
             <MapLayers />
-            <FitBounds positions={positions} />
-            {withLoc.map((f) => (
-              <Marker
-                key={f.id}
-                position={[Number(f.latitude), Number(f.longitude)]}
-                icon={buildMarker(f)}
-                eventHandlers={{ click: () => onPick(f) }}
+            <FitBounds positions={positions} flyTarget={flyTarget} />
+            {myLoc && (
+              <CircleMarker
+                center={myLoc}
+                radius={9}
+                pathOptions={{
+                  color: "#ffffff",
+                  weight: 3,
+                  fillColor: "#2563eb",
+                  fillOpacity: 1,
+                }}
               />
-            ))}
+            )}
+            {withLoc.map((f) => {
+              const distTxt = myLoc
+                ? formatDistance(
+                    calcDistanceKm(
+                      myLoc[0],
+                      myLoc[1],
+                      Number(f.latitude),
+                      Number(f.longitude)
+                    )
+                  )
+                : undefined;
+              return (
+                <Marker
+                  key={f.id}
+                  position={[Number(f.latitude), Number(f.longitude)]}
+                  icon={buildMarker(f, false, distTxt)}
+                  eventHandlers={{ click: () => onPick(f) }}
+                />
+              );
+            })}
           </MapContainer>
         </div>
       </div>
@@ -469,34 +645,85 @@ function FarmerMapModal({
   onClose: () => void;
   onDetails: () => void;
 }) {
-  const pos: [number, number] = [
+  const farmerPos: [number, number] = [
     Number(farmer.latitude),
     Number(farmer.longitude),
   ];
+  const [myLoc, setMyLoc] = useState<[number, number] | null>(null);
+  const [locating, setLocating] = useState(false);
+
+  const distanceKm = useMemo(() => {
+    if (!myLoc) return null;
+    return calcDistanceKm(myLoc[0], myLoc[1], farmerPos[0], farmerPos[1]);
+  }, [myLoc, farmerPos]);
+
+  const mapPositions = useMemo<[number, number][]>(() => {
+    return myLoc ? [myLoc, farmerPos] : [farmerPos];
+  }, [myLoc, farmerPos]);
+
+  function handleLocateMe() {
+    if (!navigator.geolocation) {
+      alert("Geolocation is not supported by your browser.");
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setMyLoc([pos.coords.latitude, pos.coords.longitude]);
+        setLocating(false);
+      },
+      (err) => {
+        setLocating(false);
+        alert(err.message || "Unable to retrieve your location.");
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/50 p-2 sm:p-4">
-      <div className="flex h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-slate-300 bg-white shadow-2xl">
-        <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-2.5">
+      <div className="flex h-[82vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-slate-300 bg-white shadow-2xl">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3.5 py-2.5">
           <div>
             <h2 className="text-sm font-bold text-slate-800">
               {farmer.farmer_name}
             </h2>
             <p className="text-[11px] text-slate-500">
-              {[farmer.village, farmer.union_name, farmer.upazila, farmer.district]
+              {[
+                farmer.village,
+                farmer.union_name,
+                farmer.upazila,
+                farmer.district,
+              ]
                 .filter(Boolean)
                 .join(", ")}
             </p>
+            {distanceKm !== null && (
+              <div className="mt-1 inline-flex items-center gap-1 rounded-md bg-emerald-100 border border-emerald-300 px-2 py-0.5 text-[11px] font-bold text-emerald-900">
+                <Navigation size={11} /> Distance from you:{" "}
+                {formatDistance(distanceKm)}
+              </div>
+            )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleLocateMe}
+              disabled={locating}
+              className="inline-flex items-center gap-1 rounded-lg bg-blue-600 hover:bg-blue-700 px-2.5 py-1.5 text-xs font-semibold text-white shadow-xs disabled:opacity-60"
+            >
+              <Navigation size={12} />
+              {locating ? "Locating..." : "Locate Me"}
+            </button>
             <button
               onClick={onDetails}
-              className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
             >
-              View details
+              Details
             </button>
             <button
               onClick={onClose}
-              className="text-slate-500 hover:text-slate-800"
+              className="rounded-lg p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-800"
             >
               <X size={18} />
             </button>
@@ -504,12 +731,44 @@ function FarmerMapModal({
         </div>
         <div className="min-h-0 flex-1">
           <MapContainer
-            center={pos}
-            zoom={17}
+            center={farmerPos}
+            zoom={16}
             style={{ height: "100%", width: "100%", zIndex: 1 }}
           >
             <MapLayers />
-            <Marker position={pos} icon={buildMarker(farmer, true)} />
+            <FitBounds positions={mapPositions} />
+            {myLoc && (
+              <>
+                <CircleMarker
+                  center={myLoc}
+                  radius={9}
+                  pathOptions={{
+                    color: "#ffffff",
+                    weight: 3,
+                    fillColor: "#2563eb",
+                    fillOpacity: 1,
+                  }}
+                />
+                <Polyline
+                  positions={[myLoc, farmerPos]}
+                  pathOptions={{
+                    color: "#2563eb",
+                    weight: 3,
+                    dashArray: "6 6",
+                  }}
+                />
+              </>
+            )}
+            <Marker
+              position={farmerPos}
+              icon={buildMarker(
+                farmer,
+                true,
+                distanceKm !== null
+                  ? `${formatDistance(distanceKm)} away`
+                  : undefined
+              )}
+            />
           </MapContainer>
         </div>
       </div>
@@ -581,7 +840,13 @@ function FarmerModal({
             .map((b) => `${b.label}: ${b.qty}`)
             .join(", "),
     ],
-    ["Feed type", farmer.feed_type || "-"],
+    [
+      "Present Feed",
+      farmer.last_feed_company ||
+        farmer.feed_type ||
+        farmer.companies?.company_name ||
+        "-",
+    ],
     ["Status", farmer.status || "Active"],
     [
       "Coordinates",
@@ -640,7 +905,7 @@ function FarmerModal({
                   rows={3}
                   value={text}
                   onChange={(e) => setText(e.target.value)}
-                  placeholder="Write a tracking message..."
+                  placeholder="Write a new tracking message..."
                   className="w-full resize-none rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
                 />
                 <div className="flex items-center justify-between">
@@ -656,7 +921,7 @@ function FarmerModal({
                   </button>
                 </div>
               </form>
-              <NoteThread notes={notes} />
+              <NoteThread notes={notes} initialLimit={10} />
             </div>
           ) : (
             <table className="w-full border-collapse border border-slate-300 text-xs">
@@ -679,7 +944,118 @@ function FarmerModal({
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Page                                                                       */
+/*  Farmer Group Card (Shows >= 10 messages per farmer, latest first)          */
+/* -------------------------------------------------------------------------- */
+
+function FarmerTrackingGroupCard({
+  farmer,
+  notes,
+  onRetrack,
+  onDetails,
+  onViewMap,
+}: {
+  farmer: any;
+  notes: any[];
+  onRetrack: () => void;
+  onDetails: () => void;
+  onViewMap: () => void;
+}) {
+  const badge = getFarmerBadgeInfo(farmer);
+  const stockList = getStockBreakdownList(farmer);
+
+  return (
+    <div 
+    id={`farmer-track-card-${farmer.id}`}
+    className="rounded-xl border border-slate-200 bg-white p-3 sm:p-4 shadow-2xs transition hover:border-slate-300">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+        {/* Farmer Info + Actions (Compact top bar on mobile, left col on desktop) */}
+        <div className="flex flex-col justify-between gap-2 border-b border-slate-100 pb-2.5 lg:col-span-4 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-3">
+          <div>
+            <div className="flex items-start justify-between gap-2">
+              <button
+                type="button"
+                onClick={onDetails}
+                className="flex items-center gap-2 text-left min-w-0"
+              >
+                <span className="text-xl leading-none shrink-0">
+                  {badge.emoji}
+                </span>
+                <span className="truncate text-sm font-bold text-slate-900 hover:text-emerald-700 hover:underline">
+                  {farmer.farmer_name}
+                </span>
+              </button>
+
+              <span className="shrink-0 rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                {notes.length} msg{notes.length > 1 ? "s" : ""}
+              </span>
+            </div>
+
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-600">
+              {farmer.mobile && (
+                <a
+                  href={`tel:${farmer.mobile}`}
+                  className="inline-flex items-center gap-1 font-semibold text-emerald-700 hover:underline"
+                >
+                  <Phone size={10} /> {farmer.mobile}
+                </a>
+              )}
+              {farmer.village && <span>• {farmer.village}</span>}
+              {farmer.upazila && (
+                <span className="rounded bg-slate-100 px-1.5 py-px text-[10px] font-semibold text-slate-700">
+                  {farmer.upazila}
+                </span>
+              )}
+              {farmer.companies?.company_name && (
+                <span className="rounded bg-amber-50 border border-amber-200 px-1.5 py-px text-[10px] font-semibold text-amber-800">
+                  {farmer.companies.company_name}
+                </span>
+              )}
+            </div>
+
+            {stockList.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {stockList.map((s) => (
+                  <span
+                    key={s.label}
+                    className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700"
+                  >
+                    {s.label}: <b className="text-blue-700">{s.qty}</b>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+            <button
+              type="button"
+              onClick={onRetrack}
+              className="inline-flex flex-1 sm:flex-initial items-center justify-center gap-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white shadow-2xs transition"
+            >
+              <RotateCcw size={12} /> Retrack
+            </button>
+            <button
+              type="button"
+              onClick={onViewMap}
+              disabled={!farmer.latitude || !farmer.longitude}
+              className="inline-flex flex-1 sm:flex-initial items-center justify-center gap-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40 transition"
+            >
+              <MapPin size={12} /> View on Map
+            </button>
+          </div>
+        </div>
+
+        {/* Tracking Messages Thread (Minimum 10 visible, latest on top, no horizontal scroll on mobile) */}
+        <div className="lg:col-span-8 min-w-0" id={`farmer-notes-${farmer.id}`}>
+          <NoteThread notes={notes} initialLimit={10} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Main Page                                                                  */
 /* -------------------------------------------------------------------------- */
 
 export default function FarmerTrackingPage() {
@@ -700,8 +1076,8 @@ function TrackingContent({ role }: { role: any }) {
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState("");
 
-  // "Track a farmer" card
-  const [mode, setMode] = useState<"select" | "map">("select");
+  // Collapsible "Track a Farmer" panel state
+  const [trackOpen, setTrackOpen] = useState(false);
   const [selDistrict, setSelDistrict] = useState("");
   const [selUpazila, setSelUpazila] = useState("");
   const [selCompany, setSelCompany] = useState("");
@@ -713,14 +1089,15 @@ function TrackingContent({ role }: { role: any }) {
   const [saving, setSaving] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
 
-  // Tracking log filters
-  const [dateMode, setDateMode] = useState<"single" | "range">("single");
+  // Tracking Log Filters (Default: All Messages)
+  const [dateMode, setDateMode] = useState<"all" | "single" | "range">("all");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [logSearch, setLogSearch] = useState("");
+  const [logUser, setLogUser] = useState("");
   const [logDistrict, setLogDistrict] = useState("");
   const [logUpazila, setLogUpazila] = useState("");
-  const [visibleCount, setVisibleCount] = useState(25);
+  const [visibleFarmersCount, setVisibleFarmersCount] = useState(20);
 
   // Modals
   const [modal, setModal] = useState<{
@@ -729,6 +1106,7 @@ function TrackingContent({ role }: { role: any }) {
   } | null>(null);
   const [mapFarmer, setMapFarmer] = useState<any>(null);
 
+  
   /* ----------------------------- data loading ----------------------------- */
 
   async function loadTrackings() {
@@ -786,7 +1164,6 @@ function TrackingContent({ role }: { role: any }) {
         });
     setFarmers(allowed);
 
-    // Auto-select when the user has only one district / upazila
     const ds = uniqSorted(allowed.map((f: any) => f.district));
     if (ds.length === 1) {
       setSelDistrict(ds[0]);
@@ -823,10 +1200,9 @@ function TrackingContent({ role }: { role: any }) {
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(t);
     });
-    return m; // each list is already latest-first
+    return m; // already sorted newest first
   }, [trackings]);
 
-  // selector options
   const selDistricts = useMemo(
     () => uniqSorted(farmers.map((f) => f.district)),
     [farmers]
@@ -888,7 +1264,17 @@ function TrackingContent({ role }: { role: any }) {
       );
   }, [baseByCompany, selAgent, farmerQuery]);
 
-  // log filter options
+  // Unique users who have tracked farmers in the allowed area
+  const trackedUsers = useMemo(() => {
+    const s = new Set<string>();
+    trackings.forEach((t) => {
+      if (farmerMap.has(String(t.farmer_id)) && t.user_name) {
+        s.add(t.user_name);
+      }
+    });
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [trackings, farmerMap]);
+
   const logUpazilas = useMemo(
     () =>
       uniqSorted(
@@ -899,38 +1285,48 @@ function TrackingContent({ role }: { role: any }) {
     [farmers, logDistrict]
   );
 
-  const logRows = useMemo(() => {
+  // Group filtered messages per farmer; order farmers by their latest message
+  const logGroups = useMemo(() => {
     const q = logSearch.trim().toLowerCase();
-    const groups = new Map<
-      string,
-      { farmer: any; latest: any; count: number }
-    >();
+    const groups = new Map<string, { farmer: any; notes: any[] }>();
+
     for (const t of trackings) {
       const key = String(t.farmer_id);
       const f = farmerMap.get(key);
       if (!f) continue;
-      const ymd = toYmd(t.created_at);
-      if (dateMode === "single") {
-        if (dateFrom && ymd !== dateFrom) continue;
-      } else {
+
+      if (dateMode === "single" && dateFrom) {
+        if (toYmd(t.created_at) !== dateFrom) continue;
+      } else if (dateMode === "range") {
+        const ymd = toYmd(t.created_at);
         if (dateFrom && ymd < dateFrom) continue;
         if (dateTo && ymd > dateTo) continue;
       }
+
+      if (logUser && t.user_name !== logUser) continue;
       if (logDistrict && f.district !== logDistrict) continue;
       if (logUpazila && f.upazila !== logUpazila) continue;
+
       if (
         q &&
         !(
           (f.farmer_name || "").toLowerCase().includes(q) ||
           (f.mobile || "").includes(q) ||
-          (f.village || "").toLowerCase().includes(q)
+          (f.village || "").toLowerCase().includes(q) ||
+          (t.note || "").toLowerCase().includes(q) ||
+          (t.user_name || "").toLowerCase().includes(q)
         )
-      )
+      ) {
         continue;
-      const g = groups.get(key);
-      if (!g) groups.set(key, { farmer: f, latest: t, count: 1 });
-      else g.count += 1;
+      }
+
+      if (!groups.has(key)) {
+        groups.set(key, { farmer: f, notes: [t] });
+      } else {
+        groups.get(key)!.notes.push(t);
+      }
     }
+
     return Array.from(groups.values());
   }, [
     trackings,
@@ -939,13 +1335,14 @@ function TrackingContent({ role }: { role: any }) {
     dateFrom,
     dateTo,
     logSearch,
+    logUser,
     logDistrict,
     logUpazila,
   ]);
 
   useEffect(() => {
-    setVisibleCount(25);
-  }, [dateMode, dateFrom, dateTo, logSearch, logDistrict, logUpazila]);
+    setVisibleFarmersCount(20);
+  }, [dateMode, dateFrom, dateTo, logSearch, logUser, logDistrict, logUpazila]);
 
   /* -------------------------------- actions ------------------------------- */
 
@@ -979,7 +1376,12 @@ function TrackingContent({ role }: { role: any }) {
     setSaving(true);
     const ok = await saveNote(pickedFarmer, noteText);
     setSaving(false);
-    if (ok) setNoteText("");
+    if (ok) {
+      setNoteText("");
+      setPickedFarmer(null);
+      setFarmerQuery("");
+      setTrackOpen(false);
+    }
   }
 
   function pickFarmer(f: any) {
@@ -988,6 +1390,7 @@ function TrackingContent({ role }: { role: any }) {
     setComboOpen(false);
     setNoteText("");
     setShowPicker(false);
+    setTrackOpen(true);
   }
 
   function clearPicked() {
@@ -997,10 +1400,11 @@ function TrackingContent({ role }: { role: any }) {
   }
 
   function resetLogFilters() {
-    setDateMode("single");
+    setDateMode("all");
     setDateFrom("");
     setDateTo("");
     setLogSearch("");
+    setLogUser("");
     setLogDistrict("");
     setLogUpazila("");
   }
@@ -1022,61 +1426,116 @@ function TrackingContent({ role }: { role: any }) {
     : [];
   const pickedBadge = pickedFarmer ? getFarmerBadgeInfo(pickedFarmer) : null;
   const hasLogFilter =
-    dateFrom || dateTo || logSearch || logDistrict || logUpazila;
+    dateMode !== "all" ||
+    dateFrom ||
+    dateTo ||
+    logSearch ||
+    logUser ||
+    logDistrict ||
+    logUpazila;
 
+    const [searchParams, setSearchParams] = useSearchParams();
+
+  // Realtime subscription on FarmerTrackingPage so new notes appear live here too
+  useEffect(() => {
+    const ch = supabase
+      .channel("page_live_farmer_trackings")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "farmer_trackings" },
+        () => {
+          loadTrackings();
+        }
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, []);
+
+  // Auto-scroll and highlight when navigated from Navbar Notification
+  useEffect(() => {
+    if (loading) return;
+    const focusFarmerId = searchParams.get("focus");
+    const focusNoteId = searchParams.get("note");
+    if (!focusFarmerId && !focusNoteId) return;
+
+    const idx = logGroups.findIndex(
+      (g) => String(g.farmer.id) === String(focusFarmerId)
+    );
+    if (idx >= visibleFarmersCount) {
+      setVisibleFarmersCount(idx + 5);
+    }
+
+    const timer = setTimeout(() => {
+      const noteEl = focusNoteId
+        ? document.getElementById(`track-note-${focusNoteId}`)
+        : null;
+      const cardEl = focusFarmerId
+        ? document.getElementById(`farmer-track-card-${focusFarmerId}`)
+        : null;
+      const target = noteEl || cardEl;
+
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.classList.add("ring-2", "ring-emerald-500", "bg-amber-50");
+        setTimeout(() => {
+          target.classList.remove("ring-2", "ring-emerald-500", "bg-amber-50");
+        }, 3000);
+      }
+
+      searchParams.delete("focus");
+      searchParams.delete("note");
+      setSearchParams(searchParams, { replace: true });
+    }, 200);
+
+    return () => clearTimeout(timer);
+  }, [loading, logGroups, searchParams]);
   /* --------------------------------- render ------------------------------- */
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4 p-3 sm:p-5">
-      <div className="flex items-end justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-bold text-slate-900 sm:text-xl">
-            Farmer Tracking
-          </h1>
-          <p className="text-xs text-slate-500">
-            Log a follow-up message for a farmer and see the latest status of
-            every farmer in your area.
-          </p>
-        </div>
-        <span className="hidden rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600 sm:inline">
-          Signed in as <b className="text-slate-800">{currentUserName}</b>
-        </span>
-      </div>
-
-      {/* ------------------------- 1. TRACK A FARMER ------------------------ */}
-      <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-2.5">
-          <h2 className="text-sm font-bold text-slate-800">Track a farmer</h2>
-          <div className="inline-flex rounded-lg bg-slate-100 p-0.5 text-xs font-semibold">
+    <div className="mx-auto max-w-6xl space-y-3 p-2.5 sm:p-4">
+      {/* ---------------- 1. COLLAPSIBLE TRACK A FARMER BUTTON -------------- */}
+      <section className="rounded-xl border border-slate-200 bg-white shadow-2xs overflow-hidden">
+        <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 sm:px-4">
+          <div className="flex flex-wrap items-center gap-2">
             <button
-              onClick={() => setMode("select")}
-              className={`rounded-md px-3 py-1 ${
-                mode === "select"
-                  ? "bg-white text-slate-900 shadow-sm"
-                  : "text-slate-500"
+              type="button"
+              onClick={() => setTrackOpen((o) => !o)}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold shadow-xs transition ${
+                trackOpen
+                  ? "bg-slate-800 text-white"
+                  : "bg-emerald-600 hover:bg-emerald-700 text-white"
               }`}
             >
-              Select farmer
+              <Plus size={14} />
+              <span>Track a Farmer</span>
+              {trackOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
             </button>
+
             <button
-              onClick={() => {
-                setMode("map");
-                setShowPicker(true);
-              }}
-              className={`flex items-center gap-1 rounded-md px-3 py-1 ${
-                mode === "map"
-                  ? "bg-white text-slate-900 shadow-sm"
-                  : "text-slate-500"
-              }`}
+              type="button"
+              onClick={() => setShowPicker(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 hover:bg-blue-100 px-3 py-2 text-xs font-bold text-blue-700 transition"
             >
-              <MapPin size={12} /> Pick from map
+              <MapPin size={13} /> Pick from Map
             </button>
           </div>
+
+          {pickedFarmer && !trackOpen && (
+            <button
+              type="button"
+              onClick={() => setTrackOpen(true)}
+              className="text-xs font-semibold text-emerald-700 hover:underline"
+            >
+              Selected: {pickedFarmer.farmer_name} (Click to open)
+            </button>
+          )}
         </div>
 
-        <div className="space-y-3 p-4">
-          {mode === "select" ? (
-            <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+        {trackOpen && (
+          <div className="border-t border-slate-100 bg-slate-50/40 p-3 sm:p-4 space-y-3">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-5">
               <div>
                 <label className={labelCls}>District</label>
                 <select
@@ -1149,14 +1608,14 @@ function TrackingContent({ role }: { role: any }) {
                   ))}
                 </select>
               </div>
-              <div className="relative col-span-2 md:col-span-1">
+              <div className="relative col-span-2 sm:col-span-3 md:col-span-1">
                 <label className={labelCls}>
                   Farmer ({farmerChoices.length})
                 </label>
                 <div className="relative">
                   <Search
                     size={13}
-                    className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400"
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"
                   />
                   <input
                     value={farmerQuery}
@@ -1165,13 +1624,13 @@ function TrackingContent({ role }: { role: any }) {
                       setComboOpen(true);
                     }}
                     onFocus={() => setComboOpen(true)}
-                    onBlur={() => setTimeout(() => setComboOpen(false), 120)}
-                    placeholder="Search name, mobile, village"
+                    onBlur={() => setTimeout(() => setComboOpen(false), 140)}
+                    placeholder="Search name, mobile, village..."
                     className={`${selectCls} pl-7`}
                   />
                 </div>
                 {comboOpen && (
-                  <div className="absolute z-30 mt-1 max-h-64 w-full min-w-[260px] overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+                  <div className="absolute right-0 left-0 z-30 mt-1 max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
                     {farmerChoices.length === 0 ? (
                       <div className="p-3 text-center text-xs text-slate-400">
                         No farmers match these filters.
@@ -1203,59 +1662,32 @@ function TrackingContent({ role }: { role: any }) {
                         </button>
                       ))
                     )}
-                    {farmerChoices.length > 40 && (
-                      <div className="p-2 text-center text-[11px] text-slate-400">
-                        Showing 40 of {farmerChoices.length}. Type to narrow.
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
             </div>
-          ) : (
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-3">
-              <p className="text-xs text-slate-600">
-                Open the map, filter by district, upazila or agent, then tap a
-                farmer.
-              </p>
-              <button
-                onClick={() => setShowPicker(true)}
-                className="flex shrink-0 items-center gap-1.5 rounded-md bg-slate-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-900"
-              >
-                <Crosshair size={13} /> Open map
-              </button>
-            </div>
-          )}
 
-          {pickedFarmer && (
-            <div className="grid gap-3 md:grid-cols-5">
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 md:col-span-3">
-                <div className="mb-2 flex items-start justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-2.5">
-                    <span className="text-3xl leading-none">
-                      {pickedBadge?.emoji}
-                    </span>
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-bold text-slate-900">
-                        {pickedFarmer.farmer_name}
-                      </div>
-                      <div className="text-[11px] text-slate-500">
-                        {pickedBadge?.label}
-                        {pickedNotes.length > 0 &&
-                          `, tracked ${pickedNotes.length} time${
-                            pickedNotes.length > 1 ? "s" : ""
-                          }`}
+            {pickedFarmer && (
+              <div className="grid gap-3 md:grid-cols-5 pt-1">
+                <div className="rounded-lg border border-slate-200 bg-white p-3 md:col-span-3">
+                  <div className="mb-2 flex items-start justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <span className="text-2xl leading-none">
+                        {pickedBadge?.emoji}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-bold text-slate-900">
+                          {pickedFarmer.farmer_name}
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {pickedBadge?.label}
+                          {pickedNotes.length > 0 &&
+                            `, tracked ${pickedNotes.length} time${
+                              pickedNotes.length > 1 ? "s" : ""
+                            }`}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    {pickedFarmer.companies?.logo_url && (
-                      <img
-                        src={pickedFarmer.companies.logo_url}
-                        alt=""
-                        className="h-6 max-w-[64px] object-contain"
-                      />
-                    )}
                     <button
                       onClick={clearPicked}
                       title="Clear"
@@ -1264,124 +1696,178 @@ function TrackingContent({ role }: { role: any }) {
                       <X size={14} />
                     </button>
                   </div>
+                  <FarmerInfoGrid farmer={pickedFarmer} />
+                  {lastPicked && (
+                    <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] text-emerald-900">
+                      <span className="font-semibold">Last tracking:</span>{" "}
+                      {lastPicked.note.length > 90
+                        ? lastPicked.note.slice(0, 90) + "..."
+                        : lastPicked.note}{" "}
+                      <span className="text-emerald-700">
+                        ({lastPicked.user_name},{" "}
+                        {timeAgo(lastPicked.created_at)})
+                      </span>
+                    </div>
+                  )}
                 </div>
-                <FarmerInfoGrid farmer={pickedFarmer} />
-                {lastPicked && (
-                  <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] text-emerald-900">
-                    <span className="font-semibold">Last tracking:</span>{" "}
-                    {lastPicked.note.length > 90
-                      ? lastPicked.note.slice(0, 90) + "..."
-                      : lastPicked.note}{" "}
-                    <span className="text-emerald-700">
-                      ({lastPicked.user_name}, {timeAgo(lastPicked.created_at)})
-                    </span>
-                  </div>
-                )}
-              </div>
 
-              <div className="flex flex-col md:col-span-2">
-                <label className={labelCls}>Tracking message</label>
-                <textarea
-                  value={noteText}
-                  onChange={(e) => setNoteText(e.target.value)}
-                  placeholder="What did you find? Next step?"
-                  className="min-h-[120px] flex-1 resize-none rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-                />
-                <div className="mt-2 flex items-center justify-between gap-2">
-                  <span className="text-[11px] text-slate-500">
-                    Tracked by <b className="text-slate-700">{currentUserName}</b>
-                  </span>
-                  <button
-                    onClick={handleSavePicked}
-                    disabled={saving || !noteText.trim()}
-                    className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
-                  >
-                    <Send size={12} /> {saving ? "Saving..." : "Save tracking"}
-                  </button>
+                <div className="flex flex-col md:col-span-2">
+                  <label className={labelCls}>Tracking message *</label>
+                  <textarea
+                    value={noteText}
+                    onChange={(e) => setNoteText(e.target.value)}
+                    placeholder="Write tracking message..."
+                    className="min-h-[115px] flex-1 resize-none rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                  />
+                  <div className="mt-2 flex items-center justify-between gap-2">
+                    <span className="text-[11px] text-slate-500">
+                      By <b className="text-slate-700">{currentUserName}</b>
+                    </span>
+                    <button
+                      onClick={handleSavePicked}
+                      disabled={saving || !noteText.trim()}
+                      className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      <Send size={12} />{" "}
+                      {saving ? "Saving..." : "Save Tracking"}
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </section>
 
-      {/* --------------------------- 2. TRACKING LOG ------------------------- */}
-      <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
-          <h2 className="flex items-center gap-1.5 text-sm font-bold text-slate-800">
-            <History size={15} className="text-slate-500" /> Tracking messages
-          </h2>
-          <span className="text-xs text-slate-500">
-            {logRows.length} farmer{logRows.length === 1 ? "" : "s"}
-          </span>
-        </div>
-
-        <div className="grid grid-cols-2 items-end gap-2 border-b border-slate-100 px-4 py-3 md:grid-cols-6">
-          <div className="col-span-2 md:col-span-2">
-            <label className={labelCls}>Date</label>
-            <div className="flex items-center gap-1.5">
-              <div className="inline-flex shrink-0 rounded-md bg-slate-100 p-0.5 text-[11px] font-semibold">
+      {/* ---------------- 2. MOBILE-FRIENDLY FILTERS & MESSAGES -------------- */}
+      <section className="space-y-3">
+        {/* Compact Filter Bar */}
+        <div className="rounded-xl border border-slate-200 bg-white p-2.5 sm:p-3 shadow-2xs space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            {/* All Messages vs Single vs Date Range */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <div className="inline-flex rounded-lg bg-slate-100 p-0.5 text-[11px] font-semibold">
                 <button
+                  type="button"
+                  onClick={() => {
+                    setDateMode("all");
+                    setDateFrom("");
+                    setDateTo("");
+                  }}
+                  className={`rounded-md px-2.5 py-1 transition ${
+                    dateMode === "all"
+                      ? "bg-emerald-600 text-white shadow-2xs"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  All Messages
+                </button>
+                <button
+                  type="button"
                   onClick={() => {
                     setDateMode("single");
                     setDateTo("");
                   }}
-                  className={`rounded px-2 py-1 ${
+                  className={`rounded-md px-2.5 py-1 transition ${
                     dateMode === "single"
-                      ? "bg-white text-slate-900 shadow-sm"
-                      : "text-slate-500"
+                      ? "bg-white text-slate-900 shadow-2xs"
+                      : "text-slate-600 hover:text-slate-900"
                   }`}
                 >
-                  Single
+                  Single Date
                 </button>
                 <button
+                  type="button"
                   onClick={() => setDateMode("range")}
-                  className={`rounded px-2 py-1 ${
+                  className={`rounded-md px-2.5 py-1 transition ${
                     dateMode === "range"
-                      ? "bg-white text-slate-900 shadow-sm"
-                      : "text-slate-500"
+                      ? "bg-white text-slate-900 shadow-2xs"
+                      : "text-slate-600 hover:text-slate-900"
                   }`}
                 >
-                  Range
+                  Multi Date
                 </button>
               </div>
-              <input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                className={selectCls}
-              />
+
+              {dateMode === "single" && (
+                <input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs outline-none focus:border-emerald-500"
+                />
+              )}
+
               {dateMode === "range" && (
-                <>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="date"
+                    value={dateFrom}
+                    onChange={(e) => setDateFrom(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-emerald-500"
+                  />
                   <span className="text-xs text-slate-400">to</span>
                   <input
                     type="date"
                     value={dateTo}
                     min={dateFrom || undefined}
                     onChange={(e) => setDateTo(e.target.value)}
-                    className={selectCls}
+                    className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-emerald-500"
                   />
-                </>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-semibold text-slate-500">
+                {logGroups.length} farmer{logGroups.length === 1 ? "" : "s"}
+              </span>
+              {hasLogFilter && (
+                <button
+                  type="button"
+                  onClick={resetLogFilters}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-700"
+                >
+                  <RotateCcw size={12} /> Reset
+                </button>
               )}
             </div>
           </div>
-          <div className="col-span-2 md:col-span-2">
-            <label className={labelCls}>Farmer</label>
-            <div className="relative">
+
+          {/* Search, User, District, Upazila Grid */}
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <div className="relative col-span-2 sm:col-span-1">
               <Search
                 size={13}
-                className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400"
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"
               />
               <input
                 value={logSearch}
                 onChange={(e) => setLogSearch(e.target.value)}
-                placeholder="Search name, mobile, village"
+                placeholder="Farmer, mobile, message..."
                 className={`${selectCls} pl-7`}
               />
             </div>
-          </div>
-          <div>
-            <label className={labelCls}>District</label>
+
+            <div className="relative">
+              <User
+                size={12}
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
+              />
+              <select
+                className={`${selectCls} pl-7`}
+                value={logUser}
+                onChange={(e) => setLogUser(e.target.value)}
+              >
+                <option value="">All Users</option>
+                {trackedUsers.map((u) => (
+                  <option key={u} value={u}>
+                    {u}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <select
               className={selectCls}
               value={logDistrict}
@@ -1390,184 +1876,67 @@ function TrackingContent({ role }: { role: any }) {
                 setLogUpazila("");
               }}
             >
-              <option value="">All</option>
+              <option value="">All Districts</option>
               {selDistricts.map((x) => (
                 <option key={x} value={x}>
                   {x}
                 </option>
               ))}
             </select>
-          </div>
-          <div className="flex items-end gap-1.5">
-            <div className="min-w-0 flex-1">
-              <label className={labelCls}>Upazila</label>
-              <select
-                className={selectCls}
-                value={logUpazila}
-                onChange={(e) => setLogUpazila(e.target.value)}
-              >
-                <option value="">All</option>
-                {logUpazilas.map((x) => (
-                  <option key={x} value={x}>
-                    {x}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {hasLogFilter && (
-              <button
-                onClick={resetLogFilters}
-                title="Reset filters"
-                className="rounded-md border border-slate-300 p-1.5 text-slate-600 hover:bg-slate-50"
-              >
-                <RotateCcw size={14} />
-              </button>
-            )}
-          </div>
-        </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px] border-collapse text-xs">
-            <thead className="bg-slate-50 text-left text-slate-600">
-              <tr>
-                <th className="w-[24%] px-4 py-2 font-semibold">Farmer</th>
-                <th className="w-[44%] px-3 py-2 font-semibold">
-                  Tracking message
-                </th>
-                <th className="w-[16%] px-3 py-2 font-semibold">Tracked by</th>
-                <th className="w-[16%] px-3 py-2 text-right font-semibold">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={4} className="p-8 text-center text-slate-400">
-                    Loading...
-                  </td>
-                </tr>
-              ) : logRows.length === 0 ? (
-                <tr>
-                  <td colSpan={4} className="p-8 text-center text-slate-400">
-                    {hasLogFilter
-                      ? "No tracking messages match these filters."
-                      : "No tracking messages yet. Track a farmer above to get started."}
-                  </td>
-                </tr>
-              ) : (
-                logRows.slice(0, visibleCount).map(({ farmer, latest, count }) => {
-                  const badge = getFarmerBadgeInfo(farmer);
-                  return (
-                    <tr
-                      key={farmer.id}
-                      className="border-t border-slate-100 align-top hover:bg-slate-50/60"
-                    >
-                      <td className="px-4 py-3">
-                        <button
-                          onClick={() =>
-                            setModal({ farmer, tab: "details" })
-                          }
-                          className="flex items-center gap-1.5 text-left"
-                        >
-                          <span className="text-lg leading-none">
-                            {badge.emoji}
-                          </span>
-                          <span className="text-[13px] font-bold text-slate-900 hover:text-emerald-700 hover:underline">
-                            {farmer.farmer_name}
-                          </span>
-                        </button>
-                        <div className="mt-0.5 pl-7 text-[11px] text-slate-500">
-                          {farmer.mobile || "No mobile"}
-                        </div>
-                        <div className="mt-1 flex flex-wrap gap-1 pl-7">
-                          {farmer.companies?.company_name && (
-                            <span className="rounded bg-slate-100 px-1.5 py-px text-[10px] font-medium text-slate-700">
-                              {farmer.companies.company_name}
-                            </span>
-                          )}
-                          {farmer.upazila && (
-                            <span className="rounded bg-slate-100 px-1.5 py-px text-[10px] font-medium text-slate-700">
-                              {farmer.upazila}
-                            </span>
-                          )}
-                          <span className="rounded bg-amber-50 px-1.5 py-px text-[10px] font-medium text-amber-800">
-                            {badge.label}
-                          </span>
-                        </div>
-                      </td>
-
-                      <td className="px-3 py-3">
-                        <div className="rounded-lg border-l-4 border-emerald-500 bg-emerald-50/60 px-3 py-2">
-                          <p
-                            className="whitespace-pre-wrap text-[14px] font-semibold leading-snug text-slate-900"
-                            style={{
-                              display: "-webkit-box",
-                              WebkitLineClamp: 3,
-                              WebkitBoxOrient: "vertical",
-                              overflow: "hidden",
-                            }}
-                          >
-                            {latest.note}
-                          </p>
-                          {count > 1 && (
-                            <button
-                              onClick={() =>
-                                setModal({ farmer, tab: "track" })
-                              }
-                              className="mt-1 text-[11px] font-semibold text-emerald-700 hover:underline"
-                            >
-                              {count} messages in total
-                            </button>
-                          )}
-                        </div>
-                      </td>
-
-                      <td className="px-3 py-3">
-                        <div className="text-[13px] font-semibold text-slate-800">
-                          {latest.user_name || "Unknown"}
-                        </div>
-                        <div className="text-[11px] text-slate-500">
-                          {fmtDateTime(latest.created_at)}
-                        </div>
-                        <div className="text-[11px] font-medium text-emerald-700">
-                          {timeAgo(latest.created_at)}
-                        </div>
-                      </td>
-
-                      <td className="px-3 py-3">
-                        <div className="flex flex-col items-end gap-1.5">
-                          <button
-                            onClick={() => setModal({ farmer, tab: "track" })}
-                            className="flex w-24 items-center justify-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
-                          >
-                            <RotateCcw size={12} /> Retrack
-                          </button>
-                          <button
-                            onClick={() => openMap(farmer)}
-                            disabled={!farmer.latitude || !farmer.longitude}
-                            className="flex w-24 items-center justify-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
-                          >
-                            <MapPin size={12} /> View map
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {logRows.length > visibleCount && (
-          <div className="border-t border-slate-100 p-3 text-center">
-            <button
-              onClick={() => setVisibleCount((c) => c + 25)}
-              className="rounded-md border border-slate-300 px-4 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            <select
+              className={selectCls}
+              value={logUpazila}
+              onChange={(e) => setLogUpazila(e.target.value)}
             >
-              Show more ({logRows.length - visibleCount} left)
-            </button>
+              <option value="">All Upazilas</option>
+              {logUpazilas.map((x) => (
+                <option key={x} value={x}>
+                  {x}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Farmer-wise Message Cards (Mobile-first, no horizontal scroll required) */}
+        {loading ? (
+          <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-xs text-slate-400">
+            Loading tracking messages...
+          </div>
+        ) : logGroups.length === 0 ? (
+          <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-xs text-slate-400">
+            {hasLogFilter
+              ? "No tracking messages match your filters."
+              : "No tracking messages yet. Tap 'Track a Farmer' above to add one."}
+          </div>
+        ) : (
+          <div className="space-y-2.5">
+            {logGroups
+              .slice(0, visibleFarmersCount)
+              .map(({ farmer, notes }) => (
+                <FarmerTrackingGroupCard
+                  key={farmer.id}
+                  farmer={farmer}
+                  notes={notes}
+                  onRetrack={() => setModal({ farmer, tab: "track" })}
+                  onDetails={() => setModal({ farmer, tab: "details" })}
+                  onViewMap={() => openMap(farmer)}
+                />
+              ))}
+
+            {logGroups.length > visibleFarmersCount && (
+              <div className="pt-1 text-center">
+                <button
+                  type="button"
+                  onClick={() => setVisibleFarmersCount((c) => c + 20)}
+                  className="rounded-xl border border-slate-300 bg-white hover:bg-slate-50 px-5 py-2 text-xs font-bold text-slate-700 shadow-2xs"
+                >
+                  Load more farmers ({logGroups.length - visibleFarmersCount}{" "}
+                  remaining)
+                </button>
+              </div>
+            )}
           </div>
         )}
       </section>

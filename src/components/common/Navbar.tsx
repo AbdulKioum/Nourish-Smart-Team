@@ -1,7 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { FaBell, FaBars, FaTimes, FaHome } from "react-icons/fa";
+import { LocalNotifications } from "@capacitor/local-notifications";
+import { Capacitor } from "@capacitor/core";
 import { supabase } from "../../lib/supabase";
+import {
+  initNativePermissions,
+  triggerPhoneNotification,
+} from "../../utils/nativeAppHelper";
 
 function getAgeDays(hatchDateStr?: string, refDateStr?: string): number {
   if (!hatchDateStr) return 0;
@@ -113,8 +119,27 @@ export default function Navbar({
   }
 
   useEffect(() => {
+    initNativePermissions();
     loadNotificationsData();
 
+    // ১. ফোনের নোটিফিকেশন প্যানেলে ক্লিক করলে নির্দিষ্ট পেজে ও স্ক্রিনে ফোকাস করা
+    let notifSub: any = null;
+    if (Capacitor.isNativePlatform()) {
+      LocalNotifications.addListener(
+        "localNotificationActionPerformed",
+        (action) => {
+          const targetRoute = action.notification.extra?.route;
+          if (targetRoute) {
+            setIsModalOpen(false);
+            navigate(targetRoute);
+          }
+        }
+      ).then((sub) => {
+        notifSub = sub;
+      });
+    }
+
+    // ২. Live Farmer Tracking Realtime Listener + Phone Notification
     const channel = supabase
       .channel("navbar_live_farmer_trackings")
       .on(
@@ -136,9 +161,10 @@ export default function Navbar({
               }
             }
             if (isFarmerAllowed(farmer)) {
+              const fName = farmer?.farmer_name || "Unknown Farmer";
               const enriched = {
                 ...newRow,
-                farmer_name: farmer?.farmer_name || "Unknown Farmer",
+                farmer_name: fName,
                 upazila: farmer?.upazila || "",
               };
               setLatestTrackings((prev) => {
@@ -147,6 +173,13 @@ export default function Navbar({
                 );
                 return [enriched, ...withoutDup].slice(0, 5);
               });
+
+              // ফোনের নোটিফিকেশনে সাথে সাথে পাঠানো
+              triggerPhoneNotification(
+                `Farmer Tracking: ${fName}`,
+                `${newRow.user_name || "Officer"}: ${newRow.note}`,
+                `/farmer-tracking?focus=${newRow.farmer_id}&note=${newRow.id}`
+              );
             }
           } else {
             refreshLatestTrackings();
@@ -157,6 +190,7 @@ export default function Navbar({
 
     return () => {
       supabase.removeChannel(channel);
+      if (notifSub) notifSub.remove();
     };
   }, []);
 
@@ -222,7 +256,6 @@ export default function Navbar({
       (frmData || []).forEach((f: any) => (frmDict[String(f.id)] = f));
       farmersRef.current = frmDict;
 
-      // Latest 5 Farmer Tracking Messages (Scoped to user's assigned area)
       const latest5: any[] = [];
       for (const t of trkData || []) {
         const f = frmDict[String(t.farmer_id)];
@@ -248,7 +281,6 @@ export default function Navbar({
         },
       }));
 
-      // Filter by assigned upazila if restricted
       if (!isFullAccess && uUpazilas.length > 0) {
         visits = visits.filter((v: any) =>
           uUpazilas.includes(v.agents?.upazila)
@@ -257,7 +289,27 @@ export default function Navbar({
 
       setRunningVisits(visits);
 
-      // ---- Below-standard lists (based on each batch's LAST visit report) ----
+      // ৩. Broiler/Sonali Time to Sale (Age >= 28) ফোনের নোটিফিকেশনে পাঠানো (একবার করে প্রতি দিন/ব্যাচে)
+      const todayKey = new Date().toISOString().slice(0, 10);
+      visits.forEach((v: any) => {
+        const cat = (v.category || "Broiler").toLowerCase();
+        if (cat !== "broiler" && cat !== "sonali") return;
+        const age = getAgeDays(v.hatch_date);
+        if (age >= 28) {
+          const storageKey = `notified_sale_${v.id}_${todayKey}`;
+          if (!localStorage.getItem(storageKey)) {
+            localStorage.setItem(storageKey, "1");
+            const fName =
+              v.batch_label || v.farmers?.farmer_name || "Unknown Farmer";
+            triggerPhoneNotification(
+              "Broiler Time to sale",
+              `Farmer Name: ${fName} | Age: ${age} Days`,
+              `/visits?focus=${v.id}&action=after_sale`
+            );
+          }
+        }
+      });
+
       const visitIds = visits.map((v: any) => String(v.id));
       if (visitIds.length > 0) {
         const [
@@ -395,7 +447,6 @@ export default function Navbar({
     }
   }
 
-  // Check Broiler/Sonali Sell Alerts (Age >= 28 days)
   const broilerSellAlerts = runningVisits.filter((v: any) => {
     const cat = (v.category || "Broiler").toLowerCase();
     if (cat !== "broiler" && cat !== "sonali") return false;
@@ -403,7 +454,6 @@ export default function Navbar({
     return age >= 28;
   });
 
-  // Check Layer Vaccine Alerts (Within next 3 days)
   const layerVaccineAlerts: any[] = [];
   runningVisits.forEach((v: any) => {
     const cat = (v.category || "").toLowerCase();
@@ -446,27 +496,12 @@ export default function Navbar({
   }
   const lowWeightByAgent = groupByAgent(lowWeightList);
   const lowEggByAgent = groupByAgent(lowEggList);
-
-  // Group Broiler Sell Alerts by Agent
-  const broilerByAgent: Record<string, any[]> = {};
-  broilerSellAlerts.forEach((v: any) => {
-    const agName = v.agents?.agent_name || "Unassigned Agent";
-    if (!broilerByAgent[agName]) broilerByAgent[agName] = [];
-    broilerByAgent[agName].push(v);
-  });
-
-  // Group Layer Vaccine Alerts by Agent
-  const layerByAgent: Record<string, any[]> = {};
-  layerVaccineAlerts.forEach((v: any) => {
-    const agName = v.agents?.agent_name || "Unassigned Agent";
-    if (!layerByAgent[agName]) layerByAgent[agName] = [];
-    layerByAgent[agName].push(v);
-  });
+  const broilerByAgent = groupByAgent(broilerSellAlerts);
+  const layerByAgent = groupByAgent(layerVaccineAlerts);
 
   return (
     <>
       <header className="sticky top-0 z-40 h-14 sm:h-16 bg-white border-b border-slate-200 shadow-sm flex items-center justify-between px-4 sm:px-6">
-        {/* Left: Menu Toggle Icon + Logo + Page Title + Home Icon */}
         <div className="flex items-center gap-3 min-w-0">
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
@@ -497,7 +532,6 @@ export default function Navbar({
           </Link>
         </div>
 
-        {/* Right: Notification Icon with Badge */}
         <div className="flex items-center">
           <button
             onClick={() => {
@@ -515,9 +549,6 @@ export default function Navbar({
         </div>
       </header>
 
-      {/* ==================================================
-          NOTIFICATION MODAL POPUP (COMPACT ROWS + LIVE TRACKING)
-      ================================================== */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-2.5 sm:p-3">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden border border-slate-200">
@@ -597,7 +628,6 @@ export default function Navbar({
                                       `/farmer-tracking?focus=${t.farmer_id}&note=${t.id}`
                                     );
                                   }}
-                                  title="Click to focus this message"
                                   className="hover:bg-emerald-100/60 cursor-pointer leading-tight transition"
                                 >
                                   <td className="px-2.5 py-1 font-bold text-slate-800 whitespace-nowrap">
@@ -704,7 +734,7 @@ export default function Navbar({
                     </div>
                   )}
 
-                  {/* SECTION 2: LAYER VACCINE ALERTS (WITHIN 3 DAYS) */}
+                  {/* SECTION 2: LAYER VACCINE ALERTS */}
                   {Object.keys(layerByAgent).length > 0 && (
                     <div className="space-y-1.5 pt-1">
                       <h4 className="font-bold text-indigo-700 text-xs sm:text-sm uppercase tracking-wider border-b pb-0.5">
@@ -774,7 +804,7 @@ export default function Navbar({
                     </div>
                   )}
 
-                  {/* SECTION 3: BROILER BELOW STANDARD WEIGHT (LAST VISIT) */}
+                  {/* SECTION 3: BROILER BELOW STANDARD WEIGHT */}
                   {Object.keys(lowWeightByAgent).length > 0 && (
                     <div className="space-y-1.5 pt-1">
                       <h4 className="font-bold text-orange-700 text-xs sm:text-sm uppercase tracking-wider border-b pb-0.5">
@@ -860,7 +890,7 @@ export default function Navbar({
                     </div>
                   )}
 
-                  {/* SECTION 4: LAYER BELOW STANDARD EGG PRODUCTION (LAST VISIT) */}
+                  {/* SECTION 4: LAYER BELOW STANDARD EGG PRODUCTION */}
                   {Object.keys(lowEggByAgent).length > 0 && (
                     <div className="space-y-1.5 pt-1">
                       <h4 className="font-bold text-yellow-700 text-xs sm:text-sm uppercase tracking-wider border-b pb-0.5">

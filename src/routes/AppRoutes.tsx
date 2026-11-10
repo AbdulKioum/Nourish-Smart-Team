@@ -24,6 +24,15 @@ import DocAgentsPage from "../pages/doc/DocAgentsPage";
 import DocTrackingPage from "../pages/doc/DocTrackingPage";
 import FarmerTrackingPage from "../pages/farmers/FarmerTrackingPage"; 
 
+
+import {
+  setupGlobalNativeGeolocation,
+  setupGlobalNativeFileDownload,
+} from "../utils/nativeAppHelper";
+
+setupGlobalNativeGeolocation();
+setupGlobalNativeFileDownload();
+
 // Loader
 function SimpleLoader() {
   return (

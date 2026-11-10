@@ -2,7 +2,13 @@ import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { getFarmers } from "../../services/farmerService";
 import { useAuth } from "../../context/AuthContext";
-import { MapContainer, Marker, Polyline, CircleMarker, useMap } from "react-leaflet";
+import {
+  MapContainer,
+  Marker,
+  Polyline,
+  CircleMarker,
+  useMap,
+} from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import MapLayers from "../../components/maps/MapLayers";
@@ -17,8 +23,8 @@ import {
   Plus,
   ChevronDown,
   ChevronUp,
-  Navigation,
   User,
+  Crosshair,
 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 
@@ -109,28 +115,6 @@ function esc(s: string) {
     .replace(/>/g, "&gt;");
 }
 
-function calcDistanceKm(
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number
-): number {
-  const R = 6371; // km
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-function formatDistance(km: number): string {
-  if (km < 1) return `${Math.round(km * 1000)} m`;
-  return `${km.toFixed(2)} km`;
-}
 
 function buildMarker(farmer: any, highlight = false, distText?: string) {
   const { emoji, border } = getFarmerBadgeInfo(farmer);
@@ -138,8 +122,8 @@ function buildMarker(farmer: any, highlight = false, distText?: string) {
   const ring = highlight
     ? "box-shadow:0 0 0 4px rgba(16,185,129,0.35);"
     : "box-shadow:0 1px 2px rgba(0,0,0,0.15);";
-  const distBadge = distText
-    ? `<div style="margin-top:1px;background:#0f172a;color:#fff;font-size:9px;font-weight:700;padding:0 4px;border-radius:3px;white-space:nowrap;">${esc(
+  const distHtml = distText
+    ? `<div style="margin-top:2px;background:#0f172a;color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;white-space:nowrap;">${esc(
         distText
       )}</div>`
     : "";
@@ -149,7 +133,7 @@ function buildMarker(farmer: any, highlight = false, distText?: string) {
       <div style="margin-top:2px;background:rgba(255,255,255,0.96);border:1px solid ${border};color:#0f172a;font-size:10px;font-weight:700;padding:0 5px;border-radius:4px;white-space:nowrap;${ring}">
         ${name}
       </div>
-      ${distBadge}
+      ${distHtml}
     </div>`;
   return L.divIcon({
     className: "ft-div-icon",
@@ -194,6 +178,39 @@ function uniqSorted(list: string[]) {
   return Array.from(new Set(list.filter(Boolean))).sort((a, b) =>
     a.localeCompare(b)
   );
+}
+
+function calcDistanceKm(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function formatDistance(km: number): string {
+  if (km < 1) return `${Math.round(km * 1000)} m`;
+  return `${km.toFixed(2)} km`;
+}
+
+function FlyToLocation({ target }: { target: [number, number] | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (target) {
+      map.flyTo(target, 15, { animate: true, duration: 0.8 });
+    }
+  }, [target, map]);
+  return null;
 }
 
 function FitBounds({
@@ -375,10 +392,6 @@ function FarmerInfoGrid({ farmer }: { farmer: any }) {
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/*  Modals                                                                     */
-/* -------------------------------------------------------------------------- */
-
 function MapPickerModal({
   farmers,
   initDistrict,
@@ -398,12 +411,8 @@ function MapPickerModal({
   const [u, setU] = useState(initUpazila);
   const [a, setA] = useState(initAgent);
   const [myLoc, setMyLoc] = useState<[number, number] | null>(null);
+  const [flyTarget, setFlyTarget] = useState<[number, number] | null>(null);
   const [locating, setLocating] = useState(false);
-  const [flyTarget, setFlyTarget] = useState<{
-    pos: [number, number];
-    zoom?: number;
-    ts: number;
-  } | null>(null);
 
   const districts = useMemo(
     () => uniqSorted(farmers.map((f) => f.district)),
@@ -450,24 +459,6 @@ function MapPickerModal({
     [withLoc]
   );
 
-  // Nearest farmer distance when user location is active
-  const nearestInfo = useMemo<{ farmer: any; km: number } | null>(() => {
-    if (!myLoc || withLoc.length === 0) return null;
-    let best: { farmer: any; km: number } | null = null;
-    for (const f of withLoc) {
-      const km = calcDistanceKm(
-        myLoc[0],
-        myLoc[1],
-        Number(f.latitude),
-        Number(f.longitude)
-      );
-      if (!best || km < best.km) {
-        best = { farmer: f, km };
-      }
-    }
-    return best;
-  }, [myLoc, withLoc]);
-
   function handleLocateMe() {
     if (!navigator.geolocation) {
       alert("Geolocation is not supported by your browser.");
@@ -481,33 +472,30 @@ function MapPickerModal({
           pos.coords.longitude,
         ];
         setMyLoc(coords);
-        setFlyTarget({ pos: coords, zoom: 14, ts: Date.now() });
+        setFlyTarget([...coords]);
         setLocating(false);
       },
-      (err) => {
+      () => {
         setLocating(false);
-        alert(err.message || "Unable to retrieve your location.");
+        alert("Unable to retrieve your location. Please allow GPS access.");
       },
-      { enableHighAccuracy: true, timeout: 10000 }
+      { enableHighAccuracy: true, timeout: 15000 }
     );
   }
 
   return (
     <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/50 p-2 sm:p-4">
-      <div className="flex h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-slate-300 bg-white shadow-2xl">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3.5 py-2.5">
+      <div className="flex h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-slate-300 bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-2.5">
           <div>
             <h2 className="text-sm font-bold text-slate-800">
-              Pick a farmer from map
+              Pick a farmer from the map
             </h2>
             <p className="text-[11px] text-slate-500">
-              {withLoc.length} on map. Tap a farmer marker to select.
-              {nearestInfo && (
-                <span className="ml-1.5 font-semibold text-emerald-700">
-                  • Nearest: {nearestInfo.farmer.farmer_name} (
-                  {formatDistance(nearestInfo.km)} away)
-                </span>
-              )}
+              {withLoc.length} on map
+              {shown.length - withLoc.length > 0 &&
+                `, ${shown.length - withLoc.length} without location`}
+              . Tap a farmer to select.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -515,21 +503,21 @@ function MapPickerModal({
               type="button"
               onClick={handleLocateMe}
               disabled={locating}
-              className="inline-flex items-center gap-1 rounded-lg bg-blue-600 hover:bg-blue-700 px-2.5 py-1.5 text-xs font-semibold text-white shadow-xs disabled:opacity-60"
+              className="flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 px-3 py-1.5 text-xs font-bold text-white shadow-sm disabled:opacity-60"
             >
-              <Navigation size={12} />
+              <Crosshair size={13} />
               {locating ? "Locating..." : "Locate Me"}
             </button>
             <button
               onClick={onClose}
-              className="rounded-lg p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-800"
+              className="text-slate-500 hover:text-slate-800"
             >
               <X size={18} />
             </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-2 border-b border-slate-200 px-3.5 py-2">
+        <div className="grid grid-cols-3 gap-2 border-b border-slate-200 px-4 py-2">
           <div>
             <label className={labelCls}>District</label>
             <select
@@ -539,7 +527,6 @@ function MapPickerModal({
                 setD(e.target.value);
                 setU("");
                 setA("");
-                setFlyTarget(null);
               }}
             >
               <option value="">All</option>
@@ -558,7 +545,6 @@ function MapPickerModal({
               onChange={(e) => {
                 setU(e.target.value);
                 setA("");
-                setFlyTarget(null);
               }}
             >
               <option value="">All</option>
@@ -574,10 +560,7 @@ function MapPickerModal({
             <select
               className={selectCls}
               value={a}
-              onChange={(e) => {
-                setA(e.target.value);
-                setFlyTarget(null);
-              }}
+              onChange={(e) => setA(e.target.value)}
             >
               <option value="">All</option>
               {agentOptions.map(([id, name]) => (
@@ -589,14 +572,26 @@ function MapPickerModal({
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 relative">
+        <div className="relative min-h-0 flex-1">
+          {/* ম্যাপের ওপর ভাসমান Locate Me বাটন */}
+          <button
+            type="button"
+            onClick={handleLocateMe}
+            disabled={locating}
+            className="absolute top-3 right-3 z-[1000] flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white/95 hover:bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 shadow-lg backdrop-blur-xs"
+          >
+            <Crosshair size={14} className="text-blue-600" />
+            {locating ? "Locating..." : "Locate Me"}
+          </button>
+
           <MapContainer
             center={[24.7471, 90.4203]}
             zoom={8}
             style={{ height: "100%", width: "100%", zIndex: 1 }}
           >
             <MapLayers />
-            <FitBounds positions={positions} flyTarget={flyTarget} />
+            <FitBounds positions={positions} />
+            <FlyToLocation target={flyTarget} />
             {myLoc && (
               <CircleMarker
                 center={myLoc}
@@ -610,7 +605,7 @@ function MapPickerModal({
               />
             )}
             {withLoc.map((f) => {
-              const distTxt = myLoc
+              const distText = myLoc
                 ? formatDistance(
                     calcDistanceKm(
                       myLoc[0],
@@ -624,7 +619,7 @@ function MapPickerModal({
                 <Marker
                   key={f.id}
                   position={[Number(f.latitude), Number(f.longitude)]}
-                  icon={buildMarker(f, false, distTxt)}
+                  icon={buildMarker(f, false, distText)}
                   eventHandlers={{ click: () => onPick(f) }}
                 />
               );
@@ -645,7 +640,7 @@ function FarmerMapModal({
   onClose: () => void;
   onDetails: () => void;
 }) {
-  const farmerPos: [number, number] = [
+  const pos: [number, number] = [
     Number(farmer.latitude),
     Number(farmer.longitude),
   ];
@@ -654,12 +649,13 @@ function FarmerMapModal({
 
   const distanceKm = useMemo(() => {
     if (!myLoc) return null;
-    return calcDistanceKm(myLoc[0], myLoc[1], farmerPos[0], farmerPos[1]);
-  }, [myLoc, farmerPos]);
+    return calcDistanceKm(myLoc[0], myLoc[1], pos[0], pos[1]);
+  }, [myLoc, pos]);
 
-  const mapPositions = useMemo<[number, number][]>(() => {
-    return myLoc ? [myLoc, farmerPos] : [farmerPos];
-  }, [myLoc, farmerPos]);
+  const boundsPositions = useMemo<[number, number][]>(
+    () => (myLoc ? [myLoc, pos] : [pos]),
+    [myLoc, pos]
+  );
 
   function handleLocateMe() {
     if (!navigator.geolocation) {
@@ -668,22 +664,22 @@ function FarmerMapModal({
     }
     setLocating(true);
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setMyLoc([pos.coords.latitude, pos.coords.longitude]);
+      (p) => {
+        setMyLoc([p.coords.latitude, p.coords.longitude]);
         setLocating(false);
       },
-      (err) => {
+      () => {
         setLocating(false);
-        alert(err.message || "Unable to retrieve your location.");
+        alert("Unable to retrieve your location. Please allow GPS access.");
       },
-      { enableHighAccuracy: true, timeout: 10000 }
+      { enableHighAccuracy: true, timeout: 15000 }
     );
   }
 
   return (
     <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/50 p-2 sm:p-4">
-      <div className="flex h-[82vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-slate-300 bg-white shadow-2xl">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3.5 py-2.5">
+      <div className="flex h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-slate-300 bg-white shadow-2xl">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
           <div>
             <h2 className="text-sm font-bold text-slate-800">
               {farmer.farmer_name}
@@ -699,44 +695,62 @@ function FarmerMapModal({
                 .join(", ")}
             </p>
             {distanceKm !== null && (
-              <div className="mt-1 inline-flex items-center gap-1 rounded-md bg-emerald-100 border border-emerald-300 px-2 py-0.5 text-[11px] font-bold text-emerald-900">
-                <Navigation size={11} /> Distance from you:{" "}
-                {formatDistance(distanceKm)}
-              </div>
+              <span className="mt-1 inline-block rounded-md bg-emerald-100 border border-emerald-300 px-2 py-0.5 text-[11px] font-bold text-emerald-900">
+                Distance from you: {formatDistance(distanceKm)}
+              </span>
             )}
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={handleLocateMe}
               disabled={locating}
-              className="inline-flex items-center gap-1 rounded-lg bg-blue-600 hover:bg-blue-700 px-2.5 py-1.5 text-xs font-semibold text-white shadow-xs disabled:opacity-60"
+              className="flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 px-3 py-1.5 text-xs font-bold text-white shadow-sm disabled:opacity-60"
             >
-              <Navigation size={12} />
+              <Crosshair size={13} />
               {locating ? "Locating..." : "Locate Me"}
             </button>
             <button
               onClick={onDetails}
-              className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
             >
-              Details
+              View details
             </button>
             <button
               onClick={onClose}
-              className="rounded-lg p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-800"
+              className="text-slate-500 hover:text-slate-800"
             >
               <X size={18} />
             </button>
           </div>
         </div>
-        <div className="min-h-0 flex-1">
+
+        <div className="relative min-h-0 flex-1">
+          {/* ম্যাপের ওপর ভাসমান Locate Me ও দূরত্ব ব্যাজ */}
+          <div className="absolute top-3 right-3 z-[1000] flex flex-col items-end gap-1.5">
+            <button
+              type="button"
+              onClick={handleLocateMe}
+              disabled={locating}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white/95 hover:bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 shadow-lg backdrop-blur-xs"
+            >
+              <Crosshair size={14} className="text-blue-600" />
+              {locating ? "Locating..." : "Locate Me"}
+            </button>
+            {distanceKm !== null && (
+              <div className="rounded-lg bg-slate-900/90 px-2.5 py-1 text-xs font-bold text-white shadow-md">
+                📍 {formatDistance(distanceKm)} away
+              </div>
+            )}
+          </div>
+
           <MapContainer
-            center={farmerPos}
+            center={pos}
             zoom={16}
             style={{ height: "100%", width: "100%", zIndex: 1 }}
           >
             <MapLayers />
-            <FitBounds positions={mapPositions} />
+            <FitBounds positions={boundsPositions} />
             {myLoc && (
               <>
                 <CircleMarker
@@ -750,7 +764,7 @@ function FarmerMapModal({
                   }}
                 />
                 <Polyline
-                  positions={[myLoc, farmerPos]}
+                  positions={[myLoc, pos]}
                   pathOptions={{
                     color: "#2563eb",
                     weight: 3,
@@ -760,7 +774,7 @@ function FarmerMapModal({
               </>
             )}
             <Marker
-              position={farmerPos}
+              position={pos}
               icon={buildMarker(
                 farmer,
                 true,

@@ -267,6 +267,7 @@ export default function FarmersPage() {
   >(null);
   const [myPosition, setMyPosition] = useState<[number, number] | null>(null);
   const farmerMarkerRefs = useRef<Record<number, L.Marker | null>>({});
+  const myLocationMarkerRef = useRef<L.Marker | null>(null);
 
   async function loadData() {
     const {
@@ -1995,6 +1996,65 @@ async function saveBufferOrBlob(bufferOrBlob: ArrayBuffer | Blob, fileName: stri
                                     marker.openPopup();
                                   }
                                 }, 400);
+                              }}
+                              className="text-blue-600 font-bold hover:underline text-left"
+                            >
+                              {index + 1}. {farmer.farmer_name}
+                            </button>
+                            <div className="text-slate-500">
+                              {farmer.distance} km away
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </Popup>
+                </Marker>
+              )}
+
+              {myPosition && (
+                <Marker
+                  position={myPosition}
+                  ref={(ref) => {
+                    myLocationMarkerRef.current = ref;
+                  }}
+                >
+                  <Tooltip
+                    permanent
+                    direction="top"
+                    offset={[0, -15]}
+                    interactive={true}
+                    eventHandlers={{
+                      click: () => {
+                        myLocationMarkerRef.current?.openPopup();
+                      },
+                    }}
+                  >
+                    <span className="cursor-pointer font-semibold">
+                      📍 My Location
+                    </span>
+                  </Tooltip>
+                  <Popup>
+                    <div className="max-h-60 overflow-y-auto w-52 text-xs space-y-1.5">
+                      <h3 className="font-bold text-slate-800">
+                        📍 Nearest Farmers
+                      </h3>
+                      {nearestFarmers.length === 0 ? (
+                        <div>No nearby farmers found.</div>
+                      ) : (
+                        nearestFarmers.map((farmer, index) => (
+                          <div key={farmer.id} className="border-b pb-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const targetPos: [number, number] = [
+                                  Number(farmer.latitude),
+                                  Number(farmer.longitude),
+                                ];
+                                setMyLocationMode(false);
+                                setSelectedFarmerPosition(targetPos);
+                                // সাথে সাথে পপ-আপ ওপেন হবে না এবং স্ক্রিন ক্লিন রাখতে My Location পপ-আপটিও বন্ধ হয়ে যাবে
+                                myLocationMarkerRef.current?.closePopup();
                               }}
                               className="text-blue-600 font-bold hover:underline text-left"
                             >

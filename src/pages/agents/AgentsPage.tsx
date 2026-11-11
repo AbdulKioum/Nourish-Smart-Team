@@ -119,6 +119,7 @@ export default function AgentsPage() {
   const { role } = useAuth();
   const mapSectionRef = useRef<HTMLDivElement | null>(null);
   const agentMarkerRefs = useRef<Record<number, L.Marker | null>>({});
+  const myLocationMarkerRef = useRef<L.Marker | null>(null);
 
   if (role === "viewer") {
     return <div className="p-6 text-center text-slate-500">Access Denied</div>;
@@ -1202,9 +1203,26 @@ export default function AgentsPage() {
               ) : null}
 
               {userLocation && (
-                <Marker position={userLocation}>
-                  <Tooltip permanent direction="top" offset={[0, -15]}>
-                    📍 My Location
+                <Marker
+                  position={userLocation}
+                  ref={(ref) => {
+                    myLocationMarkerRef.current = ref;
+                  }}
+                >
+                  <Tooltip
+                    permanent
+                    direction="top"
+                    offset={[0, -15]}
+                    interactive={true}
+                    eventHandlers={{
+                      click: () => {
+                        myLocationMarkerRef.current?.openPopup();
+                      },
+                    }}
+                  >
+                    <span className="cursor-pointer font-semibold">
+                      📍 My Location
+                    </span>
                   </Tooltip>
                   <Popup>
                     <div className="max-h-60 overflow-y-auto w-52 text-xs space-y-1.5">
@@ -1225,16 +1243,8 @@ export default function AgentsPage() {
                                 ];
                                 setMyLocationMode(false);
                                 setSelectedLocation(targetPos);
-                                setNewNoteText("");
-                                loadAgentNotes(a.id);
-
-                                // ম্যাপ ফ্লাই করে এজেন্টের কাছে গিয়ে অটোমেটিক পপ-আপ ওপেন করবে
-                                setTimeout(() => {
-                                  const marker = agentMarkerRefs.current[a.id];
-                                  if (marker) {
-                                    marker.openPopup();
-                                  }
-                                }, 400);
+                                // সাথে সাথে পপ-আপ ওপেন হবে না এবং স্ক্রিন ক্লিন রাখতে My Location পপ-আপটিও বন্ধ হয়ে যাবে
+                                myLocationMarkerRef.current?.closePopup();
                               }}
                               className="text-blue-600 font-bold hover:underline text-left"
                             >

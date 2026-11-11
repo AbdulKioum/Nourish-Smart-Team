@@ -139,7 +139,7 @@ export default function Navbar({
       });
     }
 
-    // ২. Live Farmer Tracking Realtime Listener + Phone Notification
+    // ২. Live Farmer Tracking Realtime Listener (UI update only, Phone Notification handled by FCM)
     const channel = supabase
       .channel("navbar_live_farmer_trackings")
       .on(
@@ -174,12 +174,7 @@ export default function Navbar({
                 return [enriched, ...withoutDup].slice(0, 5);
               });
 
-              // ফোনের নোটিফিকেশনে সাথে সাথে পাঠানো
-              triggerPhoneNotification(
-                `Farmer Tracking: ${fName}`,
-                `${newRow.user_name || "Officer"}: ${newRow.note}`,
-                `/farmer-tracking?focus=${newRow.farmer_id}&note=${newRow.id}`
-              );
+              // ফোনের লোকাল নোটিফিকেশন অফ করা হয়েছে (এখন Firebase Push Notification কাজ করবে)
             }
           } else {
             refreshLatestTrackings();
@@ -193,7 +188,7 @@ export default function Navbar({
       if (notifSub) notifSub.remove();
     };
   }, []);
-
+  
   async function loadNotificationsData() {
     setLoading(true);
     try {

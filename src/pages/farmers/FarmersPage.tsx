@@ -15,6 +15,7 @@ import {
   Popup,
   Tooltip,
   useMap,
+  Polyline,
 } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -36,6 +37,8 @@ import ExcelJS from "exceljs";
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
 import { Capacitor } from "@capacitor/core";
+import { Geolocation } from "@capacitor/geolocation";
+
 
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 
@@ -202,14 +205,7 @@ function RecenterMap({ position }: { position: [number, number] }) {
   return null;
 }
 
-function FitBounds({ positions }: { positions: [number, number][] }) {
-  const map = useMap();
-  useEffect(() => {
-    if (positions.length === 0) return;
-    map.fitBounds(positions, { padding: [45, 45] });
-  }, [positions, map]);
-  return null;
-}
+
 
 export default function FarmersPage() {
   const { role } = useAuth();
@@ -673,33 +669,80 @@ export default function FarmersPage() {
     loadData();
   }
 
-  function handleLocateMeInPicker() {
-    if (!navigator.geolocation) {
-      alert("Geolocation is not supported by your browser.");
-      return;
+  // Universal Location Helper (Works on both Android Native App & Browser)
+  async function getDeviceCoordinates(): Promise<{ lat: number; lng: number }> {
+    if (Capacitor.isNativePlatform()) {
+      // ১. অ্যান্ড্রয়েড অ্যাপের লোকেশন পারমিশন চেক এবং রিকোয়েস্ট করা
+      let perm = await Geolocation.checkPermissions();
+      if (perm.location !== "granted") {
+        perm = await Geolocation.requestPermissions();
+      }
+      if (perm.location !== "granted") {
+        throw new Error("Location permission denied. Please allow GPS access.");
+      }
+
+      // ২. প্রথমে High Accuracy GPS চেষ্টা করবে, রুমের ভেতরে থাকলে Network লোকেশনে ফলব্যাক করবে
+      try {
+        const pos = await Geolocation.getCurrentPosition({
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0,
+        });
+        return { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      } catch {
+        const fallbackPos = await Geolocation.getCurrentPosition({
+          enableHighAccuracy: false,
+          timeout: 10000,
+        });
+        return { lat: fallbackPos.coords.latitude, lng: fallbackPos.coords.longitude };
+      }
+    } else {
+      // ব্রাউজারের জন্য সাধারণ Geolocation
+      return new Promise((resolve, reject) => {
+        if (!navigator.geolocation) {
+          reject(new Error("Geolocation is not supported by your browser."));
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(
+          (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+          (err) => reject(err),
+          { enableHighAccuracy: true, timeout: 10000 }
+        );
+      });
     }
-    setLocatingInPicker(true);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
-        setPickerCenterOverride([lat, lng]);
-        setForm((prev) => ({
-          ...prev,
-          latitude: lat.toFixed(6),
-          longitude: lng.toFixed(6),
-        }));
-        setLocatingInPicker(false);
-      },
-      () => {
-        setLocatingInPicker(false);
-        alert("Unable to retrieve your location. Please allow GPS access.");
-      },
-      { enableHighAccuracy: true }
-    );
   }
 
-  const filteredFarmers = farmers
+  // Updated Locate Me in Picker Modal
+  async function handleLocateMeInPicker() {
+    setLocatingInPicker(true);
+    try {
+      const { lat, lng } = await getDeviceCoordinates();
+      setPickerCenterOverride([lat, lng]);
+      setForm((prev) => ({
+        ...prev,
+        latitude: lat.toFixed(6),
+        longitude: lng.toFixed(6),
+      }));
+    } catch (err: any) {
+      alert(err?.message || "Unable to retrieve your location. Please allow GPS access.");
+    } finally {
+      setLocatingInPicker(false);
+    }
+  }
+
+  // Main Farmer Map-এর "Locate Me" বাটন হ্যান্ডলার
+  async function handleLocateMeOnMainMap() {
+    try {
+      const { lat, lng } = await getDeviceCoordinates();
+      setSelectedFarmerPosition(null);
+      setMyPosition([lat, lng]);
+      setMyLocationMode(true);
+    } catch (err: any) {
+      alert(err?.message || "Unable to retrieve your location. Please allow GPS access.");
+    }
+  }
+
+   const filteredFarmers = farmers
     .filter((f) => {
       const q = search.toLowerCase();
       const matchSearch =
@@ -1934,12 +1977,24 @@ async function saveBufferOrBlob(bufferOrBlob: ArrayBuffer | Blob, fileName: stri
                         nearestFarmers.map((farmer, index) => (
                           <div key={farmer.id} className="border-b pb-1">
                             <button
+                              type="button"
                               onClick={() => {
-                                setSelectedFarmerPosition([
+                                const targetPos: [number, number] = [
                                   Number(farmer.latitude),
                                   Number(farmer.longitude),
-                                ]);
+                                ];
                                 setMyLocationMode(false);
+                                setSelectedFarmerPosition(targetPos);
+                                setNewNoteText("");
+                                loadFarmerNotes(farmer.id);
+
+                                // ম্যাপ ফ্লাই করে ফার্মারের কাছে গিয়ে অটোমেটিক পপ-আপ ওপেন করবে
+                                setTimeout(() => {
+                                  const marker = farmerMarkerRefs.current[farmer.id];
+                                  if (marker) {
+                                    marker.openPopup();
+                                  }
+                                }, 400);
                               }}
                               className="text-blue-600 font-bold hover:underline text-left"
                             >
@@ -1956,18 +2011,15 @@ async function saveBufferOrBlob(bufferOrBlob: ArrayBuffer | Blob, fileName: stri
                 </Marker>
               )}
 
-              {!selectedFarmerPosition && (
-                <FitBounds
-                  positions={
-                    myLocationMode
-                      ? []
-                      : filteredFarmers
-                          .filter((f) => f.latitude && f.longitude)
-                          .map((f) => [
-                            Number(f.latitude),
-                            Number(f.longitude),
-                          ])
-                  }
+              {/* My Location থেকে Selected Farmer পর্যন্ত ড্যাশ-ড্যাশ লাইন */}
+              {myPosition && selectedFarmerPosition && (
+                <Polyline
+                  positions={[myPosition, selectedFarmerPosition]}
+                  pathOptions={{
+                    color: "#2563eb",
+                    weight: 3,
+                    dashArray: "8, 8",
+                  }}
                 />
               )}
 
@@ -2143,16 +2195,8 @@ async function saveBufferOrBlob(bufferOrBlob: ArrayBuffer | Blob, fileName: stri
 
             {/* Floating Locate Me Button */}
             <button
-              onClick={() => {
-                navigator.geolocation.getCurrentPosition((position) => {
-                  setSelectedFarmerPosition(null);
-                  setMyPosition([
-                    position.coords.latitude,
-                    position.coords.longitude,
-                  ]);
-                  setMyLocationMode(true);
-                });
-              }}
+              type="button"
+              onClick={handleLocateMeOnMainMap}
               className="absolute top-3 left-1/2 -translate-x-1/2 z-[500] flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg px-3.5 py-1.5 text-xs font-semibold transition"
             >
               <MapPin size={15} /> Locate Me

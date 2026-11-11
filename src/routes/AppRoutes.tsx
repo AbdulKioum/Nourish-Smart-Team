@@ -117,7 +117,7 @@ export default function AppRoutes() {
             .select();
 
           if (error) {
-            alert("DB Update Error: " + error.message);
+            console.error("DB Update Error:", error.message);
             return;
           }
 
@@ -132,7 +132,7 @@ export default function AppRoutes() {
 
         // 2. Listen for registration errors
         await PushNotifications.addListener("registrationError", (err) => {
-          alert("FCM Registration Error: " + JSON.stringify(err));
+          console.error("FCM Registration Error:", err);
         });
 
         // 3. Handle notification click action
@@ -143,13 +143,24 @@ export default function AppRoutes() {
           }
         );
 
-        // 4. Check & Request permission, then register
+        // 4. Check & Request permission, then create High-Priority Channel & register
         let permStatus = await PushNotifications.checkPermissions();
         if (permStatus.receive === "prompt") {
           permStatus = await PushNotifications.requestPermissions();
         }
 
         if (permStatus.receive === "granted") {
+          // Create High-Importance Channel (importance: 5) for Heads-up / Floating Banner
+          await PushNotifications.createChannel({
+            id: "farmer_tracking_high_v1",
+            name: "Farmer Tracking Alerts",
+            description: "High priority pop-up notifications for farmer tracking",
+            importance: 5, // 5 = IMPORTANCE_HIGH (Forces pop-up on screen)
+            visibility: 1, // 1 = PUBLIC
+            vibration: true,
+            sound: "default",
+          });
+
           await PushNotifications.register();
         }
       } catch (err: any) {

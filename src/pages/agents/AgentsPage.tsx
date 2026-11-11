@@ -14,6 +14,7 @@ import {
   Popup,
   Tooltip,
   useMap,
+  Polyline,
 } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -38,6 +39,7 @@ import {
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
 import { Capacitor } from "@capacitor/core";
+import { Geolocation } from "@capacitor/geolocation";
 
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 
@@ -111,15 +113,7 @@ function RecenterMap({ position }: { position: [number, number] }) {
   return null;
 }
 
-function FitBounds({ positions }: { positions: [number, number][] }) {
-  const map = useMap();
-  useEffect(() => {
-    if (positions.length > 0) {
-      map.fitBounds(positions, { padding: [45, 45] });
-    }
-  }, [positions, map]);
-  return null;
-}
+
 
 export default function AgentsPage() {
   const { role } = useAuth();
@@ -614,30 +608,61 @@ export default function AgentsPage() {
     loadData();
   }
 
-  function handleLocateMeInPicker() {
-    if (!navigator.geolocation) {
-      alert("Geolocation is not supported by your browser.");
-      return;
+  // Universal Location Helper (Works on both Android Native App & Browser)
+  async function getDeviceCoordinates(): Promise<{ lat: number; lng: number }> {
+    if (Capacitor.isNativePlatform()) {
+      let perm = await Geolocation.checkPermissions();
+      if (perm.location !== "granted") {
+        perm = await Geolocation.requestPermissions();
+      }
+      if (perm.location !== "granted") {
+        throw new Error("Location permission denied. Please allow GPS access.");
+      }
+
+      try {
+        const pos = await Geolocation.getCurrentPosition({
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0,
+        });
+        return { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      } catch {
+        const fallbackPos = await Geolocation.getCurrentPosition({
+          enableHighAccuracy: false,
+          timeout: 10000,
+        });
+        return { lat: fallbackPos.coords.latitude, lng: fallbackPos.coords.longitude };
+      }
+    } else {
+      return new Promise((resolve, reject) => {
+        if (!navigator.geolocation) {
+          reject(new Error("Geolocation is not supported by your browser."));
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(
+          (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+          (err) => reject(err),
+          { enableHighAccuracy: true, timeout: 10000 }
+        );
+      });
     }
+  }
+
+  async function handleLocateMeInPicker() {
     setLocatingInPicker(true);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
-        setPickerCenterOverride([lat, lng]);
-        setForm((prev) => ({
-          ...prev,
-          latitude: lat.toFixed(6),
-          longitude: lng.toFixed(6),
-        }));
-        setLocatingInPicker(false);
-      },
-      () => {
-        setLocatingInPicker(false);
-        alert("Unable to retrieve your location. Please allow GPS access.");
-      },
-      { enableHighAccuracy: true }
-    );
+    try {
+      const { lat, lng } = await getDeviceCoordinates();
+      setPickerCenterOverride([lat, lng]);
+      setForm((prev) => ({
+        ...prev,
+        latitude: lat.toFixed(6),
+        longitude: lng.toFixed(6),
+      }));
+    } catch (err: any) {
+      alert(err?.message || "Unable to retrieve your location. Please allow GPS access.");
+    } finally {
+      setLocatingInPicker(false);
+    }
   }
 
   function getDistanceKm(
@@ -659,43 +684,33 @@ export default function AgentsPage() {
     return Math.round(R * c * 100) / 100;
   }
 
-  function getMyLocation() {
-    if (!navigator.geolocation) {
-      alert("Geolocation not supported");
-      return;
+  async function getMyLocation() {
+    try {
+      const { lat, lng } = await getDeviceCoordinates();
+      const coords: [number, number] = [lat, lng];
+      setUserLocation(coords);
+      setSelectedLocation(null); // ক্লিক করার আগ পর্যন্ত ড্যাশ লাইন অফ থাকবে
+      setMyLocationMode(true);
+
+      const nearest = filteredAgents
+        .filter((a) => a.latitude && a.longitude)
+        .map((a) => ({
+          ...a,
+          distance: getDistanceKm(
+            coords[0],
+            coords[1],
+            Number(a.latitude),
+            Number(a.longitude)
+          ),
+        }))
+        .sort((a, b) => a.distance - b.distance)
+        .slice(0, 10);
+
+      setNearestAgents(nearest);
+    } catch (err: any) {
+      alert(err?.message || "Location access denied");
     }
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const coords: [number, number] = [
-          position.coords.latitude,
-          position.coords.longitude,
-        ];
-        setUserLocation(coords);
-        setSelectedLocation(coords);
-        setMyLocationMode(true);
-
-        const nearest = filteredAgents
-          .filter((a) => a.latitude && a.longitude)
-          .map((a) => ({
-            ...a,
-            distance: getDistanceKm(
-              coords[0],
-              coords[1],
-              Number(a.latitude),
-              Number(a.longitude)
-            ),
-          }))
-          .sort((a, b) => a.distance - b.distance)
-          .slice(0, 10);
-
-        setNearestAgents(nearest);
-      },
-      () => {
-        alert("Location access denied");
-      }
-    );
   }
-
   // ==================================================
   // FILTERED AGENTS & COMPANY-WISE GROUPING
   // ==================================================
@@ -1180,15 +1195,11 @@ export default function AgentsPage() {
             >
               <MapLayers />
 
-              {!myLocationMode && !selectedLocation && (
-                <FitBounds
-                  positions={filteredAgents
-                    .filter((a) => a.latitude && a.longitude)
-                    .map((a) => [Number(a.latitude), Number(a.longitude)])}
-                />
-              )}
-
-              {selectedLocation && <RecenterMap position={selectedLocation} />}
+              {myLocationMode && userLocation ? (
+                <RecenterMap position={userLocation} />
+              ) : selectedLocation ? (
+                <RecenterMap position={selectedLocation} />
+              ) : null}
 
               {userLocation && (
                 <Marker position={userLocation}>
@@ -1206,11 +1217,24 @@ export default function AgentsPage() {
                         nearestAgents.map((a, index) => (
                           <div key={a.id} className="border-b pb-1">
                             <button
+                              type="button"
                               onClick={() => {
-                                setSelectedLocation([
+                                const targetPos: [number, number] = [
                                   Number(a.latitude),
                                   Number(a.longitude),
-                                ]);
+                                ];
+                                setMyLocationMode(false);
+                                setSelectedLocation(targetPos);
+                                setNewNoteText("");
+                                loadAgentNotes(a.id);
+
+                                // ম্যাপ ফ্লাই করে এজেন্টের কাছে গিয়ে অটোমেটিক পপ-আপ ওপেন করবে
+                                setTimeout(() => {
+                                  const marker = agentMarkerRefs.current[a.id];
+                                  if (marker) {
+                                    marker.openPopup();
+                                  }
+                                }, 400);
                               }}
                               className="text-blue-600 font-bold hover:underline text-left"
                             >
@@ -1225,6 +1249,18 @@ export default function AgentsPage() {
                     </div>
                   </Popup>
                 </Marker>
+              )}
+
+              {/* My Location থেকে Selected Agent পর্যন্ত ড্যাশ-ড্যাশ লাইন */}
+              {userLocation && selectedLocation && (
+                <Polyline
+                  positions={[userLocation, selectedLocation]}
+                  pathOptions={{
+                    color: "#2563eb",
+                    weight: 3,
+                    dashArray: "8, 8",
+                  }}
+                />
               )}
 
               {filteredAgents

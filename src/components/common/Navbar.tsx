@@ -177,7 +177,7 @@ export default function Navbar({
               // অ্যাপ ওপেন (Foreground) থাকা অবস্থায় ফোনের নোটিফিকেশনে সাথে সাথে পাঠানো
               triggerPhoneNotification(
                 "Farmer Tracking",
-                `👤 ${fName.toUpperCase()}\nmessage by (${newRow.user_name || "Officer"}) : ${newRow.note}`,
+                `👤 ${fName.toUpperCase()}\n ${newRow.user_name || "Officer"} : ${newRow.note}`,
                 `/farmer-tracking?focus=${newRow.farmer_id}&note=${newRow.id}`
               );
             }

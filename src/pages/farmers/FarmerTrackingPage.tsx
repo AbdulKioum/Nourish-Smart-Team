@@ -25,14 +25,23 @@ import {
   ChevronUp,
   User,
   Crosshair,
+  AlertTriangle,
+  Sprout,
+  UserCheck,
+  Pencil,
+  Check,
 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { Geolocation } from "@capacitor/geolocation";
 import { Capacitor } from "@capacitor/core";
 
 /* -------------------------------------------------------------------------- */
-/*  Helpers                                                                    */
+/*  Helpers & Status Tag Parser                                               */
 /* -------------------------------------------------------------------------- */
+
+const RISKY_PREFIX = "[RISKY]";
+const WEAK_PREFIX = "[WEAK_TO_NOURISH]";
+const RESOLVED_PREFIX = "[RESOLVED]";
 
 const POULTRY_FIELDS = [
   "broiler",
@@ -56,6 +65,76 @@ const FISH_FIELDS = [
   "bagda",
   "tengra",
 ];
+
+function isNourishFarmer(farmer: any): boolean {
+  const compName = (
+    farmer?.companies?.company_name ||
+    farmer?.last_feed_company ||
+    ""
+  )
+    .toString()
+    .toLowerCase();
+  return compName.includes("nourish");
+}
+
+function parseNoteMeta(rawNote?: string) {
+  const text = String(rawNote || "").trim();
+  if (text.startsWith(RISKY_PREFIX)) {
+    return {
+      type: "risky" as const,
+      badgeText: "Marked Risky",
+      cleanText: text.slice(RISKY_PREFIX.length).trim(),
+    };
+  }
+  if (text.startsWith(WEAK_PREFIX)) {
+    return {
+      type: "weak" as const,
+      badgeText: "Weak to Nourish",
+      cleanText: text.slice(WEAK_PREFIX.length).trim(),
+    };
+  }
+  if (text.startsWith(RESOLVED_PREFIX)) {
+    return {
+      type: "resolved" as const,
+      badgeText: "Status Cleared",
+      cleanText: text.slice(RESOLVED_PREFIX.length).trim(),
+    };
+  }
+  return {
+    type: "normal" as const,
+    badgeText: "",
+    cleanText: text,
+  };
+}
+
+function getFarmerSpecialStatus(notes: any[], farmer: any) {
+  let isRisky = false;
+  let riskyNote: any = null;
+  let isWeak = false;
+  let weakNote: any = null;
+
+  for (const n of notes) {
+    const meta = parseNoteMeta(n.note);
+    if (meta.type === "resolved") break;
+    if (meta.type === "risky" && !riskyNote) {
+      isRisky = true;
+      riskyNote = { ...n, cleanText: meta.cleanText };
+    }
+    if (meta.type === "weak" && !weakNote) {
+      isWeak = true;
+      weakNote = { ...n, cleanText: meta.cleanText };
+    }
+  }
+
+  const nourish = isNourishFarmer(farmer);
+
+  return {
+    isRisky: nourish && isRisky,
+    riskyNote,
+    isWeak: !nourish && isWeak,
+    weakNote,
+  };
+}
 
 function parseList(val: any): string[] {
   if (!val) return [];
@@ -116,7 +195,6 @@ function esc(s: string) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 }
-
 
 function buildMarker(farmer: any, highlight = false, distText?: string) {
   const { emoji, border } = getFarmerBadgeInfo(farmer);
@@ -254,11 +332,22 @@ const labelCls = "block text-[11px] font-semibold text-slate-500 mb-0.5";
 function NoteThread({
   notes,
   initialLimit = 10,
+  currentUserId,
+  currentUserName,
+  isFullAccess,
+  onEditNote,
 }: {
   notes: any[];
   initialLimit?: number;
+  currentUserId?: string;
+  currentUserName?: string;
+  isFullAccess?: boolean;
+  onEditNote?: (noteObj: any, newCleanText: string) => Promise<boolean>;
 }) {
   const [limit, setLimit] = useState(initialLimit);
+  const [editingId, setEditingId] = useState<any>(null);
+  const [editValue, setEditValue] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
 
   if (notes.length === 0) {
     return (
@@ -271,43 +360,156 @@ function NoteThread({
   const visibleNotes = notes.slice(0, limit);
   const remaining = notes.length - visibleNotes.length;
 
+  function canEdit(n: any) {
+    if (!onEditNote) return false;
+    if (isFullAccess) return true;
+    if (
+      n.user_id &&
+      currentUserId &&
+      String(n.user_id) === String(currentUserId)
+    ) {
+      return true;
+    }
+    if (n.user_name && currentUserName && n.user_name === currentUserName) {
+      return true;
+    }
+    return false;
+  }
+
+  async function handleSaveEdit(n: any) {
+    if (!onEditNote || !editValue.trim() || savingEdit) return;
+    setSavingEdit(true);
+    const ok = await onEditNote(n, editValue.trim());
+    setSavingEdit(false);
+    if (ok) {
+      setEditingId(null);
+      setEditValue("");
+    }
+  }
+
   return (
     <div className="space-y-2">
-      {visibleNotes.map((n, i) => (
-        <div
-          key={n.id}
-          id={`track-note-${n.id}`}
-          className={`rounded-lg border px-3 py-2 ${
-            i === 0
-              ? "border-emerald-400 bg-emerald-50/80 shadow-2xs"
-              : "border-slate-200 bg-white"
-          }`}
-        >
-          <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px]">
-            <span className="flex items-center gap-1.5 font-bold text-slate-800">
-              <span
-                className={`flex h-4.5 w-4.5 items-center justify-center rounded-full text-[9px] font-bold text-white ${
-                  i === 0 ? "bg-emerald-600" : "bg-slate-700"
-                }`}
-              >
-                {(n.user_name || "?").charAt(0).toUpperCase()}
-              </span>
-              <span>{n.user_name || "Officer"}</span>
-              {i === 0 && (
-                <span className="rounded bg-emerald-600 px-1.5 py-px text-[9px] font-bold text-white uppercase tracking-wide">
-                  Latest
+      {visibleNotes.map((n, i) => {
+        const meta = parseNoteMeta(n.note);
+        const isRisky = meta.type === "risky";
+        const isWeak = meta.type === "weak";
+        const isResolved = meta.type === "resolved";
+        const isEditing = editingId === n.id;
+
+        const boxStyle = isRisky
+          ? "border-red-300 bg-red-50/70"
+          : isWeak
+          ? "border-teal-300 bg-teal-50/70"
+          : isResolved
+          ? "border-blue-200 bg-blue-50/50"
+          : i === 0
+          ? "border-emerald-400 bg-emerald-50/80 shadow-2xs"
+          : "border-slate-200 bg-white";
+
+        return (
+          <div
+            key={n.id}
+            id={`track-note-${n.id}`}
+            className={`rounded-lg border px-3 py-2 transition ${boxStyle}`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px]">
+              <span className="flex items-center gap-1.5 font-bold text-slate-800 flex-wrap">
+                <span
+                  className={`flex h-4.5 w-4.5 items-center justify-center rounded-full text-[9px] font-bold text-white ${
+                    isRisky
+                      ? "bg-red-600"
+                      : isWeak
+                      ? "bg-teal-600"
+                      : i === 0
+                      ? "bg-emerald-600"
+                      : "bg-slate-700"
+                  }`}
+                >
+                  {(n.user_name || "?").charAt(0).toUpperCase()}
                 </span>
-              )}
-            </span>
-            <span className="text-slate-500 font-medium">
-              {fmtDateTime(n.created_at)} ({timeAgo(n.created_at)})
-            </span>
+                <span>{n.user_name || "Officer"}</span>
+
+                {isRisky && (
+                  <span className="inline-flex items-center gap-0.5 rounded bg-red-600 px-1.5 py-px text-[9px] font-bold text-white uppercase tracking-wide">
+                    ⚠️ Marked Risky
+                  </span>
+                )}
+                {isWeak && (
+                  <span className="inline-flex items-center gap-0.5 rounded bg-teal-600 px-1.5 py-px text-[9px] font-bold text-white uppercase tracking-wide">
+                    🌱 Weak to Nourish
+                  </span>
+                )}
+                {isResolved && (
+                  <span className="inline-flex items-center gap-0.5 rounded bg-blue-600 px-1.5 py-px text-[9px] font-bold text-white uppercase tracking-wide">
+                    ✓ Status Cleared
+                  </span>
+                )}
+                {i === 0 && meta.type === "normal" && (
+                  <span className="rounded bg-emerald-600 px-1.5 py-px text-[9px] font-bold text-white uppercase tracking-wide">
+                    Latest
+                  </span>
+                )}
+              </span>
+
+              <div className="flex items-center gap-2">
+                <span className="text-slate-500 font-medium">
+                  {fmtDateTime(n.created_at)} ({timeAgo(n.created_at)})
+                </span>
+                {canEdit(n) && !isEditing && (
+                  <button
+                    type="button"
+                    title="Edit message"
+                    onClick={() => {
+                      setEditingId(n.id);
+                      setEditValue(meta.cleanText);
+                    }}
+                    className="rounded p-1 text-slate-400 hover:bg-slate-200/70 hover:text-emerald-700 transition"
+                  >
+                    <Pencil size={11} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {isEditing ? (
+              <div className="mt-1.5 space-y-1.5">
+                <textarea
+                  rows={2}
+                  autoFocus
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  className="w-full resize-none rounded-lg border border-emerald-400 bg-white px-2.5 py-1.5 text-xs text-slate-900 outline-none focus:ring-1 focus:ring-emerald-500"
+                />
+                <div className="flex items-center justify-end gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingId(null);
+                      setEditValue("");
+                    }}
+                    className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={savingEdit || !editValue.trim()}
+                    onClick={() => handleSaveEdit(n)}
+                    className="inline-flex items-center gap-1 rounded-md bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1 text-[11px] font-bold text-white disabled:opacity-50"
+                  >
+                    <Check size={11} />
+                    {savingEdit ? "Saving..." : "Update"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="mt-1 whitespace-pre-wrap break-words text-[13px] sm:text-sm font-medium leading-snug text-slate-900">
+                {meta.cleanText}
+              </p>
+            )}
           </div>
-          <p className="mt-1 whitespace-pre-wrap break-words text-[13px] sm:text-sm font-medium leading-snug text-slate-900">
-            {n.note}
-          </p>
-        </div>
-      ))}
+        );
+      })}
 
       {remaining > 0 && (
         <button
@@ -461,7 +663,7 @@ function MapPickerModal({
     [withLoc]
   );
 
- async function handleLocateMe() {
+  async function handleLocateMe() {
     setLocating(true);
     try {
       if (Capacitor.isNativePlatform()) {
@@ -470,7 +672,9 @@ function MapPickerModal({
           perm = await Geolocation.requestPermissions();
         }
         if (perm.location !== "granted") {
-          alert("অনুগ্রহ করে ফোনের Settings থেকে এই অ্যাপের Location Permission অন করুন।");
+          alert(
+            "অনুগ্রহ করে ফোনের Settings থেকে এই অ্যাপের Location Permission অন করুন।"
+          );
           setLocating(false);
           return;
         }
@@ -479,14 +683,19 @@ function MapPickerModal({
           enableHighAccuracy: true,
           timeout: 20000,
         });
-        const coords: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+        const coords: [number, number] = [
+          pos.coords.latitude,
+          pos.coords.longitude,
+        ];
         setMyLoc(coords);
-        setFlyTarget([...coords]); // অথবা map center সেট করার স্টেট
+        setFlyTarget([...coords]);
       } else {
-        // ব্রাউজারের জন্য
         navigator.geolocation.getCurrentPosition(
           (pos) => {
-            const coords: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+            const coords: [number, number] = [
+              pos.coords.latitude,
+              pos.coords.longitude,
+            ];
             setMyLoc(coords);
             setFlyTarget([...coords]);
           },
@@ -591,7 +800,6 @@ function MapPickerModal({
         </div>
 
         <div className="relative min-h-0 flex-1">
-          {/* ম্যাপের ওপর ভাসমান Locate Me বাটন */}
           <button
             type="button"
             onClick={handleLocateMe}
@@ -684,7 +892,9 @@ function FarmerMapModal({
           perm = await Geolocation.requestPermissions();
         }
         if (perm.location !== "granted") {
-          alert("Location permission is required. Please enable it in your phone settings.");
+          alert(
+            "Location permission is required. Please enable it in your phone settings."
+          );
           setLocating(false);
           return;
         }
@@ -760,7 +970,6 @@ function FarmerMapModal({
         </div>
 
         <div className="relative min-h-0 flex-1">
-          {/* locate me floating */}
           <div className="absolute top-3 right-3 z-[1000] flex flex-col items-end gap-1.5">
             <button
               type="button"
@@ -828,31 +1037,60 @@ function FarmerModal({
   farmer,
   notes,
   initialTab,
+  userId,
   userName,
+  isFullAccess,
   onSave,
+  onEditNote,
   onViewMap,
   onClose,
 }: {
   farmer: any;
   notes: any[];
   initialTab: "track" | "details";
+  userId: string;
   userName: string;
+  isFullAccess: boolean;
   onSave: (farmer: any, text: string) => Promise<boolean>;
+  onEditNote: (noteObj: any, newCleanText: string) => Promise<boolean>;
   onViewMap: (farmer: any) => void;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<"track" | "details">(initialTab);
   const [text, setText] = useState("");
+  const [postMode, setPostMode] = useState<"normal" | "risky" | "weak">(
+    "normal"
+  );
   const [saving, setSaving] = useState(false);
+
   const badge = getFarmerBadgeInfo(farmer);
+  const nourish = isNourishFarmer(farmer);
+  const statusInfo = getFarmerSpecialStatus(notes, farmer);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!text.trim() || saving) return;
     setSaving(true);
-    const ok = await onSave(farmer, text);
+    const prefix =
+      postMode === "risky"
+        ? `${RISKY_PREFIX} `
+        : postMode === "weak"
+        ? `${WEAK_PREFIX} `
+        : "";
+    const ok = await onSave(farmer, `${prefix}${text.trim()}`);
     setSaving(false);
-    if (ok) setText("");
+    if (ok) {
+      setText("");
+      setPostMode("normal");
+    }
+  }
+
+  async function handleClearSpecialStatus() {
+    const reason = window.prompt(
+      "Write a short note to clear Risky / Weak status:"
+    );
+    if (!reason || !reason.trim()) return;
+    await onSave(farmer, `${RESOLVED_PREFIX} ${reason.trim()}`);
   }
 
   const tabBtn = (id: "track" | "details", label: string) => (
@@ -912,9 +1150,21 @@ function FarmerModal({
           <div className="flex min-w-0 items-center gap-2.5">
             <span className="text-2xl leading-none">{badge.emoji}</span>
             <div className="min-w-0">
-              <h2 className="truncate text-sm font-bold text-slate-800">
-                {farmer.farmer_name}
-              </h2>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <h2 className="truncate text-sm font-bold text-slate-800">
+                  {farmer.farmer_name}
+                </h2>
+                {statusInfo.isRisky && (
+                  <span className="rounded-full bg-red-600 px-2 py-0.5 text-[10px] font-bold text-white">
+                    ⚠️ Risky
+                  </span>
+                )}
+                {statusInfo.isWeak && (
+                  <span className="rounded-full bg-teal-600 px-2 py-0.5 text-[10px] font-bold text-white">
+                    🌱 Weak to Nourish
+                  </span>
+                )}
+              </div>
               <p className="truncate text-[11px] text-slate-500">
                 {farmer.mobile || "No mobile"}
                 {farmer.upazila ? `, ${farmer.upazila}` : ""}
@@ -947,14 +1197,69 @@ function FarmerModal({
         <div className="overflow-y-auto p-4">
           {tab === "track" ? (
             <div className="space-y-3">
+              {/* Quick Mode Selector inside Modal */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                {nourish ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPostMode(postMode === "risky" ? "normal" : "risky")
+                    }
+                    className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
+                      postMode === "risky"
+                        ? "border-red-600 bg-red-600 text-white"
+                        : "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                    }`}
+                  >
+                    <AlertTriangle size={11} /> Mark as Risky
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPostMode(postMode === "weak" ? "normal" : "weak")
+                    }
+                    className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
+                      postMode === "weak"
+                        ? "border-teal-600 bg-teal-600 text-white"
+                        : "border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100"
+                    }`}
+                  >
+                    <Sprout size={11} /> Weak to Nourish
+                  </button>
+                )}
+
+                {(statusInfo.isRisky || statusInfo.isWeak) && (
+                  <button
+                    type="button"
+                    onClick={handleClearSpecialStatus}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-slate-100 hover:bg-slate-200 px-2.5 py-1 text-[11px] font-semibold text-slate-700"
+                  >
+                    <UserCheck size={11} /> Clear Status
+                  </button>
+                )}
+              </div>
+
               <form onSubmit={submit} className="space-y-1.5">
                 <textarea
                   autoFocus
                   rows={3}
                   value={text}
                   onChange={(e) => setText(e.target.value)}
-                  placeholder="Write a new tracking message..."
-                  className="w-full resize-none rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                  placeholder={
+                    postMode === "risky"
+                      ? "Write comment for marking this farmer as Risky..."
+                      : postMode === "weak"
+                      ? "Write comment for marking as Weak to Nourish..."
+                      : "Write a new tracking message or remark..."
+                  }
+                  className={`w-full resize-none rounded-lg border bg-white px-3 py-2 text-sm outline-none ${
+                    postMode === "risky"
+                      ? "border-red-400 focus:border-red-600"
+                      : postMode === "weak"
+                      ? "border-teal-400 focus:border-teal-600"
+                      : "border-slate-300 focus:border-emerald-500"
+                  }`}
                 />
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] text-slate-500">
@@ -963,13 +1268,33 @@ function FarmerModal({
                   <button
                     type="submit"
                     disabled={saving || !text.trim()}
-                    className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                    className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50 ${
+                      postMode === "risky"
+                        ? "bg-red-600 hover:bg-red-700"
+                        : postMode === "weak"
+                        ? "bg-teal-600 hover:bg-teal-700"
+                        : "bg-emerald-600 hover:bg-emerald-700"
+                    }`}
                   >
-                    <Send size={12} /> {saving ? "Saving..." : "Save tracking"}
+                    <Send size={12} />{" "}
+                    {saving
+                      ? "Saving..."
+                      : postMode === "risky"
+                      ? "Save Risky & Notify"
+                      : postMode === "weak"
+                      ? "Save Weak & Notify"
+                      : "Save tracking"}
                   </button>
                 </div>
               </form>
-              <NoteThread notes={notes} initialLimit={10} />
+              <NoteThread
+                notes={notes}
+                initialLimit={10}
+                currentUserId={userId}
+                currentUserName={userName}
+                isFullAccess={isFullAccess}
+                onEditNote={onEditNote}
+              />
             </div>
           ) : (
             <table className="w-full border-collapse border border-slate-300 text-xs">
@@ -992,110 +1317,117 @@ function FarmerModal({
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Farmer Group Card (Shows >= 10 messages per farmer, latest first)          */
+/*  Farmer Group Card (Minimal header + badge next to name + split buttons)   */
 /* -------------------------------------------------------------------------- */
 
 function FarmerTrackingGroupCard({
   farmer,
   notes,
+  currentUserId,
+  currentUserName,
+  isFullAccess,
   onRetrack,
   onDetails,
   onViewMap,
+  onEditNote,
 }: {
   farmer: any;
   notes: any[];
+  currentUserId: string;
+  currentUserName: string;
+  isFullAccess: boolean;
   onRetrack: () => void;
   onDetails: () => void;
   onViewMap: () => void;
+  onEditNote: (noteObj: any, newCleanText: string) => Promise<boolean>;
 }) {
   const badge = getFarmerBadgeInfo(farmer);
-  const stockList = getStockBreakdownList(farmer);
+  const statusInfo = getFarmerSpecialStatus(notes, farmer);
 
   return (
-    <div 
-    id={`farmer-track-card-${farmer.id}`}
-    className="rounded-xl border border-slate-200 bg-white p-3 sm:p-4 shadow-2xs transition hover:border-slate-300">
+    <div
+      id={`farmer-track-card-${farmer.id}`}
+      className={`rounded-xl border bg-white p-3 sm:p-4 shadow-2xs transition ${
+        statusInfo.isRisky
+          ? "border-red-300"
+          : statusInfo.isWeak
+          ? "border-teal-300"
+          : "border-slate-200 hover:border-slate-300"
+      }`}
+    >
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
-        {/* Farmer Info + Actions (Compact top bar on mobile, left col on desktop) */}
-        <div className="flex flex-col justify-between gap-2 border-b border-slate-100 pb-2.5 lg:col-span-4 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-3">
-          <div>
-            <div className="flex items-start justify-between gap-2">
-              <button
-                type="button"
-                onClick={onDetails}
-                className="flex items-center gap-2 text-left min-w-0"
-              >
-                <span className="text-xl leading-none shrink-0">
-                  {badge.emoji}
-                </span>
-                <span className="truncate text-sm font-bold text-slate-900 hover:text-emerald-700 hover:underline">
-                  {farmer.farmer_name}
-                </span>
-              </button>
-
-              <span className="shrink-0 rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
-                {notes.length} msg{notes.length > 1 ? "s" : ""}
+        {/* Minimal Farmer Header (Icon + Farmer Name + Small Badge if marked + Small Agent Name) */}
+        <div className="flex flex-col justify-between gap-2.5 border-b border-slate-100 pb-2.5 lg:col-span-4 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-3">
+          <div className="flex items-start justify-between gap-2">
+            <button
+              type="button"
+              onClick={onDetails}
+              className="flex items-start gap-2.5 text-left min-w-0"
+            >
+              <span className="text-xl leading-none shrink-0 mt-0.5">
+                {badge.emoji}
               </span>
-            </div>
-
-            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-600">
-              {farmer.mobile && (
-                <a
-                  href={`tel:${farmer.mobile}`}
-                  className="inline-flex items-center gap-1 font-semibold text-emerald-700 hover:underline"
-                >
-                  <Phone size={10} /> {farmer.mobile}
-                </a>
-              )}
-              {farmer.village && <span>• {farmer.village}</span>}
-              {farmer.upazila && (
-                <span className="rounded bg-slate-100 px-1.5 py-px text-[10px] font-semibold text-slate-700">
-                  {farmer.upazila}
-                </span>
-              )}
-              {farmer.companies?.company_name && (
-                <span className="rounded bg-amber-50 border border-amber-200 px-1.5 py-px text-[10px] font-semibold text-amber-800">
-                  {farmer.companies.company_name}
-                </span>
-              )}
-            </div>
-
-            {stockList.length > 0 && (
-              <div className="mt-1.5 flex flex-wrap gap-1">
-                {stockList.map((s) => (
-                  <span
-                    key={s.label}
-                    className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700"
-                  >
-                    {s.label}: <b className="text-blue-700">{s.qty}</b>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="truncate text-sm font-bold text-slate-900 hover:text-emerald-700 hover:underline">
+                    {farmer.farmer_name}
                   </span>
-                ))}
+
+                  {statusInfo.isRisky && (
+                    <span className="inline-flex items-center gap-0.5 rounded-full bg-red-100 border border-red-200 px-1.5 py-px text-[9px] font-bold text-red-700">
+                      ⚠️ Risky
+                    </span>
+                  )}
+
+                  {statusInfo.isWeak && (
+                    <span className="inline-flex items-center gap-0.5 rounded-full bg-teal-100 border border-teal-200 px-1.5 py-px text-[9px] font-bold text-teal-800">
+                      🌱 Weak to Nourish
+                    </span>
+                  )}
+                </div>
+
+                <div className="truncate text-[11px] font-medium text-slate-500 mt-0.5">
+                  {farmer.agents?.agent_name || "-"}
+                </div>
               </div>
-            )}
+            </button>
+
+            <span className="shrink-0 rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+              {notes.length} msg{notes.length > 1 ? "s" : ""}
+            </span>
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+          {/* Small buttons on left & right with gap in middle */}
+          <div className="flex items-center justify-between gap-3 pt-1">
             <button
               type="button"
               onClick={onRetrack}
-              className="inline-flex flex-1 sm:flex-initial items-center justify-center gap-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white shadow-2xs transition"
+              className="inline-flex items-center justify-center gap-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1 text-[11px] font-bold text-white shadow-2xs transition"
             >
-              <RotateCcw size={12} /> Retrack
+              <RotateCcw size={11} /> Retrack
             </button>
+
             <button
               type="button"
               onClick={onViewMap}
               disabled={!farmer.latitude || !farmer.longitude}
-              className="inline-flex flex-1 sm:flex-initial items-center justify-center gap-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40 transition"
+              className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700 disabled:opacity-40 transition"
             >
-              <MapPin size={12} /> View on Map
+              <MapPin size={11} />
             </button>
           </div>
         </div>
 
-        {/* Tracking Messages Thread (Minimum 10 visible, latest on top, no horizontal scroll on mobile) */}
+        {/* Tracking Messages Thread */}
         <div className="lg:col-span-8 min-w-0" id={`farmer-notes-${farmer.id}`}>
-          <NoteThread notes={notes} initialLimit={10} />
+          <NoteThread
+            notes={notes}
+            initialLimit={10}
+            currentUserId={currentUserId}
+            currentUserName={currentUserName}
+            isFullAccess={isFullAccess}
+            onEditNote={onEditNote}
+          />
         </div>
       </div>
     </div>
@@ -1134,8 +1466,14 @@ function TrackingContent({ role }: { role: any }) {
   const [comboOpen, setComboOpen] = useState(false);
   const [pickedFarmer, setPickedFarmer] = useState<any>(null);
   const [noteText, setNoteText] = useState("");
+  const [pickedMode, setPickedMode] = useState<"normal" | "risky" | "weak">(
+    "normal"
+  );
   const [saving, setSaving] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
+
+  // Category Tabs: All Tracked vs Risky Farmer vs Weak to Nourish
+  const [statusTab, setStatusTab] = useState<"all" | "risky" | "weak">("all");
 
   // Tracking Log Filters (Default: All Messages)
   const [dateMode, setDateMode] = useState<"all" | "single" | "range">("all");
@@ -1154,7 +1492,6 @@ function TrackingContent({ role }: { role: any }) {
   } | null>(null);
   const [mapFarmer, setMapFarmer] = useState<any>(null);
 
-  
   /* ----------------------------- data loading ----------------------------- */
 
   async function loadTrackings() {
@@ -1248,8 +1585,37 @@ function TrackingContent({ role }: { role: any }) {
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(t);
     });
-    return m; // already sorted newest first
+    return m;
   }, [trackings]);
+
+  // Compute Risky & Weak to Nourish status per farmer
+  const statusByFarmer = useMemo(() => {
+    const m = new Map<
+      string,
+      { isRisky: boolean; isWeak: boolean; riskyNote: any; weakNote: any }
+    >();
+    farmers.forEach((f) => {
+      const notes = notesByFarmer.get(String(f.id)) || [];
+      m.set(String(f.id), getFarmerSpecialStatus(notes, f));
+    });
+    return m;
+  }, [farmers, notesByFarmer]);
+
+  const riskyTotalCount = useMemo(() => {
+    let c = 0;
+    statusByFarmer.forEach((st) => {
+      if (st.isRisky) c++;
+    });
+    return c;
+  }, [statusByFarmer]);
+
+  const weakTotalCount = useMemo(() => {
+    let c = 0;
+    statusByFarmer.forEach((st) => {
+      if (st.isWeak) c++;
+    });
+    return c;
+  }, [statusByFarmer]);
 
   const selDistricts = useMemo(
     () => uniqSorted(farmers.map((f) => f.district)),
@@ -1312,7 +1678,6 @@ function TrackingContent({ role }: { role: any }) {
       );
   }, [baseByCompany, selAgent, farmerQuery]);
 
-  // Unique users who have tracked farmers in the allowed area
   const trackedUsers = useMemo(() => {
     const s = new Set<string>();
     trackings.forEach((t) => {
@@ -1333,7 +1698,7 @@ function TrackingContent({ role }: { role: any }) {
     [farmers, logDistrict]
   );
 
-  // Group filtered messages per farmer; order farmers by their latest message
+  // Group filtered messages per farmer; supports All / Risky / Weak to Nourish tabs
   const logGroups = useMemo(() => {
     const q = logSearch.trim().toLowerCase();
     const groups = new Map<string, { farmer: any; notes: any[] }>();
@@ -1342,6 +1707,10 @@ function TrackingContent({ role }: { role: any }) {
       const key = String(t.farmer_id);
       const f = farmerMap.get(key);
       if (!f) continue;
+
+      const st = statusByFarmer.get(key);
+      if (statusTab === "risky" && !st?.isRisky) continue;
+      if (statusTab === "weak" && !st?.isWeak) continue;
 
       if (dateMode === "single" && dateFrom) {
         if (toYmd(t.created_at) !== dateFrom) continue;
@@ -1379,6 +1748,8 @@ function TrackingContent({ role }: { role: any }) {
   }, [
     trackings,
     farmerMap,
+    statusByFarmer,
+    statusTab,
     dateMode,
     dateFrom,
     dateTo,
@@ -1390,7 +1761,16 @@ function TrackingContent({ role }: { role: any }) {
 
   useEffect(() => {
     setVisibleFarmersCount(20);
-  }, [dateMode, dateFrom, dateTo, logSearch, logUser, logDistrict, logUpazila]);
+  }, [
+    statusTab,
+    dateMode,
+    dateFrom,
+    dateTo,
+    logSearch,
+    logUser,
+    logDistrict,
+    logUpazila,
+  ]);
 
   /* -------------------------------- actions ------------------------------- */
 
@@ -1419,13 +1799,57 @@ function TrackingContent({ role }: { role: any }) {
     return true;
   }
 
+  async function updateNote(
+    noteObj: any,
+    newCleanText: string
+  ): Promise<boolean> {
+    const clean = newCleanText.trim();
+    if (!clean) return false;
+
+    const meta = parseNoteMeta(noteObj.note);
+    const prefix =
+      meta.type === "risky"
+        ? `${RISKY_PREFIX} `
+        : meta.type === "weak"
+        ? `${WEAK_PREFIX} `
+        : meta.type === "resolved"
+        ? `${RESOLVED_PREFIX} `
+        : "";
+    const finalNote = `${prefix}${clean}`;
+
+    const { error } = await supabase
+      .from("farmer_trackings")
+      .update({ note: finalNote })
+      .eq("id", noteObj.id);
+
+    if (error) {
+      alert(error.message || "Failed to update message.");
+      return false;
+    }
+
+    setTrackings((prev) =>
+      prev.map((item) =>
+        item.id === noteObj.id ? { ...item, note: finalNote } : item
+      )
+    );
+    setToast("Message updated");
+    return true;
+  }
+
   async function handleSavePicked() {
     if (!pickedFarmer || !noteText.trim() || saving) return;
     setSaving(true);
-    const ok = await saveNote(pickedFarmer, noteText);
+    const prefix =
+      pickedMode === "risky"
+        ? `${RISKY_PREFIX} `
+        : pickedMode === "weak"
+        ? `${WEAK_PREFIX} `
+        : "";
+    const ok = await saveNote(pickedFarmer, `${prefix}${noteText.trim()}`);
     setSaving(false);
     if (ok) {
       setNoteText("");
+      setPickedMode("normal");
       setPickedFarmer(null);
       setFarmerQuery("");
       setTrackOpen(false);
@@ -1437,6 +1861,7 @@ function TrackingContent({ role }: { role: any }) {
     setFarmerQuery(f.farmer_name || "");
     setComboOpen(false);
     setNoteText("");
+    setPickedMode("normal");
     setShowPicker(false);
     setTrackOpen(true);
   }
@@ -1445,9 +1870,11 @@ function TrackingContent({ role }: { role: any }) {
     setPickedFarmer(null);
     setFarmerQuery("");
     setNoteText("");
+    setPickedMode("normal");
   }
 
   function resetLogFilters() {
+    setStatusTab("all");
     setDateMode("all");
     setDateFrom("");
     setDateTo("");
@@ -1474,6 +1901,7 @@ function TrackingContent({ role }: { role: any }) {
     : [];
   const pickedBadge = pickedFarmer ? getFarmerBadgeInfo(pickedFarmer) : null;
   const hasLogFilter =
+    statusTab !== "all" ||
     dateMode !== "all" ||
     dateFrom ||
     dateTo ||
@@ -1482,9 +1910,9 @@ function TrackingContent({ role }: { role: any }) {
     logDistrict ||
     logUpazila;
 
-    const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  // Realtime subscription on FarmerTrackingPage so new notes appear live here too
+  // Realtime subscription on FarmerTrackingPage
   useEffect(() => {
     const ch = supabase
       .channel("page_live_farmer_trackings")
@@ -1501,12 +1929,14 @@ function TrackingContent({ role }: { role: any }) {
     };
   }, []);
 
-  // Auto-scroll and highlight when navigated from Navbar Notification
+  // Auto-scroll and highlight when navigated from Notification
   useEffect(() => {
     if (loading) return;
     const focusFarmerId = searchParams.get("focus");
     const focusNoteId = searchParams.get("note");
     if (!focusFarmerId && !focusNoteId) return;
+
+    setTrackOpen(false);
 
     const idx = logGroups.findIndex(
       (g) => String(g.farmer.id) === String(focusFarmerId)
@@ -1539,12 +1969,13 @@ function TrackingContent({ role }: { role: any }) {
 
     return () => clearTimeout(timer);
   }, [loading, logGroups, searchParams]);
+
   /* --------------------------------- render ------------------------------- */
 
   return (
     <div className="mx-auto max-w-6xl space-y-3 p-2.5 sm:p-4">
       {/* ---------------- 1. COLLAPSIBLE TRACK A FARMER BUTTON -------------- */}
-      <section className="rounded-xl border border-slate-200 bg-white shadow-2xs overflow-hidden">
+      <section className="relative z-30 rounded-xl border border-slate-200 bg-white shadow-2xs">
         <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 sm:px-4">
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -1582,7 +2013,7 @@ function TrackingContent({ role }: { role: any }) {
         </div>
 
         {trackOpen && (
-          <div className="border-t border-slate-100 bg-slate-50/40 p-3 sm:p-4 space-y-3">
+          <div className="border-t border-slate-100 bg-slate-50/40 p-3 sm:p-4 space-y-3 rounded-b-xl">
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-5">
               <div>
                 <label className={labelCls}>District</label>
@@ -1672,13 +2103,13 @@ function TrackingContent({ role }: { role: any }) {
                       setComboOpen(true);
                     }}
                     onFocus={() => setComboOpen(true)}
-                    onBlur={() => setTimeout(() => setComboOpen(false), 140)}
+                    onBlur={() => setTimeout(() => setComboOpen(false), 180)}
                     placeholder="Search name, mobile, village..."
                     className={`${selectCls} pl-7`}
                   />
                 </div>
                 {comboOpen && (
-                  <div className="absolute right-0 left-0 z-30 mt-1 max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+                  <div className="absolute right-0 left-0 top-full z-[100] mt-1 max-h-64 overflow-y-auto rounded-xl border border-slate-300 bg-white shadow-2xl">
                     {farmerChoices.length === 0 ? (
                       <div className="p-3 text-center text-xs text-slate-400">
                         No farmers match these filters.
@@ -1692,7 +2123,7 @@ function TrackingContent({ role }: { role: any }) {
                             e.preventDefault();
                             pickFarmer(f);
                           }}
-                          className="flex w-full items-center gap-2 border-b border-slate-100 px-3 py-1.5 text-left hover:bg-emerald-50"
+                          className="flex w-full items-center gap-2 border-b border-slate-100 px-3 py-2 text-left hover:bg-emerald-50 transition"
                         >
                           <span className="text-lg leading-none">
                             {getFarmerBadgeInfo(f).emoji}
@@ -1748,9 +2179,10 @@ function TrackingContent({ role }: { role: any }) {
                   {lastPicked && (
                     <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] text-emerald-900">
                       <span className="font-semibold">Last tracking:</span>{" "}
-                      {lastPicked.note.length > 90
-                        ? lastPicked.note.slice(0, 90) + "..."
-                        : lastPicked.note}{" "}
+                      {parseNoteMeta(lastPicked.note).cleanText.length > 90
+                        ? parseNoteMeta(lastPicked.note).cleanText.slice(0, 90) +
+                          "..."
+                        : parseNoteMeta(lastPicked.note).cleanText}{" "}
                       <span className="text-emerald-700">
                         ({lastPicked.user_name},{" "}
                         {timeAgo(lastPicked.created_at)})
@@ -1760,12 +2192,64 @@ function TrackingContent({ role }: { role: any }) {
                 </div>
 
                 <div className="flex flex-col md:col-span-2">
-                  <label className={labelCls}>Tracking message *</label>
+                  <div className="mb-1.5 flex flex-wrap items-center justify-between gap-1.5">
+                    <label className="text-[11px] font-semibold text-slate-500">
+                      Tracking message *
+                    </label>
+                    <div className="flex items-center gap-1">
+                      {isNourishFarmer(pickedFarmer) ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPickedMode(
+                              pickedMode === "risky" ? "normal" : "risky"
+                            )
+                          }
+                          className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold transition ${
+                            pickedMode === "risky"
+                              ? "bg-red-600 text-white"
+                              : "border border-red-200 bg-red-50 text-red-700"
+                          }`}
+                        >
+                          ⚠️ Mark Risky
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPickedMode(
+                              pickedMode === "weak" ? "normal" : "weak"
+                            )
+                          }
+                          className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold transition ${
+                            pickedMode === "weak"
+                              ? "bg-teal-600 text-white"
+                              : "border border-teal-200 bg-teal-50 text-teal-800"
+                          }`}
+                        >
+                          🌱 Weak to Nourish
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
                   <textarea
                     value={noteText}
                     onChange={(e) => setNoteText(e.target.value)}
-                    placeholder="Write tracking message..."
-                    className="min-h-[115px] flex-1 resize-none rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                    placeholder={
+                      pickedMode === "risky"
+                        ? "Write comment why this farmer is Risky..."
+                        : pickedMode === "weak"
+                        ? "Write comment why Weak to Nourish..."
+                        : "Write tracking message..."
+                    }
+                    className={`min-h-[115px] flex-1 resize-none rounded-lg border bg-white px-3 py-2 text-sm outline-none ${
+                      pickedMode === "risky"
+                        ? "border-red-400 focus:border-red-600"
+                        : pickedMode === "weak"
+                        ? "border-teal-400 focus:border-teal-600"
+                        : "border-slate-300 focus:border-emerald-500"
+                    }`}
                   />
                   <div className="mt-2 flex items-center justify-between gap-2">
                     <span className="text-[11px] text-slate-500">
@@ -1774,10 +2258,22 @@ function TrackingContent({ role }: { role: any }) {
                     <button
                       onClick={handleSavePicked}
                       disabled={saving || !noteText.trim()}
-                      className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
+                      className={`flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-xs font-bold text-white disabled:opacity-50 ${
+                        pickedMode === "risky"
+                          ? "bg-red-600 hover:bg-red-700"
+                          : pickedMode === "weak"
+                          ? "bg-teal-600 hover:bg-teal-700"
+                          : "bg-emerald-600 hover:bg-emerald-700"
+                      }`}
                     >
                       <Send size={12} />{" "}
-                      {saving ? "Saving..." : "Save Tracking"}
+                      {saving
+                        ? "Saving..."
+                        : pickedMode === "risky"
+                        ? "Save Risky & Notify"
+                        : pickedMode === "weak"
+                        ? "Save Weak & Notify"
+                        : "Save Tracking"}
                     </button>
                   </div>
                 </div>
@@ -1787,207 +2283,275 @@ function TrackingContent({ role }: { role: any }) {
         )}
       </section>
 
-      {/* ---------------- 2. MOBILE-FRIENDLY FILTERS & MESSAGES -------------- */}
-      <section className="space-y-3">
-        {/* Compact Filter Bar */}
-        <div className="rounded-xl border border-slate-200 bg-white p-2.5 sm:p-3 shadow-2xs space-y-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            {/* All Messages vs Single vs Date Range */}
-            <div className="flex flex-wrap items-center gap-1.5">
-              <div className="inline-flex rounded-lg bg-slate-100 p-0.5 text-[11px] font-semibold">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDateMode("all");
-                    setDateFrom("");
-                    setDateTo("");
-                  }}
-                  className={`rounded-md px-2.5 py-1 transition ${
-                    dateMode === "all"
-                      ? "bg-emerald-600 text-white shadow-2xs"
-                      : "text-slate-600 hover:text-slate-900"
-                  }`}
-                >
-                  All Messages
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDateMode("single");
-                    setDateTo("");
-                  }}
-                  className={`rounded-md px-2.5 py-1 transition ${
-                    dateMode === "single"
-                      ? "bg-white text-slate-900 shadow-2xs"
-                      : "text-slate-600 hover:text-slate-900"
-                  }`}
-                >
-                  Single Date
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDateMode("range")}
-                  className={`rounded-md px-2.5 py-1 transition ${
-                    dateMode === "range"
-                      ? "bg-white text-slate-900 shadow-2xs"
-                      : "text-slate-600 hover:text-slate-900"
-                  }`}
-                >
-                  Multi Date
-                </button>
-              </div>
+      {/* ---------------- 2. MOBILE-FRIENDLY FILTERS & MESSAGES (Hidden while Track a Farmer form is open) -------------- */}
+      {!trackOpen && (
+        <section className="space-y-3">
+          {/* Compact Filter Bar */}
+          <div className="rounded-xl border border-slate-200 bg-white p-2.5 sm:p-3 shadow-2xs space-y-2.5">
+            {/* Status Pill Tabs: All Tracked / Risky Farmer / Weak to Nourish */}
+            <div className="grid grid-cols-3 gap-1.5 rounded-xl bg-slate-100 p-1">
+              <button
+                type="button"
+                onClick={() => setStatusTab("all")}
+                className={`flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-bold transition ${
+                  statusTab === "all"
+                    ? "bg-white text-slate-900 shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <span>All Tracked</span>
+              </button>
 
-              {dateMode === "single" && (
-                <input
-                  type="date"
-                  value={dateFrom}
-                  onChange={(e) => setDateFrom(e.target.value)}
-                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs outline-none focus:border-emerald-500"
-                />
-              )}
+              <button
+                type="button"
+                onClick={() => setStatusTab("risky")}
+                className={`flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-bold transition ${
+                  statusTab === "risky"
+                    ? "bg-red-600 text-white shadow-2xs"
+                    : "text-red-700 hover:bg-red-50"
+                }`}
+              >
+                <AlertTriangle size={12} className="shrink-0" />
+                <span className="truncate">Risky Farmer</span>
+                <span
+                  className={`rounded-full px-1.5 py-px text-[10px] ${
+                    statusTab === "risky"
+                      ? "bg-red-700 text-white"
+                      : "bg-red-100 text-red-700"
+                  }`}
+                >
+                  {riskyTotalCount}
+                </span>
+              </button>
 
-              {dateMode === "range" && (
-                <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setStatusTab("weak")}
+                className={`flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-bold transition ${
+                  statusTab === "weak"
+                    ? "bg-teal-600 text-white shadow-2xs"
+                    : "text-teal-800 hover:bg-teal-50"
+                }`}
+              >
+                <Sprout size={12} className="shrink-0" />
+                <span className="truncate">Weak to Nourish</span>
+                <span
+                  className={`rounded-full px-1.5 py-px text-[10px] ${
+                    statusTab === "weak"
+                      ? "bg-teal-700 text-white"
+                      : "bg-teal-100 text-teal-800"
+                  }`}
+                >
+                  {weakTotalCount}
+                </span>
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <div className="inline-flex rounded-lg bg-slate-100 p-0.5 text-[11px] font-semibold">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDateMode("all");
+                      setDateFrom("");
+                      setDateTo("");
+                    }}
+                    className={`rounded-md px-2.5 py-1 transition ${
+                      dateMode === "all"
+                        ? "bg-emerald-600 text-white shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    All Messages
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDateMode("single");
+                      setDateTo("");
+                    }}
+                    className={`rounded-md px-2.5 py-1 transition ${
+                      dateMode === "single"
+                        ? "bg-white text-slate-900 shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    Single Date
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDateMode("range")}
+                    className={`rounded-md px-2.5 py-1 transition ${
+                      dateMode === "range"
+                        ? "bg-white text-slate-900 shadow-2xs"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    Multi Date
+                  </button>
+                </div>
+
+                {dateMode === "single" && (
                   <input
                     type="date"
                     value={dateFrom}
                     onChange={(e) => setDateFrom(e.target.value)}
-                    className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-emerald-500"
+                    className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs outline-none focus:border-emerald-500"
                   />
-                  <span className="text-xs text-slate-400">to</span>
-                  <input
-                    type="date"
-                    value={dateTo}
-                    min={dateFrom || undefined}
-                    onChange={(e) => setDateTo(e.target.value)}
-                    className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-emerald-500"
-                  />
-                </div>
-              )}
+                )}
+
+                {dateMode === "range" && (
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="date"
+                      value={dateFrom}
+                      onChange={(e) => setDateFrom(e.target.value)}
+                      className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-emerald-500"
+                    />
+                    <span className="text-xs text-slate-400">to</span>
+                    <input
+                      type="date"
+                      value={dateTo}
+                      min={dateFrom || undefined}
+                      onChange={(e) => setDateTo(e.target.value)}
+                      className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-semibold text-slate-500">
+                  {logGroups.length} farmer{logGroups.length === 1 ? "" : "s"}
+                </span>
+                {hasLogFilter && (
+                  <button
+                    type="button"
+                    onClick={resetLogFilters}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-700"
+                  >
+                    <RotateCcw size={12} /> Reset
+                  </button>
+                )}
+              </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] font-semibold text-slate-500">
-                {logGroups.length} farmer{logGroups.length === 1 ? "" : "s"}
-              </span>
-              {hasLogFilter && (
-                <button
-                  type="button"
-                  onClick={resetLogFilters}
-                  className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-700"
+            {/* Search, User, District, Upazila Grid */}
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <div className="relative col-span-2 sm:col-span-1">
+                <Search
+                  size={13}
+                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"
+                />
+                <input
+                  value={logSearch}
+                  onChange={(e) => setLogSearch(e.target.value)}
+                  placeholder="Farmer, mobile, message..."
+                  className={`${selectCls} pl-7`}
+                />
+              </div>
+
+              <div className="relative">
+                <User
+                  size={12}
+                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
+                />
+                <select
+                  className={`${selectCls} pl-7`}
+                  value={logUser}
+                  onChange={(e) => setLogUser(e.target.value)}
                 >
-                  <RotateCcw size={12} /> Reset
-                </button>
-              )}
-            </div>
-          </div>
+                  <option value="">All Users</option>
+                  {trackedUsers.map((u) => (
+                    <option key={u} value={u}>
+                      {u}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-          {/* Search, User, District, Upazila Grid */}
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <div className="relative col-span-2 sm:col-span-1">
-              <Search
-                size={13}
-                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"
-              />
-              <input
-                value={logSearch}
-                onChange={(e) => setLogSearch(e.target.value)}
-                placeholder="Farmer, mobile, message..."
-                className={`${selectCls} pl-7`}
-              />
-            </div>
-
-            <div className="relative">
-              <User
-                size={12}
-                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
-              />
               <select
-                className={`${selectCls} pl-7`}
-                value={logUser}
-                onChange={(e) => setLogUser(e.target.value)}
+                className={selectCls}
+                value={logDistrict}
+                onChange={(e) => {
+                  setLogDistrict(e.target.value);
+                  setLogUpazila("");
+                }}
               >
-                <option value="">All Users</option>
-                {trackedUsers.map((u) => (
-                  <option key={u} value={u}>
-                    {u}
+                <option value="">All Districts</option>
+                {selDistricts.map((x) => (
+                  <option key={x} value={x}>
+                    {x}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                className={selectCls}
+                value={logUpazila}
+                onChange={(e) => setLogUpazila(e.target.value)}
+              >
+                <option value="">All Upazilas</option>
+                {logUpazilas.map((x) => (
+                  <option key={x} value={x}>
+                    {x}
                   </option>
                 ))}
               </select>
             </div>
-
-            <select
-              className={selectCls}
-              value={logDistrict}
-              onChange={(e) => {
-                setLogDistrict(e.target.value);
-                setLogUpazila("");
-              }}
-            >
-              <option value="">All Districts</option>
-              {selDistricts.map((x) => (
-                <option key={x} value={x}>
-                  {x}
-                </option>
-              ))}
-            </select>
-
-            <select
-              className={selectCls}
-              value={logUpazila}
-              onChange={(e) => setLogUpazila(e.target.value)}
-            >
-              <option value="">All Upazilas</option>
-              {logUpazilas.map((x) => (
-                <option key={x} value={x}>
-                  {x}
-                </option>
-              ))}
-            </select>
           </div>
-        </div>
 
-        {/* Farmer-wise Message Cards (Mobile-first, no horizontal scroll required) */}
-        {loading ? (
-          <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-xs text-slate-400">
-            Loading tracking messages...
-          </div>
-        ) : logGroups.length === 0 ? (
-          <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-xs text-slate-400">
-            {hasLogFilter
-              ? "No tracking messages match your filters."
-              : "No tracking messages yet. Tap 'Track a Farmer' above to add one."}
-          </div>
-        ) : (
-          <div className="space-y-2.5">
-            {logGroups
-              .slice(0, visibleFarmersCount)
-              .map(({ farmer, notes }) => (
-                <FarmerTrackingGroupCard
-                  key={farmer.id}
-                  farmer={farmer}
-                  notes={notes}
-                  onRetrack={() => setModal({ farmer, tab: "track" })}
-                  onDetails={() => setModal({ farmer, tab: "details" })}
-                  onViewMap={() => openMap(farmer)}
-                />
-              ))}
+          {/* Farmer-wise Message Cards */}
+          {loading ? (
+            <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-xs text-slate-400">
+              Loading tracking messages...
+            </div>
+          ) : logGroups.length === 0 ? (
+            <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-xs text-slate-400">
+              {statusTab === "risky"
+                ? "No Risky Farmers found."
+                : statusTab === "weak"
+                ? "No 'Weak to Nourish' farmers found."
+                : hasLogFilter
+                ? "No tracking messages match your filters."
+                : "No tracking messages yet. Tap 'Track a Farmer' above to add one."}
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {logGroups
+                .slice(0, visibleFarmersCount)
+                .map(({ farmer, notes }) => (
+                  <FarmerTrackingGroupCard
+                    key={farmer.id}
+                    farmer={farmer}
+                    notes={notes}
+                    currentUserId={currentUserId}
+                    currentUserName={currentUserName}
+                    isFullAccess={isFullAccess}
+                    onRetrack={() => setModal({ farmer, tab: "track" })}
+                    onDetails={() => setModal({ farmer, tab: "details" })}
+                    onViewMap={() => openMap(farmer)}
+                    onEditNote={updateNote}
+                  />
+                ))}
 
-            {logGroups.length > visibleFarmersCount && (
-              <div className="pt-1 text-center">
-                <button
-                  type="button"
-                  onClick={() => setVisibleFarmersCount((c) => c + 20)}
-                  className="rounded-xl border border-slate-300 bg-white hover:bg-slate-50 px-5 py-2 text-xs font-bold text-slate-700 shadow-2xs"
-                >
-                  Load more farmers ({logGroups.length - visibleFarmersCount}{" "}
-                  remaining)
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-      </section>
+              {logGroups.length > visibleFarmersCount && (
+                <div className="pt-1 text-center">
+                  <button
+                    type="button"
+                    onClick={() => setVisibleFarmersCount((c) => c + 20)}
+                    className="rounded-xl border border-slate-300 bg-white hover:bg-slate-50 px-5 py-2 text-xs font-bold text-slate-700 shadow-2xs"
+                  >
+                    Load more farmers ({logGroups.length - visibleFarmersCount}{" "}
+                    remaining)
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+      )}
 
       {/* -------------------------------- modals ---------------------------- */}
       {showPicker && (
@@ -2007,8 +2571,11 @@ function TrackingContent({ role }: { role: any }) {
           farmer={modal.farmer}
           notes={modalNotes}
           initialTab={modal.tab}
+          userId={currentUserId}
           userName={currentUserName}
+          isFullAccess={isFullAccess}
           onSave={saveNote}
+          onEditNote={updateNote}
           onViewMap={openMap}
           onClose={() => setModal(null)}
         />

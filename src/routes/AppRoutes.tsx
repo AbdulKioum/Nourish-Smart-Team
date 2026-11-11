@@ -136,10 +136,16 @@ export default function AppRoutes() {
         });
 
         // 3. Handle notification click action
+        // 3. Handle notification click action -> Navigate directly to Farmer Tracking page
         await PushNotifications.addListener(
           "pushNotificationActionPerformed",
           (notification) => {
-            console.log("Push action performed:", notification);
+            const data = notification.notification.data;
+            if (data?.url) {
+              window.location.href = data.url;
+            } else if (data?.farmer_id) {
+              window.location.href = `/farmer-tracking?focus=${data.farmer_id}`;
+            }
           }
         );
 

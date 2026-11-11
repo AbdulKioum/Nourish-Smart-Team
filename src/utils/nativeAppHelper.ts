@@ -50,6 +50,7 @@ export async function triggerPhoneNotification(
           id: notifId,
           title,
           body,
+          largeBody: body,
           channelId: "smart_team_alerts",
           smallIcon: "res://ic_stat_notification",
           schedule: { at: new Date(Date.now() + 300) },

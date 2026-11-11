@@ -96,7 +96,7 @@ function parseNoteMeta(rawNote?: string) {
   if (text.startsWith(RESOLVED_PREFIX)) {
     return {
       type: "resolved" as const,
-      badgeText: "Status Cleared",
+      badgeText: "Mark Cleared",
       cleanText: text.slice(RESOLVED_PREFIX.length).trim(),
     };
   }
@@ -401,7 +401,7 @@ function NoteThread({
           : isWeak
           ? "border-teal-300 bg-teal-50/70"
           : isResolved
-          ? "border-blue-200 bg-blue-50/50"
+          ? "border-emerald-300 bg-emerald-50/70"
           : i === 0
           ? "border-emerald-400 bg-emerald-50/80 shadow-2xs"
           : "border-slate-200 bg-white";
@@ -420,6 +420,8 @@ function NoteThread({
                       ? "bg-red-600"
                       : isWeak
                       ? "bg-teal-600"
+                      : isResolved
+                      ? "bg-emerald-600"
                       : i === 0
                       ? "bg-emerald-600"
                       : "bg-slate-700"
@@ -440,8 +442,8 @@ function NoteThread({
                   </span>
                 )}
                 {isResolved && (
-                  <span className="inline-flex items-center gap-0.5 rounded bg-blue-600 px-1.5 py-px text-[9px] font-bold text-white uppercase tracking-wide">
-                    ✓ Status Cleared
+                  <span className="inline-flex items-center gap-0.5 rounded bg-emerald-600 px-1.5 py-px text-[9px] font-bold text-white uppercase tracking-wide">
+                    ✓ Mark Cleared
                   </span>
                 )}
                 {i === 0 && meta.type === "normal" && (
@@ -1058,9 +1060,9 @@ function FarmerModal({
 }) {
   const [tab, setTab] = useState<"track" | "details">(initialTab);
   const [text, setText] = useState("");
-  const [postMode, setPostMode] = useState<"normal" | "risky" | "weak">(
-    "normal"
-  );
+  const [postMode, setPostMode] = useState<
+    "normal" | "risky" | "weak" | "clear"
+  >("normal");
   const [saving, setSaving] = useState(false);
 
   const badge = getFarmerBadgeInfo(farmer);
@@ -1076,6 +1078,8 @@ function FarmerModal({
         ? `${RISKY_PREFIX} `
         : postMode === "weak"
         ? `${WEAK_PREFIX} `
+        : postMode === "clear"
+        ? `${RESOLVED_PREFIX} `
         : "";
     const ok = await onSave(farmer, `${prefix}${text.trim()}`);
     setSaving(false);
@@ -1083,14 +1087,6 @@ function FarmerModal({
       setText("");
       setPostMode("normal");
     }
-  }
-
-  async function handleClearSpecialStatus() {
-    const reason = window.prompt(
-      "Write a short note to clear Risky / Weak status:"
-    );
-    if (!reason || !reason.trim()) return;
-    await onSave(farmer, `${RESOLVED_PREFIX} ${reason.trim()}`);
   }
 
   const tabBtn = (id: "track" | "details", label: string) => (
@@ -1197,21 +1193,51 @@ function FarmerModal({
         <div className="overflow-y-auto p-4">
           {tab === "track" ? (
             <div className="space-y-3">
-              {/* Quick Mode Selector inside Modal */}
+              {/* Smart Toggle: If marked -> show ONLY Clear button; If not marked -> show Mark button */}
               <div className="flex flex-wrap items-center gap-1.5">
                 {nourish ? (
+                  statusInfo.isRisky ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPostMode(postMode === "clear" ? "normal" : "clear")
+                      }
+                      className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
+                        postMode === "clear"
+                          ? "border-emerald-600 bg-emerald-600 text-white"
+                          : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                      }`}
+                    >
+                      <UserCheck size={11} /> Clear Risky Mark
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPostMode(postMode === "risky" ? "normal" : "risky")
+                      }
+                      className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
+                        postMode === "risky"
+                          ? "border-red-600 bg-red-600 text-white"
+                          : "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                      }`}
+                    >
+                      <AlertTriangle size={11} /> Mark as Risky
+                    </button>
+                  )
+                ) : statusInfo.isWeak ? (
                   <button
                     type="button"
                     onClick={() =>
-                      setPostMode(postMode === "risky" ? "normal" : "risky")
+                      setPostMode(postMode === "clear" ? "normal" : "clear")
                     }
                     className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
-                      postMode === "risky"
-                        ? "border-red-600 bg-red-600 text-white"
-                        : "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                      postMode === "clear"
+                        ? "border-emerald-600 bg-emerald-600 text-white"
+                        : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
                     }`}
                   >
-                    <AlertTriangle size={11} /> Mark as Risky
+                    <UserCheck size={11} /> Clear Weak Mark
                   </button>
                 ) : (
                   <button
@@ -1228,16 +1254,6 @@ function FarmerModal({
                     <Sprout size={11} /> Weak to Nourish
                   </button>
                 )}
-
-                {(statusInfo.isRisky || statusInfo.isWeak) && (
-                  <button
-                    type="button"
-                    onClick={handleClearSpecialStatus}
-                    className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-slate-100 hover:bg-slate-200 px-2.5 py-1 text-[11px] font-semibold text-slate-700"
-                  >
-                    <UserCheck size={11} /> Clear Status
-                  </button>
-                )}
               </div>
 
               <form onSubmit={submit} className="space-y-1.5">
@@ -1251,14 +1267,20 @@ function FarmerModal({
                       ? "Write comment for marking this farmer as Risky..."
                       : postMode === "weak"
                       ? "Write comment for marking as Weak to Nourish..."
+                      : postMode === "clear"
+                      ? statusInfo.isRisky
+                        ? "Write comment why clearing Risky mark..."
+                        : "Write comment why clearing Weak to Nourish mark..."
                       : "Write a new tracking message or remark..."
                   }
-                  className={`w-full resize-none rounded-lg border bg-white px-3 py-2 text-sm outline-none ${
+                  className={`w-full resize-none rounded-lg border px-3 py-2 text-sm outline-none transition ${
                     postMode === "risky"
-                      ? "border-red-400 focus:border-red-600"
+                      ? "border-red-400 bg-red-50/40 focus:border-red-600"
                       : postMode === "weak"
-                      ? "border-teal-400 focus:border-teal-600"
-                      : "border-slate-300 focus:border-emerald-500"
+                      ? "border-teal-400 bg-teal-50/40 focus:border-teal-600"
+                      : postMode === "clear"
+                      ? "border-emerald-500 bg-emerald-50/60 focus:border-emerald-700"
+                      : "border-slate-300 bg-white focus:border-emerald-500"
                   }`}
                 />
                 <div className="flex items-center justify-between">
@@ -1273,6 +1295,8 @@ function FarmerModal({
                         ? "bg-red-600 hover:bg-red-700"
                         : postMode === "weak"
                         ? "bg-teal-600 hover:bg-teal-700"
+                        : postMode === "clear"
+                        ? "bg-emerald-600 hover:bg-emerald-700"
                         : "bg-emerald-600 hover:bg-emerald-700"
                     }`}
                   >
@@ -1283,6 +1307,10 @@ function FarmerModal({
                       ? "Save Risky & Notify"
                       : postMode === "weak"
                       ? "Save Weak & Notify"
+                      : postMode === "clear"
+                      ? statusInfo.isRisky
+                        ? "Clear Risky Mark"
+                        : "Clear Weak Mark"
                       : "Save tracking"}
                   </button>
                 </div>
@@ -1413,7 +1441,7 @@ function FarmerTrackingGroupCard({
               disabled={!farmer.latitude || !farmer.longitude}
               className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700 disabled:opacity-40 transition"
             >
-              <MapPin size={11} />
+              <MapPin size={11} /> Map
             </button>
           </div>
         </div>
@@ -1466,9 +1494,9 @@ function TrackingContent({ role }: { role: any }) {
   const [comboOpen, setComboOpen] = useState(false);
   const [pickedFarmer, setPickedFarmer] = useState<any>(null);
   const [noteText, setNoteText] = useState("");
-  const [pickedMode, setPickedMode] = useState<"normal" | "risky" | "weak">(
-    "normal"
-  );
+  const [pickedMode, setPickedMode] = useState<
+    "normal" | "risky" | "weak" | "clear"
+  >("normal");
   const [saving, setSaving] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
 
@@ -1844,6 +1872,8 @@ function TrackingContent({ role }: { role: any }) {
         ? `${RISKY_PREFIX} `
         : pickedMode === "weak"
         ? `${WEAK_PREFIX} `
+        : pickedMode === "clear"
+        ? `${RESOLVED_PREFIX} `
         : "";
     const ok = await saveNote(pickedFarmer, `${prefix}${noteText.trim()}`);
     setSaving(false);
@@ -1895,6 +1925,9 @@ function TrackingContent({ role }: { role: any }) {
   const pickedNotes = pickedFarmer
     ? notesByFarmer.get(String(pickedFarmer.id)) || []
     : [];
+  const pickedStatus = pickedFarmer
+    ? getFarmerSpecialStatus(pickedNotes, pickedFarmer)
+    : { isRisky: false, isWeak: false, riskyNote: null, weakNote: null };
   const lastPicked = pickedNotes[0];
   const modalNotes = modal
     ? notesByFarmer.get(String(modal.farmer.id)) || []
@@ -2155,8 +2188,20 @@ function TrackingContent({ role }: { role: any }) {
                         {pickedBadge?.emoji}
                       </span>
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-bold text-slate-900">
-                          {pickedFarmer.farmer_name}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="truncate text-sm font-bold text-slate-900">
+                            {pickedFarmer.farmer_name}
+                          </span>
+                          {pickedStatus.isRisky && (
+                            <span className="rounded-full bg-red-600 px-2 py-0.5 text-[10px] font-bold text-white">
+                              ⚠️ Risky
+                            </span>
+                          )}
+                          {pickedStatus.isWeak && (
+                            <span className="rounded-full bg-teal-600 px-2 py-0.5 text-[10px] font-bold text-white">
+                              🌱 Weak to Nourish
+                            </span>
+                          )}
                         </div>
                         <div className="text-[11px] text-slate-500">
                           {pickedBadge?.label}
@@ -2198,20 +2243,54 @@ function TrackingContent({ role }: { role: any }) {
                     </label>
                     <div className="flex items-center gap-1">
                       {isNourishFarmer(pickedFarmer) ? (
+                        pickedStatus.isRisky ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPickedMode(
+                                pickedMode === "clear" ? "normal" : "clear"
+                              )
+                            }
+                            className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold transition ${
+                              pickedMode === "clear"
+                                ? "bg-emerald-600 text-white"
+                                : "border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                            }`}
+                          >
+                            <UserCheck size={10} /> Clear Risky Mark
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPickedMode(
+                                pickedMode === "risky" ? "normal" : "risky"
+                              )
+                            }
+                            className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold transition ${
+                              pickedMode === "risky"
+                                ? "bg-red-600 text-white"
+                                : "border border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                            }`}
+                          >
+                            ⚠️ Mark Risky
+                          </button>
+                        )
+                      ) : pickedStatus.isWeak ? (
                         <button
                           type="button"
                           onClick={() =>
                             setPickedMode(
-                              pickedMode === "risky" ? "normal" : "risky"
+                              pickedMode === "clear" ? "normal" : "clear"
                             )
                           }
                           className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold transition ${
-                            pickedMode === "risky"
-                              ? "bg-red-600 text-white"
-                              : "border border-red-200 bg-red-50 text-red-700"
+                            pickedMode === "clear"
+                              ? "bg-emerald-600 text-white"
+                              : "border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
                           }`}
                         >
-                          ⚠️ Mark Risky
+                          <UserCheck size={10} /> Clear Weak Mark
                         </button>
                       ) : (
                         <button
@@ -2224,7 +2303,7 @@ function TrackingContent({ role }: { role: any }) {
                           className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold transition ${
                             pickedMode === "weak"
                               ? "bg-teal-600 text-white"
-                              : "border border-teal-200 bg-teal-50 text-teal-800"
+                              : "border border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100"
                           }`}
                         >
                           🌱 Weak to Nourish
@@ -2241,14 +2320,20 @@ function TrackingContent({ role }: { role: any }) {
                         ? "Write comment why this farmer is Risky..."
                         : pickedMode === "weak"
                         ? "Write comment why Weak to Nourish..."
+                        : pickedMode === "clear"
+                        ? pickedStatus.isRisky
+                          ? "Write comment why clearing Risky mark (e.g. dues cleared / issue resolved)..."
+                          : "Write comment why clearing Weak to Nourish mark..."
                         : "Write tracking message..."
                     }
-                    className={`min-h-[115px] flex-1 resize-none rounded-lg border bg-white px-3 py-2 text-sm outline-none ${
+                    className={`min-h-[115px] flex-1 resize-none rounded-lg border px-3 py-2 text-sm outline-none transition ${
                       pickedMode === "risky"
-                        ? "border-red-400 focus:border-red-600"
+                        ? "border-red-400 bg-red-50/40 focus:border-red-600"
                         : pickedMode === "weak"
-                        ? "border-teal-400 focus:border-teal-600"
-                        : "border-slate-300 focus:border-emerald-500"
+                        ? "border-teal-400 bg-teal-50/40 focus:border-teal-600"
+                        : pickedMode === "clear"
+                        ? "border-emerald-500 bg-emerald-50/60 focus:border-emerald-700"
+                        : "border-slate-300 bg-white focus:border-emerald-500"
                     }`}
                   />
                   <div className="mt-2 flex items-center justify-between gap-2">
@@ -2263,6 +2348,8 @@ function TrackingContent({ role }: { role: any }) {
                           ? "bg-red-600 hover:bg-red-700"
                           : pickedMode === "weak"
                           ? "bg-teal-600 hover:bg-teal-700"
+                          : pickedMode === "clear"
+                          ? "bg-emerald-600 hover:bg-emerald-700"
                           : "bg-emerald-600 hover:bg-emerald-700"
                       }`}
                     >
@@ -2273,6 +2360,10 @@ function TrackingContent({ role }: { role: any }) {
                         ? "Save Risky & Notify"
                         : pickedMode === "weak"
                         ? "Save Weak & Notify"
+                        : pickedMode === "clear"
+                        ? pickedStatus.isRisky
+                          ? "Clear Risky Mark"
+                          : "Clear Weak Mark"
                         : "Save Tracking"}
                     </button>
                   </div>

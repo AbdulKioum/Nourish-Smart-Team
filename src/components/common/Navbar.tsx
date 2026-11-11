@@ -118,7 +118,7 @@ export default function Navbar({
     setLatestTrackings(list);
   }
 
-  useEffect(() => {
+ useEffect(() => {
     initNativePermissions();
     loadNotificationsData();
 
@@ -174,12 +174,44 @@ export default function Navbar({
                 return [enriched, ...withoutDup].slice(0, 5);
               });
 
-              // অ্যাপ ওপেন (Foreground) থাকা অবস্থায় ফোনের নোটিফিকেশনে সাথে সাথে পাঠানো
-              triggerPhoneNotification(
-                "Farmer Tracking",
-                `👤 ${fName.toUpperCase()}\n ${newRow.user_name || "Officer"} : ${newRow.note}`,
-                `/farmer-tracking?focus=${newRow.farmer_id}&note=${newRow.id}`
-              );
+              // বর্তমান লগইন করা ইউজার নিজেই মেসেজটি দিয়েছেন কি না তা চেক করা
+              const myUserId = (accessRef.current as any)?.userId || "";
+              const myUserName = (accessRef.current as any)?.userName || "";
+
+              const isMyOwnMessage =
+                (newRow.user_id &&
+                  myUserId &&
+                  String(newRow.user_id) === String(myUserId)) ||
+                (newRow.user_name &&
+                  myUserName &&
+                  String(newRow.user_name).trim().toLowerCase() ===
+                    String(myUserName).trim().toLowerCase());
+
+              // শুধুমাত্র অন্য কেউ মেসেজ দিলে ফোনের নোটিফিকেশনে সাথে সাথে পাঠাবে
+              if (!isMyOwnMessage) {
+                const rawNote = String(newRow.note || "").trim();
+                const sender = newRow.user_name || "Officer";
+                let notifBody = `👤 ${fName.toUpperCase()}\n${sender} : ${rawNote}`;
+
+                if (rawNote.startsWith("[RISKY]")) {
+                  const cleanComment = rawNote.replace("[RISKY]", "").trim();
+                  notifBody = `⚠️ ${sender} marked ${fName.toUpperCase()} as Risky Farmer\n💬 ${cleanComment}`;
+                } else if (rawNote.startsWith("[WEAK_TO_NOURISH]")) {
+                  const cleanComment = rawNote
+                    .replace("[WEAK_TO_NOURISH]", "")
+                    .trim();
+                  notifBody = `🌱 ${sender} marked ${fName.toUpperCase()} as Weak to Nourish\n💬 ${cleanComment}`;
+                } else if (rawNote.startsWith("[RESOLVED]")) {
+                  const cleanComment = rawNote.replace("[RESOLVED]", "").trim();
+                  notifBody = `✅ ${sender} cleared status of ${fName.toUpperCase()}\n💬 ${cleanComment}`;
+                }
+
+                triggerPhoneNotification(
+                  "Farmer Tracking",
+                  notifBody,
+                  `/farmer-tracking?focus=${newRow.farmer_id}&note=${newRow.id}`
+                );
+              }
             }
           } else {
             refreshLatestTrackings();
@@ -193,7 +225,7 @@ export default function Navbar({
       if (notifSub) notifSub.remove();
     };
   }, []);
-  
+
   async function loadNotificationsData() {
     setLoading(true);
     try {
@@ -204,26 +236,30 @@ export default function Navbar({
       let uUpazilas: string[] = [];
       let uDistricts: string[] = [];
       let role = "officer";
+      let uName = user?.email?.split("@")[0] || "";
 
       if (user) {
         const { data: profile } = await supabase
           .from("users")
-          .select("role, upazilas, districts")
+          .select("full_name, email, role, upazilas, districts")
           .eq("id", user.id)
           .single();
 
         if (profile) {
           role = profile.role || "officer";
+          uName = profile.full_name || profile.email || uName;
           uUpazilas = parseArray(profile.upazilas);
           uDistricts = parseArray(profile.districts);
         }
       }
 
       const isFullAccess = role === "super_admin" || role === "manager";
-      accessRef.current = {
+      (accessRef.current as any) = {
         isFullAccess,
         upazilas: uUpazilas,
         districts: uDistricts,
+        userId: user?.id || "",
+        userName: uName,
       };
 
       const [

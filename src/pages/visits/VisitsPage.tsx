@@ -17,6 +17,8 @@ import ExcelJS from "exceljs";
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
 import { Capacitor } from "@capacitor/core";
+import SearchableSelect from "../../components/common/SearchableSelect";
+
 
 export const CATEGORIES = [
   "Broiler",
@@ -436,6 +438,7 @@ export default function VetVisitsPage() {
     hatch_date: new Date().toISOString().split("T")[0],
     hatchery: "",
     breed: "",
+    grade: "AG",
     box_no: "",
     t_birds: "",
     batch_mark: "",
@@ -450,6 +453,7 @@ export default function VetVisitsPage() {
     hatch_date: "",
     hatchery: "",
     breed: "",
+    grade: "AG",
     box_no: "",
     t_birds: "",
     category: "Broiler",
@@ -510,6 +514,48 @@ export default function VetVisitsPage() {
   const [reportVisitDate, setReportVisitDate] = useState<string>(
     new Date().toISOString().split("T")[0]
   );
+
+  const [existingReportOnDate, setExistingReportOnDate] = useState(false);
+  const [checkingDate, setCheckingDate] = useState(false);
+
+  useEffect(() => {
+    async function checkDate() {
+      if (editingReportId || !activeReportVisit || !reportVisitDate) {
+        setExistingReportOnDate(false);
+        return;
+      }
+      let table = "";
+      if (showBeforeSaleModal) table = "before_sale_reports";
+      else if (showAfterSaleModal) table = "after_sale_reports";
+      else if (showLayerModal) table = "layer_reports";
+
+      if (!table) {
+        setExistingReportOnDate(false);
+        return;
+      }
+
+      setCheckingDate(true);
+      const { data } = await supabase
+        .from(table)
+        .select("id")
+        .eq("vet_visit_id", activeReportVisit.id)
+        .eq("visit_date", reportVisitDate)
+        .limit(1)
+        .maybeSingle();
+
+      setExistingReportOnDate(!!data);
+      setCheckingDate(false);
+    }
+    checkDate();
+  }, [
+    activeReportVisit,
+    reportVisitDate,
+    showBeforeSaleModal,
+    showAfterSaleModal,
+    showLayerModal,
+    editingReportId,
+  ]);
+
 
   const [transferAgentId, setTransferAgentId] = useState<string>("");
 
@@ -1887,6 +1933,21 @@ ${currentUserProfile.region}`;
     if (!validateBeforeSaleInputs(beforeForm)) return;
 
     try {
+      // --- NEW CHECK FOR DUPLICATE DATE ---
+      const { data: existingBefore } = await supabase
+        .from("before_sale_reports")
+        .select("id")
+        .eq("vet_visit_id", activeReportVisit.id)
+        .eq("visit_date", reportVisitDate)
+        .limit(1)
+        .maybeSingle();
+
+      if (existingBefore && String(existingBefore.id) !== String(editingReportId)) {
+        alert(`A Before Sale report already exists on ${formatDmy(reportVisitDate)} for this batch. Please choose a different date or edit the existing report from History.`);
+        return;
+      }
+      // ------------------------------------
+
       await processFeedCompanyChangeIfNeeded(
         activeReportVisit,
         beforeForm.feed_company,
@@ -1895,11 +1956,7 @@ ${currentUserProfile.region}`;
       );
 
       const cleanRemarks = String(beforeForm.remarks || "").trim();
-      const payload: Record<string, any> = {
-        vet_visit_id: activeReportVisit.id,
-        farmer_id: String(activeReportVisit.farmer_id),
-        agent_id: String(transferAgentId || activeReportVisit.agent_id),
-        company_id: String(activeReportVisit.company_id),
+      const updateFields: Record<string, any> = {
         visit_date: reportVisitDate,
         mortality_pcs: Number(beforeForm.mortality_pcs) || 0,
         weight_gm_b: Number(beforeForm.weight_gm_b) || 0,
@@ -1907,45 +1964,72 @@ ${currentUserProfile.region}`;
         feed_gm_b: Number(beforeForm.feed_gm_b) || 0,
         fcr_w_out_m: Number(beforeForm.fcr_w_out_m) || 0,
         fcr_with_m: Number(beforeForm.fcr_with_m) || 0,
-        uneven: beforeForm.uneven,
-        indigestion: beforeForm.indigestion,
-        orange_feces: beforeForm.orange_feces,
-        watery_feces: beforeForm.watery_feces,
-        feeder: beforeForm.feeder,
-        drinker: beforeForm.drinker,
-        floor_space: beforeForm.floor_space,
-        litter_condition: beforeForm.litter_condition,
-        ventilation: beforeForm.ventilation,
-        feed_scattering: beforeForm.feed_scattering,
-        feed_hardness: beforeForm.feed_hardness,
+        uneven: beforeForm.uneven || "",
+        indigestion: beforeForm.indigestion || "",
+        orange_feces: beforeForm.orange_feces || "",
+        watery_feces: beforeForm.watery_feces || "",
+        feeder: beforeForm.feeder || "",
+        drinker: beforeForm.drinker || "",
+        floor_space: beforeForm.floor_space || "",
+        litter_condition: beforeForm.litter_condition || "",
+        ventilation: beforeForm.ventilation || "",
+        feed_scattering: beforeForm.feed_scattering || "",
+        feed_hardness: beforeForm.feed_hardness || "",
         feed_company: beforeForm.feed_company,
         feed_type: beforeForm.feed_type,
         pro_date: beforeForm.pro_date || null,
-        batch_no: beforeForm.batch_no,
+        batch_no: beforeForm.batch_no || "",
         remarks: cleanRemarks,
       };
 
-      if (editingReportId) {
-        const { error } = await supabase
+      if (editingReportId !== null && editingReportId !== undefined) {
+        const { data: updatedRows, error } = await supabase
           .from("before_sale_reports")
-          .update(payload)
-          .eq("id", editingReportId);
+          .update(updateFields)
+          .eq("id", editingReportId)
+          .select();
+
         if (error) throw error;
+        if (!updatedRows || updatedRows.length === 0) {
+          throw new Error(
+            "Database blocked the update (0 rows updated). Please run the RLS UPDATE policy SQL in Supabase."
+          );
+        }
+
+        setAllReportsForFarmer((prev) => ({
+          ...prev,
+          before: prev.before.map((r) =>
+            String(r.id) === String(editingReportId)
+              ? { ...r, ...updatedRows[0] }
+              : r
+          ),
+        }));
+
         alert("Before Sale Report updated!");
       } else {
+        const insertPayload = {
+          ...updateFields,
+          vet_visit_id: activeReportVisit.id,
+          farmer_id: String(activeReportVisit.farmer_id),
+          agent_id: String(transferAgentId || activeReportVisit.agent_id),
+          company_id: String(activeReportVisit.company_id),
+        };
         const { error } = await supabase
           .from("before_sale_reports")
-          .insert([payload]);
+          .insert([insertPayload]);
         if (error) throw error;
         alert("Before Sale Report saved!");
       }
 
       setEditingReportId(null);
       setShowBeforeSaleModal(false);
+      await loadVetVisits();
       if (showHistoryModal && selectedHistoryVisit) {
-        await handleHistoryClick(selectedHistoryVisit);
+        await handleHistoryClick(
+          selectedHistoryVisit,
+          selectedHistoryVisit.farmers
+        );
       }
-      loadVetVisits();
     } catch (err: any) {
       alert(err.message || "Failed to save report");
     }
@@ -1956,6 +2040,21 @@ ${currentUserProfile.region}`;
     if (!validateAfterSaleInputs(afterForm)) return;
 
     try {
+      // --- NEW CHECK FOR DUPLICATE DATE ---
+      const { data: existingAfter } = await supabase
+        .from("after_sale_reports")
+        .select("id")
+        .eq("vet_visit_id", activeReportVisit.id)
+        .eq("visit_date", reportVisitDate)
+        .limit(1)
+        .maybeSingle();
+
+      if (existingAfter && String(existingAfter.id) !== String(editingReportId)) {
+        alert(`An After Sale report already exists on ${formatDmy(reportVisitDate)} for this batch. Please choose a different date or edit the existing report from History.`);
+        return;
+      }
+      // ------------------------------------
+
       await processFeedCompanyChangeIfNeeded(
         activeReportVisit,
         afterForm.feed_mill,
@@ -1964,11 +2063,7 @@ ${currentUserProfile.region}`;
       );
 
       const cleanRemarks = String(afterForm.remarks || "").trim();
-      const payload: any = {
-        vet_visit_id: activeReportVisit.id,
-        farmer_id: String(activeReportVisit.farmer_id),
-        agent_id: String(transferAgentId || activeReportVisit.agent_id),
-        company_id: String(activeReportVisit.company_id),
+      const updateFields: Record<string, any> = {
         visit_date: reportVisitDate,
         mortality: Number(afterForm.mortality) || 0,
         weight: Number(afterForm.weight) || 0,
@@ -1981,30 +2076,59 @@ ${currentUserProfile.region}`;
         remarks: cleanRemarks,
       };
 
-      if (editingReportId) {
-        const { error } = await supabase
+      if (editingReportId !== null && editingReportId !== undefined) {
+        let { data: updatedRows, error } = await supabase
           .from("after_sale_reports")
-          .update(payload)
-          .eq("id", editingReportId);
-        if (error) {
-          delete payload.feed_gm_b;
-          const { error: retryErr } = await supabase
-            .from("after_sale_reports")
-            .update(payload)
-            .eq("id", editingReportId);
-          if (retryErr) throw retryErr;
-        }
-        alert("After Sale Report updated!");
-      } else {
-        const { error } = await supabase
-          .from("after_sale_reports")
-          .insert([payload]);
+          .update(updateFields)
+          .eq("id", editingReportId)
+          .select();
 
         if (error) {
-          delete payload.feed_gm_b;
+          const fallbackFields = { ...updateFields };
+          delete fallbackFields.feed_gm_b;
+          const retry = await supabase
+            .from("after_sale_reports")
+            .update(fallbackFields)
+            .eq("id", editingReportId)
+            .select();
+          if (retry.error) throw retry.error;
+          updatedRows = retry.data;
+        }
+
+        if (!updatedRows || updatedRows.length === 0) {
+          throw new Error(
+            "Database blocked the update (0 rows updated). Please run the RLS UPDATE policy SQL in Supabase."
+          );
+        }
+
+        setAllReportsForFarmer((prev) => ({
+          ...prev,
+          after: prev.after.map((r) =>
+            String(r.id) === String(editingReportId)
+              ? { ...r, ...updatedRows![0], feed_gm_b: updateFields.feed_gm_b }
+              : r
+          ),
+        }));
+
+        alert("After Sale Report updated!");
+      } else {
+        const insertPayload: any = {
+          ...updateFields,
+          vet_visit_id: activeReportVisit.id,
+          farmer_id: String(activeReportVisit.farmer_id),
+          agent_id: String(transferAgentId || activeReportVisit.agent_id),
+          company_id: String(activeReportVisit.company_id),
+        };
+
+        const { error } = await supabase
+          .from("after_sale_reports")
+          .insert([insertPayload]);
+
+        if (error) {
+          delete insertPayload.feed_gm_b;
           const { error: retryErr } = await supabase
             .from("after_sale_reports")
-            .insert([payload]);
+            .insert([insertPayload]);
           if (retryErr) throw retryErr;
         }
 
@@ -2026,15 +2150,19 @@ ${currentUserProfile.region}`;
 
       setEditingReportId(null);
       setShowAfterSaleModal(false);
+      await loadVetVisits();
       if (showHistoryModal && selectedHistoryVisit) {
-        await handleHistoryClick(selectedHistoryVisit);
+        await handleHistoryClick(
+          selectedHistoryVisit,
+          selectedHistoryVisit.farmers
+        );
       }
-      loadVetVisits();
     } catch (err: any) {
       alert(err.message || "Failed to save after sale report");
     }
   }
-
+  
+  
   async function handleLayerReportSubmit(markAsCulled = false) {
     if (!activeReportVisit) return;
 
@@ -2052,6 +2180,21 @@ ${currentUserProfile.region}`;
     }
 
     try {
+      // --- NEW CHECK FOR DUPLICATE DATE ---
+      const { data: existingLayer } = await supabase
+        .from("layer_reports")
+        .select("id")
+        .eq("vet_visit_id", activeReportVisit.id)
+        .eq("visit_date", reportVisitDate)
+        .limit(1)
+        .maybeSingle();
+
+      if (existingLayer && String(existingLayer.id) !== String(editingReportId)) {
+        alert(`A Layer report already exists on ${formatDmy(reportVisitDate)} for this batch. Please choose a different date or edit the existing report from History.`);
+        return;
+      }
+      // ------------------------------------
+
       if (layerForm.feed_company) {
         await processFeedCompanyChangeIfNeeded(
           activeReportVisit,
@@ -2089,11 +2232,7 @@ ${currentUserProfile.region}`;
         Boolean(finalRemarks);
 
       if (!markAsCulled || hasAnyLayerMetrics) {
-        const payload: any = {
-          vet_visit_id: activeReportVisit.id,
-          farmer_id: String(activeReportVisit.farmer_id),
-          agent_id: String(transferAgentId || activeReportVisit.agent_id),
-          company_id: String(activeReportVisit.company_id),
+        const updateFields: Record<string, any> = {
           visit_date: reportVisitDate,
           mortality: mortNum,
           b_weight_g: Number(layerForm.b_weight_g) || 0,
@@ -2104,45 +2243,77 @@ ${currentUserProfile.region}`;
           feed_company: layerForm.feed_company,
           feed_type: layerForm.feed_type,
           pro_date: layerForm.pro_date || null,
-          batch_no: layerForm.batch_no,
+          batch_no: layerForm.batch_no || "",
           hatchery: resolvedHatchery,
           breed: resolvedBreed,
-          disease: layerForm.disease,
+          disease: layerForm.disease || "",
           vaccine: activeReportVisit.last_vaccine_name || "",
           remarks: finalRemarks,
         };
 
-        if (editingReportId) {
-          const { error } = await supabase
+        if (editingReportId !== null && editingReportId !== undefined) {
+          let { data: updatedRows, error } = await supabase
             .from("layer_reports")
-            .update(payload)
-            .eq("id", editingReportId);
-          if (error) {
-            delete payload.feed_total_kg;
-            delete payload.mortality;
-            const { error: retryErr } = await supabase
-              .from("layer_reports")
-              .update(payload)
-              .eq("id", editingReportId);
-            if (retryErr) throw retryErr;
-          }
-        } else {
-          const { error } = await supabase
-            .from("layer_reports")
-            .insert([payload]);
+            .update(updateFields)
+            .eq("id", editingReportId)
+            .select();
 
           if (error) {
-            delete payload.feed_total_kg;
-            delete payload.mortality;
+            const fallbackFields = { ...updateFields };
+            delete fallbackFields.feed_total_kg;
+            delete fallbackFields.mortality;
+            const retry = await supabase
+              .from("layer_reports")
+              .update(fallbackFields)
+              .eq("id", editingReportId)
+              .select();
+            if (retry.error) throw retry.error;
+            updatedRows = retry.data;
+          }
+
+          if (!updatedRows || updatedRows.length === 0) {
+            throw new Error(
+              "Database blocked the update (0 rows updated). Please run the RLS UPDATE policy SQL in Supabase."
+            );
+          }
+
+          setAllReportsForFarmer((prev) => ({
+            ...prev,
+            layer: prev.layer.map((r) =>
+              String(r.id) === String(editingReportId)
+                ? {
+                    ...r,
+                    ...updatedRows![0],
+                    mortality: mortNum,
+                    feed_total_kg: updateFields.feed_total_kg,
+                  }
+                : r
+            ),
+          }));
+        } else {
+          const insertPayload: any = {
+            ...updateFields,
+            vet_visit_id: activeReportVisit.id,
+            farmer_id: String(activeReportVisit.farmer_id),
+            agent_id: String(transferAgentId || activeReportVisit.agent_id),
+            company_id: String(activeReportVisit.company_id),
+          };
+
+          const { error } = await supabase
+            .from("layer_reports")
+            .insert([insertPayload]);
+
+          if (error) {
+            delete insertPayload.feed_total_kg;
+            delete insertPayload.mortality;
             const { error: retryErr } = await supabase
               .from("layer_reports")
-              .insert([payload]);
+              .insert([insertPayload]);
             if (retryErr) throw retryErr;
           }
         }
       }
 
-      // Sync breed/hatchery to vet_visits if updated
       if (
         resolvedBreed !== activeReportVisit.breed ||
         resolvedHatchery !== activeReportVisit.hatchery
@@ -2210,10 +2381,13 @@ ${currentUserProfile.region}`;
       setShowLayerModal(false);
       setShowCullReasonInput(false);
       setCullReasonText("");
+      await loadVetVisits();
       if (showHistoryModal && selectedHistoryVisit) {
-        await handleHistoryClick(selectedHistoryVisit);
+        await handleHistoryClick(
+          selectedHistoryVisit,
+          selectedHistoryVisit.farmers
+        );
       }
-      loadVetVisits();
     } catch (err: any) {
       alert(err.message || "Failed to save layer report");
     }
@@ -2338,6 +2512,7 @@ ${currentUserProfile.region}`;
         hatch_date: v.hatch_date || "",
         hatchery: v.hatchery || "",
         breed: v.breed || "",
+        grade: v.grade || "AG",
         box_no: v.box_no || "",
         t_birds: String(v.t_birds || ""),
         category: v.category || "Broiler",
@@ -2392,6 +2567,7 @@ ${currentUserProfile.region}`;
             hatch_date: batchEditSubForm.hatch_date,
             hatchery: batchEditSubForm.hatchery,
             breed: batchEditSubForm.breed,
+            grade: batchEditSubForm.category === "Broiler" ? batchEditSubForm.grade : null,
             box_no: batchEditSubForm.box_no,
             t_birds: Number(batchEditSubForm.t_birds) || 0,
             category: batchEditSubForm.category,
@@ -3167,6 +3343,7 @@ ${currentUserProfile.region}`;
       hatch_date: new Date().toISOString().split("T")[0],
       hatchery: defaultHatchery,
       breed: defaultBreeds[0] || "",
+      grade: "AG",
       box_no: "",
       t_birds: "",
       batch_mark: "",
@@ -3189,6 +3366,7 @@ ${currentUserProfile.region}`;
       hatch_date: new Date().toISOString().split("T")[0],
       hatchery: defaultHatchery,
       breed: BREEDS_BY_CATEGORY["Broiler"][0],
+      grade: "AG",
       box_no: "",
       t_birds: "",
       batch_mark: "",
@@ -3290,6 +3468,7 @@ ${currentUserProfile.region}`;
           hatch_date: activateForm.hatch_date,
           hatchery: activateForm.hatchery,
           breed: activateForm.breed,
+          grade: cat === "Broiler" ? activateForm.grade : null,
           box_no: activateForm.box_no,
           t_birds: qty,
           status: "Activated",
@@ -3549,63 +3728,56 @@ ${currentUserProfile.region}`;
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full sm:w-44 rounded-md border border-slate-300 px-2 py-1 text-[11px] outline-none focus:border-emerald-500"
           />
-          <select
-            value={selectedCompany}
-            onChange={(e) => {
-              setSelectedCompany(e.target.value);
-              setSelectedAgent("all");
-            }}
-            className="rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] outline-none"
-          >
-            <option value="all">All Companies</option>
-            {companies.map((comp) => (
-              <option key={comp.id} value={String(comp.id)}>
-                {comp.company_name}
-              </option>
-            ))}
-          </select>
+          
+          <SearchableSelect
+  compact
+  allValue="all"
+  value={selectedCompany}
+  onChange={(v) => {
+    setSelectedCompany(v);
+    setSelectedAgent("all");
+  }}
+  placeholder="All Companies"
+  options={companies.map((comp) => ({
+    value: String(comp.id),
+    label: comp.company_name,
+  }))}
+/>
 
-          <select
-            value={selectedUpazila}
-            onChange={(e) => {
-              setSelectedUpazila(e.target.value);
-              setSelectedAgent("all");
-            }}
-            className="rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] outline-none"
-          >
-            <option value="all">All Upazilas</option>
-            {filterUpazilaOptions.map((upa) => (
-              <option key={upa} value={upa}>
-                {upa}
-              </option>
-            ))}
-          </select>
+<SearchableSelect
+  compact
+  allValue="all"
+  value={selectedUpazila}
+  onChange={(v) => {
+    setSelectedUpazila(v);
+    setSelectedAgent("all");
+  }}
+  placeholder="All Upazilas"
+  options={filterUpazilaOptions.map((upa) => ({ value: upa, label: upa }))}
+/>
 
-          <select
-            value={selectedAgent}
-            onChange={(e) => setSelectedAgent(e.target.value)}
-            className="rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] outline-none max-w-[160px]"
-          >
-            <option value="all">All Agents</option>
-            {availableAgentsForDropdown.map((ag) => (
-              <option key={ag.id} value={String(ag.id)}>
-                {ag.agent_name}
-              </option>
-            ))}
-          </select>
+<SearchableSelect
+  compact
+  allValue="all"
+  className="max-w-[160px]"
+  value={selectedAgent}
+  onChange={setSelectedAgent}
+  placeholder="All Agents"
+  options={availableAgentsForDropdown.map((ag) => ({
+    value: String(ag.id),
+    label: ag.agent_name,
+  }))}
+/>
 
-          <select
-            value={selectedCategoryFilter}
-            onChange={(e) => setSelectedCategoryFilter(e.target.value)}
-            className="rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] outline-none"
-          >
-            <option value="all">All Categories</option>
-            {CATEGORIES.map((cat) => (
-              <option key={cat} value={cat}>
-                {cat}
-              </option>
-            ))}
-          </select>
+<SearchableSelect
+  compact
+  searchable={false}
+  allValue="all"
+  value={selectedCategoryFilter}
+  onChange={setSelectedCategoryFilter}
+  placeholder="All Categories"
+  options={CATEGORIES.map((cat) => ({ value: cat, label: cat }))}
+/>
 
           <button
             type="button"
@@ -3875,6 +4047,11 @@ ${currentUserProfile.region}`;
                                 </div>
                                 <div className="text-[10px] text-slate-500">
                                   {visit.breed || "-"}
+                                  {category.toLowerCase() === "broiler" && visit.grade ? (
+                                    <span className="ml-1 font-bold text-indigo-700 text-[9px] bg-indigo-50 border border-indigo-200 px-1 py-0 rounded">
+                                      {visit.grade}
+                                    </span>
+                                  ) : null}
                                 </div>
                               </td>
 
@@ -4374,20 +4551,29 @@ ${currentUserProfile.region}`;
               </div>
             )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3 text-xs">
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Feed Type
-                </label>
-                <input
-                  placeholder="Feed Type"
-                  value={farmerForm.feed_type}
-                  onChange={(e) =>
-                    setFarmerForm({ ...farmerForm, feed_type: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 px-2.5 py-1.5"
-                />
-              </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3 text-xs">
+                <div>
+                  <label className="block font-bold text-slate-600 mb-1">
+                    Feed Type
+                  </label>
+                  <SearchableSelect
+                  searchable={false}
+                    value={farmerForm.feed_type}
+                    onChange={(v) =>
+                      setFarmerForm({ ...farmerForm, feed_type: v })
+                    }
+                    placeholder="Select Feed Type"
+                    options={
+                      typeof activeFeedTypeOptions !== "undefined"
+                        ? activeFeedTypeOptions.map((ft) => ({
+                            value: ft,
+                            label: ft,
+                          }))
+                        : [] 
+                    }
+                  />
+                </div>
+
               <div>
                 <label className="block font-bold text-slate-600 mb-1">
                   Remarks
@@ -4464,52 +4650,72 @@ ${currentUserProfile.region}`;
                       className="w-full rounded border border-slate-300 bg-white px-2 py-1"
                     />
                   </div>
-                  <div>
+                 <div>
                     <label className="block font-semibold text-slate-700 mb-0.5">
                       Hatchery
                     </label>
-                    <select
+                    <SearchableSelect
                       value={batchEditSubForm.hatchery}
-                      onChange={(e) =>
+                      onChange={(v) =>
                         setBatchEditSubForm({
                           ...batchEditSubForm,
-                          hatchery: e.target.value,
+                          hatchery: v,
                         })
                       }
-                      className="w-full rounded border border-slate-300 bg-white px-2 py-1"
-                    >
-                      <option value="">Select Hatchery</option>
-                      {companies.map((c) => (
-                        <option key={c.id} value={c.company_name}>
-                          {c.company_name}
-                        </option>
-                      ))}
-                    </select>
+                      placeholder="Select Hatchery"
+                      options={companies.map((c) => ({
+                        value: c.company_name,
+                        label: c.company_name,
+                      }))}
+                    />
                   </div>
+
                   <div>
                     <label className="block font-semibold text-slate-700 mb-0.5">
                       Breed
                     </label>
-                    <select
+                    <SearchableSelect
+                    searchable={false}
                       value={batchEditSubForm.breed}
-                      onChange={(e) =>
+                      onChange={(v) =>
                         setBatchEditSubForm({
                           ...batchEditSubForm,
-                          breed: e.target.value,
+                          breed: v,
                         })
                       }
-                      className="w-full rounded border border-slate-300 bg-white px-2 py-1"
-                    >
-                      <option value="">Select Breed</option>
-                      {(
+                      placeholder="Select Breed"
+                      options={(
                         BREEDS_BY_CATEGORY[batchEditSubForm.category] || []
-                      ).map((b) => (
-                        <option key={b} value={b}>
-                          {b}
-                        </option>
-                      ))}
-                    </select>
+                      ).map((b) => ({
+                        value: b,
+                        label: b,
+                      }))}
+                    />
                   </div>
+
+                  {batchEditSubForm.category === "Broiler" && (
+                    <div>
+                    <label className="block font-semibold text-slate-700 mb-0.5">
+                      Grade
+                    </label>
+                    <SearchableSelect
+                    searchable={false}
+                      value={batchEditSubForm.grade}
+                      onChange={(v) =>
+                        setBatchEditSubForm({
+                          ...batchEditSubForm,
+                          grade: v,
+                        })
+                      }
+                      placeholder="Select Grade"
+                      options={[
+                        { value: "AG", label: "AG" },
+                        { value: "B+", label: "B+" },
+                      ]}
+                    />
+                  </div>
+                  )}
+                  
                   <div>
                     <label className="block font-semibold text-slate-700 mb-0.5">
                       Total Birds
@@ -4673,204 +4879,206 @@ ${currentUserProfile.region}`;
             </div>
 
             <div className="space-y-3 text-xs">
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Category / Farm Type *
-                </label>
-                <select
-                  value={activateForm.category}
-                  onChange={(e) => {
-                    const cat = e.target.value;
-                    const breeds = BREEDS_BY_CATEGORY[cat] || [];
-                    setActivateForm({
-                      ...activateForm,
-                      category: cat,
-                      breed: breeds[0] || "",
-                    });
-                  }}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white outline-none"
-                >
-                  {CATEGORIES.map((cat) => (
-                    <option key={cat} value={cat}>
-                      {cat}
-                    </option>
-                  ))}
-                </select>
-              </div>
+  <div>
+    <label className="block font-bold text-slate-600 mb-1">
+      Category / Farm Type *
+    </label>
+    <SearchableSelect
+      searchable={false}
+      value={activateForm.category}
+      onChange={(cat) => {
+        if (!cat) return; // category khali kora jabe na
+        const breeds = BREEDS_BY_CATEGORY[cat] || [];
+        setActivateForm({
+          ...activateForm,
+          category: cat,
+          breed: breeds[0] || "",
+        });
+      }}
+      placeholder="Select Category"
+      options={CATEGORIES.map((cat) => ({ value: cat, label: cat }))}
+    />
+  </div>
 
-              {activateNeedsChoice && (
-                <div className="border border-amber-300 bg-amber-50 rounded-xl p-3 space-y-2">
-                  <div className="font-bold text-amber-900">
-                    Before: {activatePrevCats.join(", ")} → Now:{" "}
-                    {activateForm.category}
-                  </div>
-                  <label className="flex items-start gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="actMode"
-                      checked={activateMode === "add"}
-                      onChange={() => setActivateMode("add")}
-                      className="mt-0.5 accent-amber-600"
-                    />
-                    <span>
-                      <b>Add</b> new {activateForm.category} batch (keep{" "}
-                      {activatePrevCats.join(", ")})
-                    </span>
-                  </label>
-                  <label className="flex items-start gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="actMode"
-                      checked={activateMode === "replace"}
-                      onChange={() => setActivateMode("replace")}
-                      className="mt-0.5 accent-amber-600"
-                    />
-                    <span>
-                      <b>Replace</b> {activatePrevCats.join(", ")} with{" "}
-                      {activateForm.category} on Farmers page
-                    </span>
-                  </label>
-                </div>
-              )}
+  {activateNeedsChoice && (
+    <div className="border border-amber-300 bg-amber-50 rounded-xl p-3 space-y-2">
+      <div className="font-bold text-amber-900">
+        Before: {activatePrevCats.join(", ")} → Now:{" "}
+        {activateForm.category}
+      </div>
+      <label className="flex items-start gap-2 cursor-pointer">
+        <input
+          type="radio"
+          name="actMode"
+          checked={activateMode === "add"}
+          onChange={() => setActivateMode("add")}
+          className="mt-0.5 accent-amber-600"
+        />
+        <span>
+          <b>Add</b> new {activateForm.category} batch (keep{" "}
+          {activatePrevCats.join(", ")})
+        </span>
+      </label>
+      <label className="flex items-start gap-2 cursor-pointer">
+        <input
+          type="radio"
+          name="actMode"
+          checked={activateMode === "replace"}
+          onChange={() => setActivateMode("replace")}
+          className="mt-0.5 accent-amber-600"
+        />
+        <span>
+          <b>Replace</b> {activatePrevCats.join(", ")} with{" "}
+          {activateForm.category} on Farmers page
+        </span>
+      </label>
+    </div>
+  )}
 
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Hatch Date *
-                </label>
-                <input
-                  type="date"
-                  value={activateForm.hatch_date}
-                  onChange={(e) =>
-                    setActivateForm({
-                      ...activateForm,
-                      hatch_date: e.target.value,
-                    })
-                  }
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none"
-                />
-              </div>
+  <div>
+    <label className="block font-bold text-slate-600 mb-1">
+      Hatch Date *
+    </label>
+    <input
+      type="date"
+      value={activateForm.hatch_date}
+      onChange={(e) =>
+        setActivateForm({
+          ...activateForm,
+          hatch_date: e.target.value,
+        })
+      }
+      className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none"
+    />
+  </div>
 
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Hatchery (All Companies) *
-                </label>
-                <select
-                  value={activateForm.hatchery}
-                  onChange={(e) =>
-                    setActivateForm({
-                      ...activateForm,
-                      hatchery: e.target.value,
-                    })
-                  }
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white outline-none"
-                >
-                  <option value="">Select Hatchery Company</option>
-                  {companies.map((c) => (
-                    <option key={c.id} value={c.company_name}>
-                      {c.company_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+  <div>
+    <label className="block font-bold text-slate-600 mb-1">
+      Hatchery (All Companies) *
+    </label>
+    <SearchableSelect
+      value={activateForm.hatchery}
+      onChange={(v) => setActivateForm({ ...activateForm, hatchery: v })}
+      placeholder="Select Hatchery Company"
+      options={companies.map((c) => ({
+        value: c.company_name,
+        label: c.company_name,
+      }))}
+    />
+  </div>
 
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Breed *
-                </label>
-                <select
-                  value={activateForm.breed}
-                  onChange={(e) =>
-                    setActivateForm({ ...activateForm, breed: e.target.value })
-                  }
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white outline-none"
-                >
-                  <option value="">Select Breed</option>
-                  {(BREEDS_BY_CATEGORY[activateForm.category] || []).map(
-                    (b) => (
-                      <option key={b} value={b}>
-                        {b}
-                      </option>
-                    )
-                  )}
-                </select>
-              </div>
+  <div>
+    <label className="block font-bold text-slate-600 mb-1">
+      Breed *
+    </label>
+    <SearchableSelect
+      value={activateForm.breed}
+      onChange={(v) => setActivateForm({ ...activateForm, breed: v })}
+      placeholder="Select Breed"
+      options={(BREEDS_BY_CATEGORY[activateForm.category] || []).map((b) => ({
+        value: b,
+        label: b,
+      }))}
+    />
+  </div>
 
-              <div className="grid grid-cols-2 gap-2.5">
-                <div>
-                  <label className="block font-bold text-slate-600 mb-1">
-                    Box No.
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Box No"
-                    value={activateForm.box_no}
-                    onChange={(e) =>
-                      setActivateForm({
-                        ...activateForm,
-                        box_no: e.target.value,
-                      })
-                    }
-                    className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block font-bold text-slate-600 mb-1">
-                    Total Birds / Qty *
-                  </label>
-                  <input
-                    type="number"
-                    placeholder="Total Birds"
-                    value={activateForm.t_birds}
-                    onChange={(e) =>
-                      setActivateForm({
-                        ...activateForm,
-                        t_birds: e.target.value,
-                      })
-                    }
-                    className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none"
-                  />
-                </div>
-              </div>
+  {activateForm.category === "Broiler" && (
+    <div>
+      <label className="block font-bold text-slate-600 mb-1">
+        Grade
+      </label>
+      <SearchableSelect
+        searchable={false}
+        value={activateForm.grade}
+        onChange={(v) => {
+          if (!v) return; // grade khali kora jabe na
+          setActivateForm({ ...activateForm, grade: v });
+        }}
+        placeholder="Select Grade"
+        options={[
+          { value: "AG", label: "AG" },
+          { value: "B+", label: "B+" },
+        ]}
+      />
+    </div>
+  )}
 
-              {!activateBulk && (
-                <div>
-                  <label className="block font-bold text-slate-600 mb-1">
-                    Batch Mark (Optional — Auto:{" "}
-                    {activateFarmer?.farmer_name} Batch{" "}
-                    {(activateFarmer?.allBatches?.length || 0) + 1})
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Optional custom note e.g. Shed-2"
-                    value={activateForm.batch_mark}
-                    onChange={(e) =>
-                      setActivateForm({
-                        ...activateForm,
-                        batch_mark: e.target.value,
-                      })
-                    }
-                    className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none"
-                  />
-                </div>
-              )}
+  <div className="grid grid-cols-2 gap-2.5">
+    <div>
+      <label className="block font-bold text-slate-600 mb-1">
+        Box No.
+      </label>
+      <input
+        type="text"
+        placeholder="Box No"
+        value={activateForm.box_no}
+        onChange={(e) =>
+          setActivateForm({
+            ...activateForm,
+            box_no: e.target.value,
+          })
+        }
+        className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none"
+      />
+    </div>
+    <div>
+      <label className="block font-bold text-slate-600 mb-1">
+        Total Birds / Qty *
+      </label>
+      <input
+        type="number"
+        placeholder="Total Birds"
+        value={activateForm.t_birds}
+        onChange={(e) =>
+          setActivateForm({
+            ...activateForm,
+            t_birds: e.target.value,
+          })
+        }
+        className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none"
+      />
+    </div>
+  </div>
 
-              <div className="flex justify-end gap-2 pt-3 border-t">
-                <button
-                  type="button"
-                  onClick={() => setShowActivateModal(false)}
-                  className="px-4 py-1.5 rounded-lg bg-slate-200 text-slate-700 font-semibold"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleActivateSubmit}
-                  className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-sm"
-                >
-                  Run Farm
-                </button>
-              </div>
-            </div>
+  {!activateBulk && (
+    <div>
+      <label className="block font-bold text-slate-600 mb-1">
+        Batch Mark (Optional — Auto:{" "}
+        {activateFarmer?.farmer_name} Batch{" "}
+        {(activateFarmer?.allBatches?.length || 0) + 1})
+      </label>
+      <input
+        type="text"
+        placeholder="Optional custom note e.g. Shed-2"
+        value={activateForm.batch_mark}
+        onChange={(e) =>
+          setActivateForm({
+            ...activateForm,
+            batch_mark: e.target.value,
+          })
+        }
+        className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none"
+      />
+    </div>
+  )}
+
+  <div className="flex justify-end gap-2 pt-3 border-t">
+    <button
+      type="button"
+      onClick={() => setShowActivateModal(false)}
+      className="px-4 py-1.5 rounded-lg bg-slate-200 text-slate-700 font-semibold"
+    >
+      Cancel
+    </button>
+    <button
+      type="button"
+      onClick={handleActivateSubmit}
+      className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-sm"
+    >
+      Run Farm
+    </button>
+  </div>
+</div>
           </div>
         </div>
       )}
@@ -5066,319 +5274,342 @@ ${currentUserProfile.region}`;
               </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Mortality (Pcs) *
-                </label>
-                <input
-                  type="number"
-                  required
-                  value={beforeForm.mortality_pcs}
-                  onChange={(e) =>
-                    updateBeforeCalculations({ mortality_pcs: e.target.value })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
+            {checkingDate ? (
+              <div className="py-10 text-center text-emerald-600 font-semibold text-xs">
+                Checking date...
               </div>
-
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Weight (g/b) *
-                </label>
-                <input
-                  type="number"
-                  required
-                  value={beforeForm.weight_gm_b}
-                  onChange={(e) =>
-                    updateBeforeCalculations({ weight_gm_b: e.target.value })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
-              </div>
-              <div>
-                <label className="block font-bold text-emerald-700 mb-1">
-                  Std. Weight (Day {activeAgeDays})
-                </label>
-                <input
-                  type="text"
-                  disabled
-                  value={
-                    activeMeatStd?.weight ? `${activeMeatStd.weight} g` : ""
-                  }
-                  className="w-full border border-emerald-200 rounded-lg px-2.5 py-1.5 bg-emerald-50/50 text-emerald-900 font-bold"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Total Feed (Kg) *
-                </label>
-                <input
-                  type="number"
-                  required
-                  value={beforeForm.feed_t_kg}
-                  onChange={(e) =>
-                    updateBeforeCalculations({ feed_t_kg: e.target.value })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
-              </div>
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Feed/Bird (g) [Auto]
-                </label>
-                <input
-                  type="text"
-                  disabled
-                  value={beforeForm.feed_gm_b}
-                  className="w-full border rounded-lg px-2.5 py-1.5 bg-slate-100 font-bold"
-                />
-              </div>
-              <div>
-                <label className="block font-bold text-emerald-700 mb-1">
-                  Std. Feed Intake
-                </label>
-                <input
-                  type="text"
-                  disabled
-                  value={
-                    activeMeatStd?.feed_intake
-                      ? `${activeMeatStd.feed_intake} g`
-                      : ""
-                  }
-                  className="w-full border border-emerald-200 rounded-lg px-2.5 py-1.5 bg-emerald-50/50 text-emerald-900 font-bold"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  FCR (Without Mort.)
-                </label>
-                <input
-                  type="text"
-                  disabled
-                  value={beforeForm.fcr_w_out_m}
-                  className="w-full border rounded-lg px-2.5 py-1.5 bg-slate-100 font-bold text-blue-700"
-                />
-              </div>
-              <div>
-                <label className="block font-bold text-emerald-700 mb-1">
-                  Std. FCR (W.out M)
-                </label>
-                <input
-                  type="text"
-                  disabled
-                  value={activeMeatStd?.fcr ? `${activeMeatStd.fcr}` : ""}
-                  className="w-full border border-emerald-200 rounded-lg px-2.5 py-1.5 bg-emerald-50/50 text-emerald-900 font-bold"
-                />
-              </div>
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  FCR (With Mort.)
-                </label>
-                <input
-                  type="text"
-                  disabled
-                  value={beforeForm.fcr_with_m}
-                  className="w-full border rounded-lg px-2.5 py-1.5 bg-slate-100 font-bold text-red-700"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-emerald-700 mb-1">
-                  Feed Company *
-                </label>
-                <select
-                  value={beforeForm.feed_company}
-                  onChange={(e) => {
-                    setBeforeForm({
-                      ...beforeForm,
-                      feed_company: e.target.value,
-                    });
-                    setTransferAgentId("");
-                  }}
-                  className="w-full border border-emerald-400 rounded-lg px-2.5 py-1.5 bg-white font-semibold"
-                >
-                  <option value="">Select Feed Company</option>
-                  {companies.map((c) => (
-                    <option key={c.id} value={c.company_name}>
-                      {c.company_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Feed Type *
-                </label>
-                <select
-                  value={beforeForm.feed_type}
-                  onChange={(e) =>
-                    setBeforeForm({ ...beforeForm, feed_type: e.target.value })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white"
-                >
-                  {activeFeedTypeOptions.map((ft) => (
-                    <option key={ft} value={ft}>
-                      {ft}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  MFG / Pro. Date
-                </label>
-                <input
-                  type="date"
-                  value={beforeForm.pro_date}
-                  onChange={(e) =>
-                    setBeforeForm({ ...beforeForm, pro_date: e.target.value })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Batch No.
-                </label>
-                <input
-                  type="text"
-                  value={beforeForm.batch_no}
-                  onChange={(e) =>
-                    setBeforeForm({ ...beforeForm, batch_no: e.target.value })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Indigestion (%)
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. 5"
-                  value={beforeForm.indigestion}
-                  onChange={(e) =>
-                    setBeforeForm({
-                      ...beforeForm,
-                      indigestion: e.target.value,
-                    })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
-              </div>
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Orange Faeces (%)
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. 5"
-                  value={beforeForm.orange_feces}
-                  onChange={(e) =>
-                    setBeforeForm({
-                      ...beforeForm,
-                      orange_feces: e.target.value,
-                    })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
-              </div>
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Watery Faeces (%)
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. 5"
-                  value={beforeForm.watery_feces}
-                  onChange={(e) =>
-                    setBeforeForm({
-                      ...beforeForm,
-                      watery_feces: e.target.value,
-                    })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
-              </div>
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Uneven (%)
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. 5"
-                  value={beforeForm.uneven}
-                  onChange={(e) =>
-                    setBeforeForm({ ...beforeForm, uneven: e.target.value })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
-              </div>
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Litter Condition
-                </label>
-                <input
-                  type="text"
-                  value={beforeForm.litter_condition}
-                  onChange={(e) =>
-                    setBeforeForm({
-                      ...beforeForm,
-                      litter_condition: e.target.value,
-                    })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
-              </div>
-
-              {beforeChangedComp && (
-                <div className="col-span-2 sm:col-span-3 bg-amber-50 border border-amber-300 rounded-xl p-3 space-y-1.5">
-                  <div className="text-xs font-bold text-amber-900">
-                    Feed Company Changed to {beforeChangedComp.company_name}!
-                    Select Agent under {beforeChangedComp.company_name}:
-                  </div>
-                  <select
-                    value={transferAgentId}
-                    onChange={(e) => setTransferAgentId(e.target.value)}
-                    className="w-full border border-amber-400 rounded-lg px-3 py-1.5 bg-white text-xs font-semibold"
-                  >
-                    <option value="">-- Select Agent --</option>
-                    {allAgents
-                      .filter(
-                        (a) =>
-                          String(a.company_id) === String(beforeChangedComp.id)
-                      )
-                      .map((ag) => (
-                        <option key={ag.id} value={String(ag.id)}>
-                          {ag.agent_name} ({ag.upazila})
-                        </option>
-                      ))}
-                  </select>
+            ) : existingReportOnDate ? (
+              <div className="flex flex-col items-center justify-center p-8 bg-amber-50 border border-amber-200 rounded-xl text-center space-y-3">
+                <div className="text-amber-900 font-bold text-sm">
+                  Already a report on this date!
                 </div>
-              )}
-
-              <div className="col-span-2 sm:col-span-3">
-                <label className="block font-bold text-slate-600 mb-1">
-                  Remarks
-                </label>
-                <input
-                  type="text"
-                  placeholder="Write observation remarks..."
-                  value={beforeForm.remarks}
-                  onChange={(e) =>
-                    setBeforeForm({ ...beforeForm, remarks: e.target.value })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
+                
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowBeforeSaleModal(false);
+                    handleHistoryClick(activeReportVisit, activeReportVisit.farmers);
+                  }}
+                  className="mt-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm transition"
+                >
+                  Show the report from history
+                </button>
               </div>
-            </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Mortality (Pcs) *
+                    </label>
+                    <input
+                      type="number"
+                      required
+                      value={beforeForm.mortality_pcs}
+                      onChange={(e) =>
+                        updateBeforeCalculations({ mortality_pcs: e.target.value })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Weight (g/b) *
+                    </label>
+                    <input
+                      type="number"
+                      required
+                      value={beforeForm.weight_gm_b}
+                      onChange={(e) =>
+                        updateBeforeCalculations({ weight_gm_b: e.target.value })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-emerald-700 mb-1">
+                      Std. Weight (Day {activeAgeDays})
+                    </label>
+                    <input
+                      type="text"
+                      disabled
+                      value={
+                        activeMeatStd?.weight ? `${activeMeatStd.weight} g` : ""
+                      }
+                      className="w-full border border-emerald-200 rounded-lg px-2.5 py-1.5 bg-emerald-50/50 text-emerald-900 font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Total Feed (Kg) *
+                    </label>
+                    <input
+                      type="number"
+                      required
+                      value={beforeForm.feed_t_kg}
+                      onChange={(e) =>
+                        updateBeforeCalculations({ feed_t_kg: e.target.value })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Feed/Bird (g) [Auto]
+                    </label>
+                    <input
+                      type="text"
+                      disabled
+                      value={beforeForm.feed_gm_b}
+                      className="w-full border rounded-lg px-2.5 py-1.5 bg-slate-100 font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-emerald-700 mb-1">
+                      Std. Feed Intake
+                    </label>
+                    <input
+                      type="text"
+                      disabled
+                      value={
+                        activeMeatStd?.feed_intake
+                          ? `${activeMeatStd.feed_intake} g`
+                          : ""
+                      }
+                      className="w-full border border-emerald-200 rounded-lg px-2.5 py-1.5 bg-emerald-50/50 text-emerald-900 font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      FCR (Without Mort.)
+                    </label>
+                    <input
+                      type="text"
+                      disabled
+                      value={beforeForm.fcr_w_out_m}
+                      className="w-full border rounded-lg px-2.5 py-1.5 bg-slate-100 font-bold text-blue-700"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-emerald-700 mb-1">
+                      Std. FCR (W.out M)
+                    </label>
+                    <input
+                      type="text"
+                      disabled
+                      value={activeMeatStd?.fcr ? `${activeMeatStd.fcr}` : ""}
+                      className="w-full border border-emerald-200 rounded-lg px-2.5 py-1.5 bg-emerald-50/50 text-emerald-900 font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      FCR (With Mort.)
+                    </label>
+                    <input
+                      type="text"
+                      disabled
+                      value={beforeForm.fcr_with_m}
+                      className="w-full border rounded-lg px-2.5 py-1.5 bg-slate-100 font-bold text-red-700"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-emerald-700 mb-1">
+                      Feed Company *
+                    </label>
+                    <SearchableSelect
+                      value={beforeForm.feed_company}
+                      onChange={(v) => {
+                        setBeforeForm({
+                          ...beforeForm,
+                          feed_company: v,
+                        });
+                        setTransferAgentId("");
+                      }}
+                      placeholder="Select Feed Company"
+                      options={companies.map((c) => ({
+                        value: c.company_name,
+                        label: c.company_name,
+                      }))}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Feed Type *
+                    </label>
+                    <SearchableSelect
+                    searchable={false}
+                      value={beforeForm.feed_type}
+                      onChange={(v) =>
+                        setBeforeForm({ ...beforeForm, feed_type: v })
+                      }
+                      placeholder="Select Feed Type"
+                      options={activeFeedTypeOptions.map((ft) => ({
+                        value: ft,
+                        label: ft,
+                      }))}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      MFG / Pro. Date
+                    </label>
+                    <input
+                      type="date"
+                      value={beforeForm.pro_date}
+                      onChange={(e) =>
+                        setBeforeForm({ ...beforeForm, pro_date: e.target.value })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Batch No.
+                    </label>
+                    <input
+                      type="text"
+                      value={beforeForm.batch_no}
+                      onChange={(e) =>
+                        setBeforeForm({ ...beforeForm, batch_no: e.target.value })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Indigestion (%)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 5"
+                      value={beforeForm.indigestion}
+                      onChange={(e) =>
+                        setBeforeForm({
+                          ...beforeForm,
+                          indigestion: e.target.value,
+                        })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Orange Faeces (%)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 5"
+                      value={beforeForm.orange_feces}
+                      onChange={(e) =>
+                        setBeforeForm({
+                          ...beforeForm,
+                          orange_feces: e.target.value,
+                        })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Watery Faeces (%)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 5"
+                      value={beforeForm.watery_feces}
+                      onChange={(e) =>
+                        setBeforeForm({
+                          ...beforeForm,
+                          watery_feces: e.target.value,
+                        })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Uneven (%)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 5"
+                      value={beforeForm.uneven}
+                      onChange={(e) =>
+                        setBeforeForm({ ...beforeForm, uneven: e.target.value })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Litter Condition
+                    </label>
+                    <input
+                      type="text"
+                      value={beforeForm.litter_condition}
+                      onChange={(e) =>
+                        setBeforeForm({
+                          ...beforeForm,
+                          litter_condition: e.target.value,
+                        })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+
+                  {beforeChangedComp && (
+                    <div className="col-span-2 sm:col-span-3 bg-amber-50 border border-amber-300 rounded-xl p-3 space-y-1.5">
+                      <div className="text-xs font-bold text-amber-900">
+                        Feed Company Changed to {beforeChangedComp.company_name}!
+                        Select Agent under {beforeChangedComp.company_name}:
+                      </div>
+                      <select
+                        value={transferAgentId}
+                        onChange={(e) => setTransferAgentId(e.target.value)}
+                        className="w-full border border-amber-400 rounded-lg px-3 py-1.5 bg-white text-xs font-semibold"
+                      >
+                        <option value="">-- Select Agent --</option>
+                        {allAgents
+                          .filter(
+                            (a) =>
+                              String(a.company_id) === String(beforeChangedComp.id)
+                          )
+                          .map((ag) => (
+                            <option key={ag.id} value={String(ag.id)}>
+                              {ag.agent_name} ({ag.upazila})
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div className="col-span-2 sm:col-span-3">
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Remarks
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Write observation remarks..."
+                      value={beforeForm.remarks}
+                      onChange={(e) =>
+                        setBeforeForm({ ...beforeForm, remarks: e.target.value })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+                </div>
+
+                
+              </>
+            )}
 
             <div className="flex flex-wrap justify-between items-center gap-2 pt-3 border-t">
               <div className="flex items-center gap-2">
@@ -5406,7 +5637,7 @@ ${currentUserProfile.region}`;
                   }
                   className="px-3.5 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-bold shadow-sm"
                 >
-                  Generate WhatsApp Msg
+                  WhatsApp Msg
                 </button>
               </div>
 
@@ -5624,44 +5855,40 @@ ${currentUserProfile.region}`;
                 />
               </div>
 
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Feed Company *
-                </label>
-                <select
-                  value={afterForm.feed_mill}
-                  onChange={(e) => {
-                    setAfterForm({ ...afterForm, feed_mill: e.target.value });
-                    setTransferAgentId("");
-                  }}
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white"
-                >
-                  <option value="">Select Feed Company</option>
-                  {companies.map((c) => (
-                    <option key={c.id} value={c.company_name}>
-                      {c.company_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+             <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Feed Company *
+                    </label>
+                    <SearchableSelect
+                      value={afterForm.feed_mill}
+                      onChange={(v) => {
+                        setAfterForm({ ...afterForm, feed_mill: v });
+                        setTransferAgentId("");
+                      }}
+                      placeholder="Select Feed Company"
+                      options={companies.map((c) => ({
+                        value: c.company_name,
+                        label: c.company_name,
+                      }))}
+                    />
+                  </div>
 
               <div>
                 <label className="block font-bold text-slate-600 mb-1">
                   Last Feed *
                 </label>
-                <select
+                <SearchableSelect
+                searchable={false}
                   value={afterForm.feed}
-                  onChange={(e) =>
-                    setAfterForm({ ...afterForm, feed: e.target.value })
+                  onChange={(v) =>
+                    setAfterForm({ ...afterForm, feed: v })
                   }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white"
-                >
-                  {activeFeedTypeOptions.map((ft) => (
-                    <option key={ft} value={ft}>
-                      {ft}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="Select Feed Type"
+                  options={activeFeedTypeOptions.map((ft) => ({
+                    value: ft,
+                    label: ft,
+                  }))}
+                />
               </div>
 
               {afterChangedComp && (
@@ -5827,289 +6054,337 @@ ${currentUserProfile.region}`;
               </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
-              <div>
-                <label className="block font-bold text-red-700 mb-1">
-                  Mortality (Pcs) *
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  required
-                  value={layerForm.mortality_pcs}
-                  onChange={(e) => {
-                    const mVal = e.target.value;
-                    setLayerForm((prev) => ({ ...prev, mortality_pcs: mVal }));
-                    if (layerForm.feed_total_kg) {
-                      handleLayerFeedChange(
-                        "total_kg",
-                        layerForm.feed_total_kg,
-                        mVal
-                      );
-                    }
-                  }}
-                  className="w-full border border-red-300 rounded-lg px-2.5 py-1.5 font-bold"
-                />
+            {checkingDate ? (
+              <div className="py-10 text-center text-indigo-600 font-semibold text-xs">
+                Checking date...
               </div>
-
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Body Weight (g) *
-                </label>
-                <input
-                  type="number"
-                  required
-                  value={layerForm.b_weight_g}
-                  onChange={(e) =>
-                    setLayerForm({ ...layerForm, b_weight_g: e.target.value })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
-              </div>
-              <div>
-                <label className="block font-bold text-indigo-700 mb-1">
-                  Std. Weight (Week {activeAgeWeeks})
-                </label>
-                <input
-                  type="text"
-                  disabled
-                  value={
-                    activeLayerStd ? `${activeLayerStd.weight} g` : "N/A"
-                  }
-                  className="w-full border border-indigo-200 rounded-lg px-2.5 py-1.5 bg-indigo-50/50 text-indigo-900 font-bold"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Feed Intake (Total Kg/Day) *
-                </label>
-                <input
-                  type="number"
-                  placeholder="Enter Total Kg"
-                  value={layerForm.feed_total_kg}
-                  onChange={(e) =>
-                    handleLayerFeedChange("total_kg", e.target.value)
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
-              </div>
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Feed (gm/bird/day) *
-                </label>
-                <input
-                  type="number"
-                  placeholder="Or gm/bird/day"
-                  value={layerForm.feed_intake_g}
-                  onChange={(e) =>
-                    handleLayerFeedChange("gm_bird", e.target.value)
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 font-bold"
-                />
-              </div>
-              <div>
-                <label className="block font-bold text-indigo-700 mb-1">
-                  Std. Feed (gm/b/d)
-                </label>
-                <input
-                  type="text"
-                  disabled
-                  value={
-                    activeLayerStd
-                      ? `${activeLayerStd.feed_bird_day} g`
-                      : "N/A"
-                  }
-                  className="w-full border border-indigo-200 rounded-lg px-2.5 py-1.5 bg-indigo-50/50 text-indigo-900 font-bold"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Egg Production (%) *
-                </label>
-                <input
-                  type="number"
-                  required
-                  value={layerForm.egg_production}
-                  onChange={(e) =>
-                    setLayerForm({
-                      ...layerForm,
-                      egg_production: e.target.value,
-                    })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
-              </div>
-              <div className="sm:col-span-2">
-                <label className="block font-bold text-indigo-700 mb-1">
-                  Std. Egg Production (%)
-                </label>
-                <input
-                  type="text"
-                  disabled
-                  value={
-                    activeLayerStd
-                      ? `${activeLayerStd.egg_production}%`
-                      : "N/A"
-                  }
-                  className="w-full border border-indigo-200 rounded-lg px-2.5 py-1.5 bg-indigo-50/50 text-indigo-900 font-bold"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Egg Weight (g) *
-                </label>
-                <input
-                  type="number"
-                  required
-                  value={layerForm.egg_weight}
-                  onChange={(e) =>
-                    setLayerForm({ ...layerForm, egg_weight: e.target.value })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
-              </div>
-              <div className="sm:col-span-2">
-                <label className="block font-bold text-indigo-700 mb-1">
-                  Std. Egg Weight (g)
-                </label>
-                <input
-                  type="text"
-                  disabled
-                  value={
-                    activeLayerStd ? `${activeLayerStd.egg_weight} g` : "N/A"
-                  }
-                  className="w-full border border-indigo-200 rounded-lg px-2.5 py-1.5 bg-indigo-50/50 text-indigo-900 font-bold"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-indigo-800 mb-1">
-                  Feed Company *
-                </label>
-                <select
-                  value={layerForm.feed_company}
-                  onChange={(e) => {
-                    setLayerForm({
-                      ...layerForm,
-                      feed_company: e.target.value,
-                    });
-                    setTransferAgentId("");
-                  }}
-                  className="w-full border border-indigo-300 rounded-lg px-2.5 py-1.5 bg-white font-semibold"
-                >
-                  <option value="">Select Feed Company</option>
-                  {companies.map((c) => (
-                    <option key={c.id} value={c.company_name}>
-                      {c.company_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Feed Type *
-                </label>
-                <select
-                  value={layerForm.feed_type}
-                  onChange={(e) =>
-                    setLayerForm({ ...layerForm, feed_type: e.target.value })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white"
-                >
-                  {UPDATED_FEED_TYPES_BY_CATEGORY["Layer"].map((ft) => (
-                    <option key={ft} value={ft}>
-                      {ft}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  MFG / Pro. Date
-                </label>
-                <input
-                  type="date"
-                  value={layerForm.pro_date}
-                  onChange={(e) =>
-                    setLayerForm({ ...layerForm, pro_date: e.target.value })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Batch No.
-                </label>
-                <input
-                  type="text"
-                  value={layerForm.batch_no}
-                  onChange={(e) =>
-                    setLayerForm({ ...layerForm, batch_no: e.target.value })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
-              </div>
-
-              <div className="sm:col-span-2">
-                <label className="block font-bold text-slate-600 mb-1">
-                  Disease / Observation
-                </label>
-                <input
-                  type="text"
-                  value={layerForm.disease}
-                  onChange={(e) =>
-                    setLayerForm({ ...layerForm, disease: e.target.value })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
-              </div>
-
-              {layerChangedComp && (
-                <div className="col-span-2 sm:col-span-3 bg-amber-50 border border-amber-300 rounded-xl p-2.5 space-y-1.5">
-                  <div className="text-xs font-bold text-amber-900">
-                    Select Agent under {layerChangedComp.company_name}:
-                  </div>
-                  <select
-                    value={transferAgentId}
-                    onChange={(e) => setTransferAgentId(e.target.value)}
-                    className="w-full border border-amber-400 rounded px-2 py-1 bg-white text-xs font-semibold"
-                  >
-                    <option value="">-- Select Agent --</option>
-                    {allAgents
-                      .filter(
-                        (a) =>
-                          String(a.company_id) === String(layerChangedComp.id)
-                      )
-                      .map((ag) => (
-                        <option key={ag.id} value={String(ag.id)}>
-                          {ag.agent_name} ({ag.upazila})
-                        </option>
-                      ))}
-                  </select>
+            ) : existingReportOnDate ? (
+              <div className="flex flex-col items-center justify-center p-8 bg-amber-50 border border-amber-200 rounded-xl text-center space-y-3">
+                
+                <div className="text-amber-900 font-bold text-sm">
+                  Already a report on this date!
                 </div>
-              )}
-
-              <div className="col-span-2 sm:col-span-3">
-                <label className="block font-bold text-slate-600 mb-1">
-                  Remarks
-                </label>
-                <input
-                  type="text"
-                  placeholder="Write observation remarks..."
-                  value={layerForm.remarks}
-                  onChange={(e) =>
-                    setLayerForm({ ...layerForm, remarks: e.target.value })
-                  }
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
-                />
+                
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowLayerModal(false);
+                    handleHistoryClick(activeReportVisit, activeReportVisit.farmers);
+                  }}
+                  className="mt-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm transition"
+                >
+                  Show the report from history
+                </button>
               </div>
-            </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
+                  <div>
+                    <label className="block font-bold text-red-700 mb-1">
+                      Mortality (Pcs) *
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      required
+                      value={layerForm.mortality_pcs}
+                      onChange={(e) => {
+                        const mVal = e.target.value;
+                        setLayerForm((prev) => ({ ...prev, mortality_pcs: mVal }));
+                        if (layerForm.feed_total_kg) {
+                          handleLayerFeedChange(
+                            "total_kg",
+                            layerForm.feed_total_kg,
+                            mVal
+                          );
+                        }
+                      }}
+                      className="w-full border border-red-300 rounded-lg px-2.5 py-1.5 font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Body Weight (g) *
+                    </label>
+                    <input
+                      type="number"
+                      required
+                      value={layerForm.b_weight_g}
+                      onChange={(e) =>
+                        setLayerForm({ ...layerForm, b_weight_g: e.target.value })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-indigo-700 mb-1">
+                      Std. Weight (Week {activeAgeWeeks})
+                    </label>
+                    <input
+                      type="text"
+                      disabled
+                      value={
+                        activeLayerStd ? `${activeLayerStd.weight} g` : "N/A"
+                      }
+                      className="w-full border border-indigo-200 rounded-lg px-2.5 py-1.5 bg-indigo-50/50 text-indigo-900 font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Feed Intake (Total Kg/Day) *
+                    </label>
+                    <input
+                      type="number"
+                      placeholder="Enter Total Kg"
+                      value={layerForm.feed_total_kg}
+                      onChange={(e) =>
+                        handleLayerFeedChange("total_kg", e.target.value)
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Feed (gm/bird/day) *
+                    </label>
+                    <input
+                      type="number"
+                      placeholder="Or gm/bird/day"
+                      value={layerForm.feed_intake_g}
+                      onChange={(e) =>
+                        handleLayerFeedChange("gm_bird", e.target.value)
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-indigo-700 mb-1">
+                      Std. Feed (gm/b/d)
+                    </label>
+                    <input
+                      type="text"
+                      disabled
+                      value={
+                        activeLayerStd
+                          ? `${activeLayerStd.feed_bird_day} g`
+                          : "N/A"
+                      }
+                      className="w-full border border-indigo-200 rounded-lg px-2.5 py-1.5 bg-indigo-50/50 text-indigo-900 font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Egg Production (%) *
+                    </label>
+                    <input
+                      type="number"
+                      required
+                      value={layerForm.egg_production}
+                      onChange={(e) =>
+                        setLayerForm({
+                          ...layerForm,
+                          egg_production: e.target.value,
+                        })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block font-bold text-indigo-700 mb-1">
+                      Std. Egg Production (%)
+                    </label>
+                    <input
+                      type="text"
+                      disabled
+                      value={
+                        activeLayerStd
+                          ? `${activeLayerStd.egg_production}%`
+                          : "N/A"
+                      }
+                      className="w-full border border-indigo-200 rounded-lg px-2.5 py-1.5 bg-indigo-50/50 text-indigo-900 font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Egg Weight (g) *
+                    </label>
+                    <input
+                      type="number"
+                      required
+                      value={layerForm.egg_weight}
+                      onChange={(e) =>
+                        setLayerForm({ ...layerForm, egg_weight: e.target.value })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block font-bold text-indigo-700 mb-1">
+                      Std. Egg Weight (g)
+                    </label>
+                    <input
+                      type="text"
+                      disabled
+                      value={
+                        activeLayerStd ? `${activeLayerStd.egg_weight} g` : "N/A"
+                      }
+                      className="w-full border border-indigo-200 rounded-lg px-2.5 py-1.5 bg-indigo-50/50 text-indigo-900 font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-indigo-800 mb-1">
+                      Feed Company *
+                    </label>
+                    <SearchableSelect
+                      value={layerForm.feed_company}
+                      onChange={(v) => {
+                        setLayerForm({
+                          ...layerForm,
+                          feed_company: v,
+                        });
+                        setTransferAgentId("");
+                      }}
+                      placeholder="Select Feed Company"
+                      options={companies.map((c) => ({
+                        value: c.company_name,
+                        label: c.company_name,
+                      }))}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Feed Type *
+                    </label>
+                    <SearchableSelect
+                    searchable={false}
+                      value={layerForm.feed_type}
+                      onChange={(v) =>
+                        setLayerForm({ ...layerForm, feed_type: v })
+                      }
+                      placeholder="Select Feed Type"
+                      options={UPDATED_FEED_TYPES_BY_CATEGORY["Layer"].map((ft) => ({
+                        value: ft,
+                        label: ft,
+                      }))}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      MFG / Pro. Date
+                    </label>
+                    <input
+                      type="date"
+                      value={layerForm.pro_date}
+                      onChange={(e) =>
+                        setLayerForm({ ...layerForm, pro_date: e.target.value })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Batch No.
+                    </label>
+                    <input
+                      type="text"
+                      value={layerForm.batch_no}
+                      onChange={(e) =>
+                        setLayerForm({ ...layerForm, batch_no: e.target.value })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Disease / Observation
+                    </label>
+                    <input
+                      type="text"
+                      value={layerForm.disease}
+                      onChange={(e) =>
+                        setLayerForm({ ...layerForm, disease: e.target.value })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+
+                  {layerChangedComp && (
+                    <div className="col-span-2 sm:col-span-3 bg-amber-50 border border-amber-300 rounded-xl p-2.5 space-y-1.5">
+                      <div className="text-xs font-bold text-amber-900">
+                        Select Agent under {layerChangedComp.company_name}:
+                      </div>
+                      <select
+                        value={transferAgentId}
+                        onChange={(e) => setTransferAgentId(e.target.value)}
+                        className="w-full border border-amber-400 rounded px-2 py-1 bg-white text-xs font-semibold"
+                      >
+                        <option value="">-- Select Agent --</option>
+                        {allAgents
+                          .filter(
+                            (a) =>
+                              String(a.company_id) === String(layerChangedComp.id)
+                          )
+                          .map((ag) => (
+                            <option key={ag.id} value={String(ag.id)}>
+                              {ag.agent_name} ({ag.upazila})
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div className="col-span-2 sm:col-span-3">
+                    <label className="block font-bold text-slate-600 mb-1">
+                      Remarks
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Write observation remarks..."
+                      value={layerForm.remarks}
+                      onChange={(e) =>
+                        setLayerForm({ ...layerForm, remarks: e.target.value })
+                      }
+                      className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5"
+                    />
+                  </div>
+                </div>
+
+                {showCullReasonInput && (
+                  <div className="bg-red-50 border border-red-300 rounded-xl p-3 space-y-2 text-xs">
+                    <label className="block font-bold text-red-900">
+                      Reason for Culling *
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="Write reason why this batch is being culled..."
+                        value={cullReasonText}
+                        onChange={(e) => setCullReasonText(e.target.value)}
+                        className="flex-1 border border-red-300 rounded-lg px-2.5 py-1.5 bg-white outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleLayerReportSubmit(true)}
+                        className="px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold shrink-0 shadow-sm"
+                      >
+                        Confirm Culled
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                
+              </>
+            )}
 
             {showCullReasonInput && (
               <div className="bg-red-50 border border-red-300 rounded-xl p-3 space-y-2 text-xs">
@@ -6158,10 +6433,25 @@ ${currentUserProfile.region}`;
                   }
                   className="px-3.5 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-bold shadow-sm"
                 >
-                  Generate WhatsApp Msg
+                  WhatsApp Msg
                 </button>
 
-                {!editingReportId && (
+                <button
+                  type="button"
+                  onClick={() => handleLayerReportSubmit(false)}
+                  className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold"
+                >
+                  {editingReportId
+                    ? "Update Layer Report"
+                    : "Save Layer Report"}
+                </button>
+
+                
+              </div>
+
+              <div className="flex gap-2">
+                  
+                  {!editingReportId && (
                   <button
                     type="button"
                     disabled={showCullReasonInput}
@@ -6175,9 +6465,7 @@ ${currentUserProfile.region}`;
                     Culled
                   </button>
                 )}
-              </div>
 
-              <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={() => {
@@ -6188,15 +6476,7 @@ ${currentUserProfile.region}`;
                 >
                   Cancel
                 </button>
-                <button
-                  type="button"
-                  onClick={() => handleLayerReportSubmit(false)}
-                  className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold"
-                >
-                  {editingReportId
-                    ? "Update Layer Report"
-                    : "Save Layer Report"}
-                </button>
+                
               </div>
             </div>
           </div>

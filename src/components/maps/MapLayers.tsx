@@ -4,9 +4,6 @@ import {
 } from "react-leaflet";
 
 export default function MapLayers() {
-  const mapKey =
-    import.meta.env
-      .VITE_MAPTILER_KEY;
 
   return (
     <LayersControl position="topright">
@@ -18,8 +15,9 @@ export default function MapLayers() {
         name="🗺 Normal"
       >
         <TileLayer
-          attribution="© OpenStreetMap"
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          url="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}"
+          maxZoom={20}
+          attribution="&copy; Google Maps"
         />
       </LayersControl.BaseLayer>
 
@@ -29,8 +27,9 @@ export default function MapLayers() {
         name="🛰 Satellite"
       >
         <TileLayer
-          attribution="© MapTiler"
-          url={`https://api.maptiler.com/maps/satellite/{z}/{x}/{y}.jpg?key=${mapKey}`}
+          url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
+          maxZoom={20}
+          attribution="&copy; Google Maps"
         />
       </LayersControl.BaseLayer>
 
@@ -40,8 +39,9 @@ export default function MapLayers() {
         name="🌍 Hybrid"
       >
         <TileLayer
-          attribution="© MapTiler"
-          url={`https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=${mapKey}`}
+          url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
+          maxZoom={20}
+          attribution="&copy; Google Maps"
         />
       </LayersControl.BaseLayer>
 

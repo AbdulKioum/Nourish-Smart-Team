@@ -25,6 +25,9 @@ import FarmerStatusPage from "../pages/farmers/FarmerStatusPage";
 import DocAgentsPage from "../pages/doc/DocAgentsPage";
 import DocTrackingPage from "../pages/doc/DocTrackingPage";
 import FarmerTrackingPage from "../pages/farmers/FarmerTrackingPage"; 
+import AgentTrackingPage from "../pages/agents/AgentTrackingPage";
+
+
 
 import {
   setupGlobalNativeGeolocation,
@@ -209,6 +212,7 @@ export default function AppRoutes() {
           <Route path="/doc-agents" element={<DocAgentsPage />} />
           <Route path="/doc-tracking" element={<DocTrackingPage />} />
           <Route path="/farmer-tracking" element={<FarmerTrackingPage />} />
+          <Route path="/agent-tracking" element={<AgentTrackingPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

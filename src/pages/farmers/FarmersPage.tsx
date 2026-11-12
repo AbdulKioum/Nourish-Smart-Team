@@ -38,6 +38,24 @@ import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
 import { Capacitor } from "@capacitor/core";
 import { Geolocation } from "@capacitor/geolocation";
+import SearchableSelect from "../../components/common/SearchableSelect";
+
+
+
+function FitBounds({ locations }: { locations: { lat: number; lng: number }[] }) {
+  const map = useMap();
+
+  useEffect(() => {
+   
+    if (!locations || locations.length === 0) return;
+
+    const bounds = L.latLngBounds(locations.map((loc) => [loc.lat, loc.lng]));
+
+    map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+  }, [locations, map]);
+
+  return null;
+}
 
 
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -159,14 +177,14 @@ function buildCustomFarmMarker(farmer: any) {
   const html = `
     <div style="display:flex;flex-direction:column;align-items:center;transform:translateY(-14px);">
       <div style="position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;">
-        <span style="font-size:24px;line-height:1;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.35));">${emoji}</span>
+        <span style="font-size:20px;line-height:1;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.35));">${emoji}</span>
         ${
           logoUrl
             ? `<img src="${logoUrl}" onload="if(this.naturalWidth > this.naturalHeight * 1.3){this.style.width='44px';this.style.height='auto';this.style.maxHeight='20px';}else{this.style.width='22px';this.style.height='22px';}" style="margin-top:1px;width:24px;height:22px;object-fit:contain;background:rgba(255,255,255,0.92);padding:1px 2px;border-radius:3px;box-shadow:0 1px 2px rgba(0,0,0,0.2);" />`
             : ""
         }
       </div>
-      <div style="margin-top:2px;background:rgba(255,255,255,0.95);border:1px solid ${border};color:#0f172a;font-size:10px;font-weight:700;padding:0px 5px;border-radius:4px;white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,0.15);">
+      <div style="margin-top:2px;background:rgba(252, 244, 236, 0.95);border:1px solid ${border};color:#314158;font-size:10px;font-weight:700;padding:0px 5px;border-radius:4px;white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,0.15);">
         ${safeName}
       </div>
     </div>
@@ -268,6 +286,8 @@ export default function FarmersPage() {
   const [myPosition, setMyPosition] = useState<[number, number] | null>(null);
   const farmerMarkerRefs = useRef<Record<number, L.Marker | null>>({});
   const myLocationMarkerRef = useRef<L.Marker | null>(null);
+
+  
 
   async function loadData() {
     const {
@@ -1698,105 +1718,81 @@ async function saveBufferOrBlob(bufferOrBlob: ArrayBuffer | Blob, fileName: stri
             />
           </div>
 
-          <select
-            value={districtFilter}
-            onChange={(e) => {
-              setDistrictFilter(e.target.value);
-              setUpazilaFilter("");
-              setUnionFilter("");
-              setAgentFilter("");
-            }}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
-          >
-            <option value="">All Districts</option>
-            {districts.map((d) => (
-              <option key={d.id} value={d.name}>
-                {d.name}
-              </option>
-            ))}
-          </select>
+          <SearchableSelect
+          searchable={false}
+  value={districtFilter}
+  onChange={(v) => {
+    setDistrictFilter(v);
+    setUpazilaFilter("");
+    setUnionFilter("");
+    setAgentFilter("");
+  }}
+  placeholder="All Districts"
+  options={districts.map((d) => ({ value: d.name, label: d.name }))}
+/>
 
-          <select
-            value={upazilaFilter}
-            onChange={(e) => {
-              setUpazilaFilter(e.target.value);
-              setUnionFilter("");
-              setAgentFilter("");
-            }}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
-          >
-            <option value="">All Upazilas</option>
-            {filterUpazilas.map((u: any) => (
-              <option key={u.id} value={u.name}>
-                {u.name}
-              </option>
-            ))}
-          </select>
+<SearchableSelect
+  value={upazilaFilter}
+  onChange={(v) => {
+    setUpazilaFilter(v);
+    setUnionFilter("");
+    setAgentFilter("");
+  }}
+  placeholder="All Upazilas"
+  options={filterUpazilas.map((u: any) => ({ value: u.name, label: u.name }))}
+/>
 
-          <select
-            value={unionFilter}
-            onChange={(e) => setUnionFilter(e.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
-          >
-            <option value="">All Unions</option>
-            {filterUnions.map((u: any) => (
-              <option key={u.id} value={u.name}>
-                {u.name}
-              </option>
-            ))}
-          </select>
+<SearchableSelect
+  value={unionFilter}
+  onChange={setUnionFilter}
+  placeholder="All Unions"
+  options={filterUnions.map((u: any) => ({ value: u.name, label: u.name }))}
+/>
 
-          <select
-            value={farmCategoryFilter}
-            onChange={(e) => setFarmCategoryFilter(e.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
-          >
-            <option value="">All Categories</option>
-            <option value="Poultry">🐔 Poultry</option>
-            <option value="Cattle">🐄 Cattle</option>
-            <option value="Fish">🐟 Fish</option>
-          </select>
+<SearchableSelect
+searchable={false}
+  value={farmCategoryFilter}
+  onChange={setFarmCategoryFilter}
+  placeholder="All Categories"
+  options={[
+    { value: "Poultry", label: "🐔 Poultry" },
+    { value: "Cattle", label: "🐄 Cattle" },
+    { value: "Fish", label: "🐟 Fish" },
+  ]}
+/>
 
-          <select
-            value={companyFilter}
-            onChange={(e) => {
-              setCompanyFilter(e.target.value);
-              setAgentFilter("");
-            }}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
-          >
-            <option value="">All Companies</option>
-            {companies.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.company_name}
-              </option>
-            ))}
-          </select>
+<SearchableSelect
+  value={companyFilter}
+  onChange={(v) => {
+    setCompanyFilter(v);
+    setAgentFilter("");
+  }}
+  placeholder="All Companies"
+  options={companies.map((c) => ({ value: String(c.id), label: c.company_name }))}
+/>
 
-          <div className="flex items-center gap-1.5">
-            <select
-              value={agentFilter}
-              onChange={(e) => setAgentFilter(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
-            >
-              <option value="">All Agents</option>
-              {availableFilterAgents.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.agent_name}
-                </option>
-              ))}
-            </select>
+<div className="flex items-center gap-1.5">
+  <SearchableSelect
+    className="w-full"
+    value={agentFilter}
+    onChange={setAgentFilter}
+    placeholder="All Agents"
+    options={availableFilterAgents.map((a) => ({
+      value: String(a.id),
+      label: a.agent_name,
+    }))}
+  />
 
-            <button
-              onClick={clearFilters}
-              title="Reset Filters"
-              className="shrink-0 inline-flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition"
-            >
-              <RotateCcw size={13} />
-            </button>
-          </div>
-        </div>
-      </div>
+  <button
+    onClick={clearFilters}
+    title="Reset Filters"
+    className="shrink-0 inline-flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition"
+  >
+    <RotateCcw size={13} />
+  </button>
+</div>
+</div>
+</div>
 
       {/* 2. ACTION BAR */}
       <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-slate-300 rounded-xl px-3.5 py-2 shadow-sm">
@@ -1954,6 +1950,12 @@ async function saveBufferOrBlob(bufferOrBlob: ArrayBuffer | Blob, fileName: stri
               zoom={8}
               style={{ height: "480px", width: "100%", zIndex: 1 }}
             >
+              <FitBounds 
+              locations={filteredFarmers
+                .filter((f) => f.latitude && f.longitude) // যাদের লোকেশন আছে শুধু তাদের নিবে
+                .map((f) => ({ lat: f.latitude, lng: f.longitude }))
+              } 
+            />
               <MapLayers />
 
               {myLocationMode && myPosition ? (
@@ -1989,7 +1991,7 @@ async function saveBufferOrBlob(bufferOrBlob: ArrayBuffer | Blob, fileName: stri
                                 setNewNoteText("");
                                 loadFarmerNotes(farmer.id);
 
-                                // ম্যাপ ফ্লাই করে ফার্মারের কাছে গিয়ে অটোমেটিক পপ-আপ ওপেন করবে
+                                
                                 setTimeout(() => {
                                   const marker = farmerMarkerRefs.current[farmer.id];
                                   if (marker) {
@@ -2128,66 +2130,58 @@ async function saveBufferOrBlob(bufferOrBlob: ArrayBuffer | Blob, fileName: stri
                           </div>
 
                           <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-2 space-y-1.5">
-                            <div className="font-bold text-[11px] text-emerald-900">
-                              📝 Farmer Tracking
-                            </div>
-                            <div className="max-h-24 overflow-y-auto space-y-1 pr-0.5">
-                              {loadingNotes &&
-                              activeTrackingFarmerId === farmer.id ? (
-                                <div className="text-[11px] text-slate-400">
-                                  Loading...
-                                </div>
-                              ) : activeTrackingFarmerId === farmer.id &&
-                                farmerNotes.length > 0 ? (
-                                farmerNotes.map((n) => (
-                                  <div
-                                    key={n.id}
-                                    className="bg-white border border-emerald-100 rounded px-2 py-1 text-[11px]"
-                                  >
-                                    <span className="font-bold text-emerald-800">
-                                      {n.user_name}:
-                                    </span>{" "}
-                                    <span className="text-slate-700">
-                                      {n.note}
-                                    </span>
+                              <div className="font-bold text-[11px] text-emerald-900">
+                                📝 Farmer Tracking
+                              </div>
+                              <div className="max-h-24 overflow-y-auto space-y-1 pr-0.5">
+                                {loadingNotes && activeTrackingFarmerId === farmer.id ? (
+                                  <div className="text-[11px] text-slate-400">Loading...</div>
+                                ) : activeTrackingFarmerId === farmer.id && farmerNotes.length > 0 ? (
+                                  // .slice().reverse() ব্যবহার করে অ্যারেকে উল্টে দেওয়া হলো যাতে নতুন মেসেজ ওপরে থাকে
+                                  farmerNotes
+                                    .slice()
+                                    .reverse()
+                                    .map((n) => (
+                                      <div
+                                        key={n.id}
+                                        className="bg-white border border-emerald-100 rounded px-2 py-1 text-[11px]"
+                                      >
+                                        <span className="font-bold text-emerald-800">
+                                          {n.user_name}:
+                                        </span>{" "}
+                                        <span className="text-slate-700">{n.note}</span>
+                                      </div>
+                                    ))
+                                ) : (
+                                  <div className="text-[10px] text-slate-400">
+                                    No tracking note yet.
                                   </div>
-                                ))
-                              ) : (
-                                <div className="text-[10px] text-slate-400">
-                                  No tracking note yet.
-                                </div>
-                              )}
-                            </div>
+                                )}
+                              </div>
 
-                            <form
-                              onSubmit={(e) =>
-                                handleAddFarmerNote(e, farmer.id)
-                              }
-                              className="flex gap-1"
-                            >
-                              <input
-                                type="text"
-                                placeholder="Write note..."
-                                value={
-                                  activeTrackingFarmerId === farmer.id
-                                    ? newNoteText
-                                    : ""
-                                }
-                                onChange={(e) => {
-                                  setActiveTrackingFarmerId(farmer.id);
-                                  setNewNoteText(e.target.value);
-                                }}
-                                className="flex-1 border border-emerald-300 rounded px-2 py-1 text-[11px] bg-white outline-none"
-                              />
-                              <button
-                                type="submit"
-                                disabled={savingNote}
-                                className="bg-emerald-600 text-white px-2 py-1 rounded text-[11px] font-semibold"
+                              <form
+                                onSubmit={(e) => handleAddFarmerNote(e, farmer.id)}
+                                className="flex gap-1"
                               >
-                                Save
-                              </button>
-                            </form>
-                          </div>
+                                <input
+                                  type="text"
+                                  placeholder="Write note..."
+                                  value={activeTrackingFarmerId === farmer.id ? newNoteText : ""}
+                                  onChange={(e) => {
+                                    setActiveTrackingFarmerId(farmer.id);
+                                    setNewNoteText(e.target.value);
+                                  }}
+                                  className="flex-1 border border-emerald-300 rounded px-2 py-1 text-[11px] bg-white outline-none"
+                                />
+                                <button
+                                  type="submit"
+                                  disabled={savingNote}
+                                  className="bg-emerald-600 text-white px-2 py-1 rounded text-[11px] font-semibold"
+                                >
+                                  Save
+                                </button>
+                              </form>
+                            </div>
 
                           <table className="w-full border-collapse border border-slate-200 text-[11px]">
                             <tbody>
@@ -2444,22 +2438,26 @@ async function saveBufferOrBlob(bufferOrBlob: ArrayBuffer | Blob, fileName: stri
                       No tracking notes yet.
                     </div>
                   ) : (
-                    farmerNotes.map((item) => (
-                      <div
-                        key={item.id}
-                        className="bg-white border border-emerald-200 rounded px-2.5 py-1.5 text-xs flex justify-between gap-2"
-                      >
-                        <div>
-                          <span className="font-bold text-emerald-800">
-                            {item.user_name}:
-                          </span>{" "}
-                          <span className="text-slate-800">{item.note}</span>
+                    
+                    farmerNotes
+                      .slice()
+                      .reverse()
+                      .map((item) => (
+                        <div
+                          key={item.id}
+                          className="bg-white border border-emerald-200 rounded px-2.5 py-1.5 text-xs flex justify-between gap-2"
+                        >
+                          <div>
+                            <span className="font-bold text-emerald-800">
+                              {item.user_name}:
+                            </span>{" "}
+                            <span className="text-slate-800">{item.note}</span>
+                          </div>
+                          <span className="text-[10px] text-slate-400 shrink-0">
+                            {new Date(item.created_at).toLocaleDateString("en-GB")}
+                          </span>
                         </div>
-                        <span className="text-[10px] text-slate-400 shrink-0">
-                          {new Date(item.created_at).toLocaleDateString("en-GB")}
-                        </span>
-                      </div>
-                    ))
+                      ))
                   )}
                 </div>
 
@@ -2595,326 +2593,281 @@ async function saveBufferOrBlob(bufferOrBlob: ArrayBuffer | Blob, fileName: stri
       )}
 
       {/* 6. ADD / EDIT FARMER MODAL (Company -> District -> Upazila -> Agent -> Rest) */}
-      {showForm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[2000] p-2 sm:p-4">
-          <div className="bg-white rounded-xl p-4 sm:p-5 w-full max-w-2xl max-h-[92vh] overflow-y-auto shadow-2xl">
-            <div className="flex justify-between items-center pb-2.5 mb-3 border-b">
-              <h2 className="text-base font-bold text-slate-800">
-                {editingId ? "Edit Farmer" : "Add Farmer"}
-              </h2>
-              <button onClick={() => setShowForm(false)}>
-                <X size={18} />
-              </button>
-            </div>
+{showForm && (
+  <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[2000] p-2 sm:p-4">
+    <div className="bg-white rounded-xl p-4 sm:p-5 w-full max-w-2xl max-h-[92vh] overflow-y-auto shadow-2xl">
+      <div className="flex justify-between items-center pb-2.5 mb-3 border-b">
+        <h2 className="text-base font-bold text-slate-800">
+          {editingId ? "Edit Farmer" : "Add Farmer"}
+        </h2>
+        <button onClick={() => setShowForm(false)}>
+          <X size={18} />
+        </button>
+      </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-              {/* 1. Company (Default Nourish) */}
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">
-                  Company *
-                </label>
-                <select
-                  value={form.company_id}
-                  onChange={(e) => {
-                    const companyId = e.target.value;
-                    setForm({ ...form, company_id: companyId, agent_id: "" });
-                  }}
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select Company</option>
-                  {companies.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.company_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+        {/* 1. Company (Default Nourish) */}
+        <div>
+          <label className="block text-xs font-bold text-slate-600 mb-1">
+            Company *
+          </label>
+          <SearchableSelect
+            value={form.company_id}
+            onChange={(companyId) =>
+              setForm({ ...form, company_id: companyId, agent_id: "" })
+            }
+            placeholder="Select Company"
+            options={companies.map((c) => ({
+              value: String(c.id),
+              label: c.company_name,
+            }))}
+          />
+        </div>
 
-              {/* 2. District (Assigned Districts Chronologically) */}
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">
-                  District *
-                </label>
-                <select
-                  value={form.district}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      district: e.target.value,
-                      upazila: "",
-                      union_name: "",
-                      agent_id: "",
-                    })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select District</option>
-                  {districts.map((d) => (
-                    <option key={d.id} value={d.name}>
-                      {d.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+        {/* 2. District (Assigned Districts Chronologically) */}
+        <div>
+          <label className="block text-xs font-bold text-slate-600 mb-1">
+            District *
+          </label>
+          <SearchableSelect
+          searchable={false}
+            value={form.district}
+            onChange={(v) =>
+              setForm({
+                ...form,
+                district: v,
+                upazila: "",
+                union_name: "",
+                agent_id: "",
+              })
+            }
+            placeholder="Select District"
+            options={districts.map((d) => ({ value: d.name, label: d.name }))}
+          />
+        </div>
 
-              {/* 3. Upazila (Under Selected District) */}
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">
-                  Upazila *
-                </label>
-                <select
-                  value={form.upazila}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      upazila: e.target.value,
-                      union_name: "",
-                      agent_id: "",
-                    })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select Upazila</option>
-                  {upazilas.map((u) => (
-                    <option key={u.id} value={u.name}>
-                      {u.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+        {/* 3. Upazila (Under Selected District) */}
+        <div>
+          <label className="block text-xs font-bold text-slate-600 mb-1">
+            Upazila *
+          </label>
+          <SearchableSelect
+            value={form.upazila}
+            onChange={(v) =>
+              setForm({
+                ...form,
+                upazila: v,
+                union_name: "",
+                agent_id: "",
+              })
+            }
+            placeholder="Select Upazila"
+            options={upazilas.map((u) => ({ value: u.name, label: u.name }))}
+          />
+        </div>
 
-              {/* 4. Agent (Filtered by Selected Company & Upazila) */}
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">
-                  Agent *
-                </label>
-                <select
-                  value={form.agent_id}
-                  onChange={(e) =>
-                    setForm({ ...form, agent_id: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select Agent</option>
-                  {formAvailableAgents.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.agent_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+        {/* 4. Agent (Filtered by Selected Company & Upazila) */}
+        <div>
+          <label className="block text-xs font-bold text-slate-600 mb-1">
+            Agent *
+          </label>
+          <SearchableSelect
+            value={form.agent_id}
+            onChange={(v) => setForm({ ...form, agent_id: v })}
+            placeholder="Select Agent"
+            options={formAvailableAgents.map((a) => ({
+              value: String(a.id),
+              label: a.agent_name,
+            }))}
+          />
+        </div>
 
-              {/* 5. Remaining Fields (District & Upazila not repeated) */}
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">
-                  Farmer Name *
-                </label>
-                <input
-                  placeholder="Farmer Name"
-                  value={form.farmer_name}
-                  onChange={(e) =>
-                    setForm({ ...form, farmer_name: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-                />
-              </div>
+        {/* 5. Remaining Fields (District & Upazila not repeated) */}
+        <div>
+          <label className="block text-xs font-bold text-slate-600 mb-1">
+            Farmer Name *
+          </label>
+          <input
+            placeholder="Farmer Name"
+            value={form.farmer_name}
+            onChange={(e) => setForm({ ...form, farmer_name: e.target.value })}
+            className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
+          />
+        </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">
-                  Mobile
-                </label>
-                <input
-                  placeholder="017XXXXXXXX"
-                  value={form.mobile}
-                  onChange={(e) =>
-                    setForm({ ...form, mobile: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-                />
-              </div>
+        <div>
+          <label className="block text-xs font-bold text-slate-600 mb-1">
+            Mobile
+          </label>
+          <input
+            placeholder="017XXXXXXXX"
+            value={form.mobile}
+            onChange={(e) => setForm({ ...form, mobile: e.target.value })}
+            className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
+          />
+        </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">
-                  Union
-                </label>
-                <select
-                  value={form.union_name}
-                  onChange={(e) =>
-                    setForm({ ...form, union_name: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select Union</option>
-                  {unions.map((u) => (
-                    <option key={u.id} value={u.name}>
-                      {u.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+        <div>
+          <label className="block text-xs font-bold text-slate-600 mb-1">
+            Union
+          </label>
+          <SearchableSelect
+            value={form.union_name}
+            onChange={(v) => setForm({ ...form, union_name: v })}
+            placeholder="Select Union"
+            options={unions.map((u) => ({ value: u.name, label: u.name }))}
+          />
+        </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">
-                  Village
-                </label>
-                <input
-                  placeholder="Village"
-                  value={form.village}
-                  onChange={(e) =>
-                    setForm({ ...form, village: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-                />
-              </div>
-            </div>
+        <div>
+          <label className="block text-xs font-bold text-slate-600 mb-1">
+            Village
+          </label>
+          <input
+            placeholder="Village"
+            value={form.village}
+            onChange={(e) => setForm({ ...form, village: e.target.value })}
+            className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
+          />
+        </div>
+      </div>
 
-            <div className="mb-3 flex flex-wrap items-center gap-2 bg-slate-50 border border-slate-200 rounded p-2.5">
-              <button
-                type="button"
-                onClick={() => {
-                  setPickerCenterOverride(null);
-                  setShowMap(true);
-                }}
-                className="inline-flex items-center gap-1.5 bg-blue-600 text-white px-3 py-1.5 rounded text-xs font-semibold"
-              >
-                <MapPin size={13} /> Select Location from Map
-              </button>
+      <div className="mb-3 flex flex-wrap items-center gap-2 bg-slate-50 border border-slate-200 rounded p-2.5">
+        <button
+          type="button"
+          onClick={() => {
+            setPickerCenterOverride(null);
+            setShowMap(true);
+          }}
+          className="inline-flex items-center gap-1.5 bg-blue-600 text-white px-3 py-1.5 rounded text-xs font-semibold"
+        >
+          <MapPin size={13} /> Select Location from Map
+        </button>
 
-              {form.latitude && form.longitude && (
-                <span className="text-emerald-700 text-xs font-semibold">
-                  📍 Selected ({Number(form.latitude).toFixed(4)},{" "}
-                  {Number(form.longitude).toFixed(4)})
-                </span>
-              )}
-            </div>
+        {form.latitude && form.longitude && (
+          <span className="text-emerald-700 text-xs font-semibold">
+            📍 Selected ({Number(form.latitude).toFixed(4)},{" "}
+            {Number(form.longitude).toFixed(4)})
+          </span>
+        )}
+      </div>
 
-            <div className="mb-3">
-              <label className="block text-xs font-bold text-slate-600 mb-1">
-                Farm Category *
+    <div className="mb-3">
+  <label className="block text-xs font-bold text-slate-600 mb-1">
+    Farm Category *
+  </label>
+  <SearchableSelect
+    searchable={false}
+    value={form.farm_category || ""}
+    onChange={(v) => setForm({ ...form, farm_category: v })}
+    placeholder="Select Category"
+    options={[
+      { value: "Poultry", label: "🐔 Poultry" },
+      { value: "Cattle", label: "🐄 Cattle" },
+      { value: "Fish", label: "🐟 Fish" },
+    ]}
+  />
+</div>
+
+      {form.farm_category === "Poultry" && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3 bg-amber-50 border border-amber-200 rounded p-2.5">
+          {POULTRY_FIELDS.map((item) => (
+            <div key={item}>
+              <label className="block text-[11px] font-semibold capitalize">
+                {item.replace("_", " ")}
               </label>
-              <select
-                value={form.farm_category || ""}
-                onChange={(e) =>
-                  setForm({ ...form, farm_category: e.target.value })
-                }
-                className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-              >
-                <option value="">Select Category</option>
-                <option value="Poultry">🐔 Poultry</option>
-                <option value="Cattle">🐄 Cattle</option>
-                <option value="Fish">🐟 Fish</option>
-              </select>
+              <input
+                type="number"
+                min="0"
+                value={(form as any)[item] || ""}
+                onChange={(e) => setForm({ ...form, [item]: e.target.value })}
+                className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+              />
             </div>
-
-            {form.farm_category === "Poultry" && (
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3 bg-amber-50 border border-amber-200 rounded p-2.5">
-                {POULTRY_FIELDS.map((item) => (
-                  <div key={item}>
-                    <label className="block text-[11px] font-semibold capitalize">
-                      {item.replace("_", " ")}
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={(form as any)[item] || ""}
-                      onChange={(e) =>
-                        setForm({ ...form, [item]: e.target.value })
-                      }
-                      className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {form.farm_category === "Cattle" && (
-              <div className="grid grid-cols-3 gap-2 mb-3 bg-emerald-50 border border-emerald-200 rounded p-2.5">
-                {CATTLE_FIELDS.map((item) => (
-                  <div key={item}>
-                    <label className="block text-[11px] font-semibold capitalize">
-                      {item.replace("_", " ")}
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={(form as any)[item] || ""}
-                      onChange={(e) =>
-                        setForm({ ...form, [item]: e.target.value })
-                      }
-                      className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {form.farm_category === "Fish" && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3 bg-sky-50 border border-sky-200 rounded p-2.5">
-                {FISH_FIELDS.map((item) => (
-                  <div key={item}>
-                    <label className="block text-[11px] font-semibold capitalize">
-                      {item}
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={(form as any)[item] || ""}
-                      onChange={(e) =>
-                        setForm({ ...form, [item]: e.target.value })
-                      }
-                      className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">
-                  Feed Type
-                </label>
-                <input
-                  placeholder="Feed Type"
-                  value={form.feed_type}
-                  onChange={(e) =>
-                    setForm({ ...form, feed_type: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">
-                  Remarks
-                </label>
-                <input
-                  placeholder="Remarks"
-                  value={form.remarks}
-                  onChange={(e) =>
-                    setForm({ ...form, remarks: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-                />
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2 border-t">
-              <button
-                onClick={() => setShowForm(false)}
-                className="px-4 py-1.5 rounded border border-slate-300 text-xs font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSave}
-                className="px-4 py-1.5 rounded bg-green-600 text-white text-xs font-semibold"
-              >
-                {editingId ? "Update Farmer" : "Save Farmer"}
-              </button>
-            </div>
-          </div>
+          ))}
         </div>
       )}
+
+      {form.farm_category === "Cattle" && (
+        <div className="grid grid-cols-3 gap-2 mb-3 bg-emerald-50 border border-emerald-200 rounded p-2.5">
+          {CATTLE_FIELDS.map((item) => (
+            <div key={item}>
+              <label className="block text-[11px] font-semibold capitalize">
+                {item.replace("_", " ")}
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={(form as any)[item] || ""}
+                onChange={(e) => setForm({ ...form, [item]: e.target.value })}
+                className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {form.farm_category === "Fish" && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3 bg-sky-50 border border-sky-200 rounded p-2.5">
+          {FISH_FIELDS.map((item) => (
+            <div key={item}>
+              <label className="block text-[11px] font-semibold capitalize">
+                {item}
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={(form as any)[item] || ""}
+                onChange={(e) => setForm({ ...form, [item]: e.target.value })}
+                className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+        <div>
+          <label className="block text-xs font-bold text-slate-600 mb-1">
+            Feed Type
+          </label>
+          <input
+            placeholder="Feed Type"
+            value={form.feed_type}
+            onChange={(e) => setForm({ ...form, feed_type: e.target.value })}
+            className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-bold text-slate-600 mb-1">
+            Remarks
+          </label>
+          <input
+            placeholder="Remarks"
+            value={form.remarks}
+            onChange={(e) => setForm({ ...form, remarks: e.target.value })}
+            className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
+          />
+        </div>
+      </div>
+
+      <div className="flex justify-end gap-2 pt-2 border-t">
+        <button
+          onClick={() => setShowForm(false)}
+          className="px-4 py-1.5 rounded border border-slate-300 text-xs font-semibold"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleSave}
+          className="px-4 py-1.5 rounded bg-green-600 text-white text-xs font-semibold"
+        >
+          {editingId ? "Update Farmer" : "Save Farmer"}
+        </button>
+      </div>
+    </div>
+  </div>
+)}
 
       {/* 7. LOCATION PICKER MODAL */}
       {showMap && (

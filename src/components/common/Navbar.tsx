@@ -65,8 +65,10 @@ export default function Navbar({
   const [lowWeightList, setLowWeightList] = useState<any[]>([]);
   const [lowEggList, setLowEggList] = useState<any[]>([]);
   const [latestTrackings, setLatestTrackings] = useState<any[]>([]);
+  const [latestAgentTrackings, setLatestAgentTrackings] = useState<any[]>([]); // ⚠️ নতুন এজেন্ট ট্র্যাকিং স্টেট
 
   const farmersRef = useRef<Record<string, any>>({});
+  const agentsRef = useRef<Record<string, any>>({}); // ⚠️ নতুন এজেন্ট রেফারেন্স
   const accessRef = useRef<{
     isFullAccess: boolean;
     upazilas: string[];
@@ -96,6 +98,15 @@ export default function Navbar({
     return matchUpa && matchDist;
   }
 
+  function isAgentAllowed(agent: any): boolean {
+    if (!agent) return false;
+    const { isFullAccess, upazilas, districts } = accessRef.current;
+    if (isFullAccess) return true;
+    const matchUpa = upazilas.length === 0 || upazilas.includes(agent.upazila);
+    const matchDist = districts.length === 0 || districts.includes(agent.district);
+    return matchUpa && matchDist;
+  }
+
   async function refreshLatestTrackings() {
     const { data: trkData } = await supabase
       .from("farmer_trackings")
@@ -116,6 +127,28 @@ export default function Navbar({
       }
     }
     setLatestTrackings(list);
+  }
+
+  async function refreshLatestAgentTrackings() {
+    const { data: trkData } = await supabase
+      .from("agent_trackings")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(40);
+
+    const list: any[] = [];
+    for (const t of trkData || []) {
+      const a = agentsRef.current[String(t.agent_id)];
+      if (isAgentAllowed(a)) {
+        list.push({
+          ...t,
+          agent_name: a?.agent_name || "Unknown Agent",
+          upazila: a?.upazila || "",
+        });
+        if (list.length >= 5) break;
+      }
+    }
+    setLatestAgentTrackings(list);
   }
 
  useEffect(() => {
@@ -140,7 +173,7 @@ export default function Navbar({
     }
 
     // ২. Live Farmer Tracking Realtime Listener + Phone Notification (Foreground)
-    const channel = supabase
+    const channelFarmer = supabase
       .channel("navbar_live_farmer_trackings")
       .on(
         "postgres_changes",
@@ -174,7 +207,6 @@ export default function Navbar({
                 return [enriched, ...withoutDup].slice(0, 5);
               });
 
-              // বর্তমান লগইন করা ইউজার নিজেই মেসেজটি দিয়েছেন কি না তা চেক করা
               const myUserId = (accessRef.current as any)?.userId || "";
               const myUserName = (accessRef.current as any)?.userName || "";
 
@@ -187,7 +219,6 @@ export default function Navbar({
                   String(newRow.user_name).trim().toLowerCase() ===
                     String(myUserName).trim().toLowerCase());
 
-              // শুধুমাত্র অন্য কেউ মেসেজ দিলে ফোনের নোটিফিকেশনে সাথে সাথে পাঠাবে
               if (!isMyOwnMessage) {
                 const rawNote = String(newRow.note || "").trim();
                 const sender = newRow.user_name || "Officer";
@@ -220,8 +251,83 @@ export default function Navbar({
       )
       .subscribe();
 
+    // ৩. ⚠️ Live Agent Tracking Realtime Listener + Phone Notification (Foreground)
+    const channelAgent = supabase
+      .channel("navbar_live_agent_trackings")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "agent_trackings" },
+        async (payload: any) => {
+          if (payload.eventType === "INSERT" && payload.new) {
+            const newRow: any = payload.new;
+            let agent = agentsRef.current[String(newRow.agent_id)];
+            if (!agent && newRow.agent_id) {
+              const { data: aData } = await supabase
+                .from("agents")
+                .select("*")
+                .eq("id", newRow.agent_id)
+                .single();
+              if (aData) {
+                agentsRef.current[String(aData.id)] = aData;
+                agent = aData;
+              }
+            }
+            if (isAgentAllowed(agent)) {
+              const aName = agent?.agent_name || "Unknown Agent";
+              const enriched = {
+                ...newRow,
+                agent_name: aName,
+                upazila: agent?.upazila || "",
+              };
+              setLatestAgentTrackings((prev) => {
+                const withoutDup = prev.filter(
+                  (item) => String(item.id) !== String(enriched.id)
+                );
+                return [enriched, ...withoutDup].slice(0, 5);
+              });
+
+              const myUserId = (accessRef.current as any)?.userId || "";
+              const myUserName = (accessRef.current as any)?.userName || "";
+
+              const isMyOwnMessage =
+                (newRow.user_id &&
+                  myUserId &&
+                  String(newRow.user_id) === String(myUserId)) ||
+                (newRow.user_name &&
+                  myUserName &&
+                  String(newRow.user_name).trim().toLowerCase() ===
+                    String(myUserName).trim().toLowerCase());
+
+              if (!isMyOwnMessage) {
+                const rawNote = String(newRow.note || "").trim();
+                const sender = newRow.user_name || "Officer";
+                let notifBody = `💼 ${aName.toUpperCase()}\n${sender} : ${rawNote}`;
+
+                if (rawNote.startsWith("[RISKY]")) {
+                  const cleanComment = rawNote.replace("[RISKY]", "").trim();
+                  notifBody = `⚠️ ${sender} marked ${aName.toUpperCase()} as Risky Agent\n💬 ${cleanComment}`;
+                } else if (rawNote.startsWith("[RESOLVED]")) {
+                  const cleanComment = rawNote.replace("[RESOLVED]", "").trim();
+                  notifBody = `✅ ${sender} cleared status of ${aName.toUpperCase()}\n💬 ${cleanComment}`;
+                }
+
+                triggerPhoneNotification(
+                  "Agent Tracking",
+                  notifBody,
+                  `/agent-tracking?focus=${newRow.agent_id}&note=${newRow.id}`
+                );
+              }
+            }
+          } else {
+            refreshLatestAgentTrackings();
+          }
+        }
+      )
+      .subscribe();
+
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(channelFarmer);
+      supabase.removeChannel(channelAgent);
       if (notifSub) notifSub.remove();
     };
   }, []);
@@ -268,6 +374,7 @@ export default function Navbar({
         { data: frmData },
         { data: vacData },
         { data: trkData },
+        { data: agentTrkData },
       ] = await Promise.all([
         supabase
           .from("vet_visits")
@@ -281,10 +388,16 @@ export default function Navbar({
           .select("*")
           .order("created_at", { ascending: false })
           .limit(40),
+        supabase
+          .from("agent_trackings")
+          .select("*")
+          .order("created_at", { ascending: false })
+          .limit(40), // ⚠️ এজেন্ট ট্র্যাকিং ফেচ
       ]);
 
       const agDict: Record<string, any> = {};
       (agData || []).forEach((a: any) => (agDict[String(a.id)] = a));
+      agentsRef.current = agDict;
       setAgentsMap(agDict);
       setVaccinesList(vacData || []);
 
@@ -306,6 +419,21 @@ export default function Navbar({
       }
       setLatestTrackings(latest5);
 
+      // ⚠️ Latest Agent Trackings
+      const latest5Agents: any[] = [];
+      for (const t of agentTrkData || []) {
+        const a = agDict[String(t.agent_id)];
+        if (isAgentAllowed(a)) {
+          latest5Agents.push({
+            ...t,
+            agent_name: a?.agent_name || "Unknown Agent",
+            upazila: a?.upazila || "",
+          });
+          if (latest5Agents.length >= 5) break;
+        }
+      }
+      setLatestAgentTrackings(latest5Agents);
+
       let visits = (vData || []).map((v: any) => ({
         ...v,
         agents: agDict[String(v.agent_id)] || {
@@ -325,7 +453,7 @@ export default function Navbar({
 
       setRunningVisits(visits);
 
-      // ৩. Broiler/Sonali Time to Sale (Age >= 28) ফোনের নোটিফিকেশনে পাঠানো (একবার করে প্রতি দিন/ব্যাচে)
+      // ৩. Broiler/Sonali Time to Sale (Age >= 28) phones notification
       const todayKey = new Date().toISOString().slice(0, 10);
       visits.forEach((v: any) => {
         const cat = (v.category || "Broiler").toLowerCase();
@@ -516,6 +644,7 @@ export default function Navbar({
 
   const totalAlertsCount =
     latestTrackings.length +
+    latestAgentTrackings.length + // ⚠️ ٹوٹাল কাউন্টে এজেন্ট ট্র্যাকিং যোগ করা হলো
     broilerSellAlerts.length +
     layerVaccineAlerts.length +
     lowWeightList.length +
@@ -688,6 +817,77 @@ export default function Navbar({
                     </div>
                   )}
 
+                  {/* ⚠️ SECTION 0.5: LIVE AGENT TRACKING MESSAGES (LATEST 5) - NEW */}
+                  {latestAgentTrackings.length > 0 && (
+                    <div className="space-y-1.5 pt-1">
+                      <div className="flex items-center justify-between border-b border-blue-200 pb-0.5">
+                        <h4 className="font-bold text-blue-800 text-xs sm:text-sm uppercase tracking-wider flex items-center gap-1.5">
+                          <span className="h-2 w-2 rounded-full bg-blue-500 animate-ping" />
+                          Latest Agent Tracking (Live)
+                        </h4>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsModalOpen(false);
+                            navigate("/agent-tracking");
+                          }}
+                          className="text-[11px] font-bold text-blue-700 hover:underline"
+                        >
+                          View All →
+                        </button>
+                      </div>
+
+                      <div className="bg-blue-50/40 border border-blue-200 rounded-xl overflow-hidden shadow-xs">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse text-[11px] sm:text-xs">
+                            <thead>
+                              <tr className="bg-blue-100/70 border-b border-blue-200 text-blue-950">
+                                <th className="px-2.5 py-1 font-bold whitespace-nowrap">
+                                  Agent Name
+                                </th>
+                                <th className="px-2.5 py-1 font-bold">
+                                  Message
+                                </th>
+                                <th className="px-2.5 py-1 font-bold text-right whitespace-nowrap">
+                                  Message By
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-blue-100">
+                              {latestAgentTrackings.map((t: any) => (
+                                <tr
+                                  key={t.id}
+                                  onClick={() => {
+                                    setIsModalOpen(false);
+                                    navigate(
+                                      `/agent-tracking?focus=${t.agent_id}&note=${t.id}`
+                                    );
+                                  }}
+                                  className="hover:bg-blue-100/60 cursor-pointer leading-tight transition"
+                                >
+                                  <td className="px-2.5 py-1 font-bold text-slate-800 whitespace-nowrap">
+                                    {t.agent_name}
+                                  </td>
+                                  <td className="px-2.5 py-1 text-slate-800 font-medium max-w-[220px] sm:max-w-md truncate">
+                                    {t.note}
+                                  </td>
+                                  <td className="px-2.5 py-1 text-right whitespace-nowrap">
+                                    <span className="font-bold text-blue-800">
+                                      {t.user_name || "Officer"}
+                                    </span>
+                                    <span className="ml-1 text-[10px] text-slate-500">
+                                      ({timeAgoShort(t.created_at)})
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* SECTION 1: BROILER & SONALI SALE TIME ALERTS */}
                   {Object.keys(broilerByAgent).length > 0 && (
                     <div className="space-y-1.5">
@@ -838,10 +1038,6 @@ export default function Navbar({
                       ))}
                     </div>
                   )}
-
-                  
-
-                  
                 </>
               )}
             </div>

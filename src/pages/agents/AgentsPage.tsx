@@ -113,6 +113,20 @@ function RecenterMap({ position }: { position: [number, number] }) {
   return null;
 }
 
+function FitBounds({ locations }: { locations: { lat: number; lng: number }[] }) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!locations || locations.length === 0) return;
+
+    const bounds = L.latLngBounds(locations.map((loc) => [loc.lat, loc.lng]));
+
+    map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+  }, [locations, map]);
+
+  return null;
+}
+
 
 
 export default function AgentsPage() {
@@ -1194,6 +1208,12 @@ export default function AgentsPage() {
               zoom={8}
               style={{ height: "480px", width: "100%" }}
             >
+              <FitBounds 
+                locations={filteredAgents
+                  .filter((agent) => agent.latitude && agent.longitude)
+                  .map((agent) => ({ lat: agent.latitude, lng: agent.longitude }))
+                } 
+              />
               <MapLayers />
 
               {myLocationMode && userLocation ? (

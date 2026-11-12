@@ -194,6 +194,15 @@ export default function Sidebar({
           </Link>
 
           <Link
+            to="/agent-tracking"
+            onClick={handleMenuClick}
+            className={menuClass("/agent-tracking")}
+          >
+            <FaClipboardList className="text-base shrink-0" />
+            <span>Agent Tracking</span>
+          </Link>
+
+          <Link
             to="/sub-agents"
             onClick={handleMenuClick}
             className={menuClass("/sub-agents")}

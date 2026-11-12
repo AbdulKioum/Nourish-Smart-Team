@@ -1,3 +1,4 @@
+// ================= PART 1 OF 2 =================
 import React, { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { supabase } from "../../lib/supabase";
@@ -10,6 +11,7 @@ import {
   X,
   Plus,
   UserPlus,
+  Trash2,
 } from "lucide-react";
 import ExcelJS from "exceljs";
 import { Filesystem, Directory } from "@capacitor/filesystem";
@@ -371,6 +373,20 @@ function formatDmy(dateStr?: string) {
   return `${parts[2]}/${parts[1]}/${parts[0]}`;
 }
 
+function isWhiteLayerBreedName(breedName?: string): boolean {
+  const b = String(breedName || "").trim().toLowerCase();
+  return (
+    b.includes("white") ||
+    b === "bo" ||
+    b.includes("bovans white") ||
+    b.includes("lohman white") ||
+    b.includes("hisex white") ||
+    b.includes("hyline white") ||
+    b.includes("decalb") ||
+    b.includes("bb 300")
+  );
+}
+
 export default function VetVisitsPage() {
   const { role } = useAuth();
   const isSuperAdmin = role === "super_admin";
@@ -425,7 +441,7 @@ export default function VetVisitsPage() {
     batch_mark: "",
   });
 
-  // Add / Full Edit Farmer + Batch Modal (Triggered from Agent "+" icon or Action -> Edit)
+  // Add / Full Edit Farmer + Batch Modal
   const [showFarmerFormModal, setShowFarmerFormModal] = useState(false);
   const [editingFarmerId, setEditingFarmerId] = useState<number | null>(null);
   const [editingBatchVisit, setEditingBatchVisit] = useState<any>(null);
@@ -448,12 +464,9 @@ export default function VetVisitsPage() {
   >(null);
   const [locatingInPicker, setLocatingInPicker] = useState(false);
 
-  // Edit a saved report (from History)
-  const [editReport, setEditReport] = useState<{
-    table: string;
-    id: any;
-    form: Record<string, any>;
-  } | null>(null);
+  // Track if a report modal is currently editing an existing report from History
+  const [editingReportId, setEditingReportId] = useState<any>(null);
+
   const [vaccines, setVaccines] = useState<any[]>([]);
   const [broilerStds, setBroilerStds] = useState<Record<number, any>>({});
   const [sonaliStds, setSonaliStds] = useState<Record<number, any>>({});
@@ -478,7 +491,7 @@ export default function VetVisitsPage() {
     vaccine_date: new Date().toISOString().split("T")[0],
   });
 
-  // History Modal (1 front batch + dropdown for other batches)
+  // History Modal (Selected batch upfront + other batches in dropdown)
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [selectedHistoryVisit, setSelectedHistoryVisit] = useState<any>(null);
   const [historyBatches, setHistoryBatches] = useState<any[]>([]);
@@ -603,7 +616,6 @@ export default function VetVisitsPage() {
     return () => clearTimeout(t);
   }, [focusVisitId, statusFarmers, _loading]);
 
-  // Dependent Geo Loaders for Add / Edit Farmer Modal
   const selectedFormDistrict = geoDistricts.find(
     (d) => d.name === farmerForm.district
   );
@@ -704,7 +716,6 @@ export default function VetVisitsPage() {
       supabase.from("districts").select("*").order("name"),
     ]);
 
-    // Optional Sonali Standards (if uploaded in database `sonali_standards`, it will load automatically)
     try {
       const { data: sStdData } = await supabase
         .from("sonali_standards")
@@ -730,23 +741,47 @@ export default function VetVisitsPage() {
     (bStdData || []).forEach((s: any) => (bMap[Number(s.age_days)] = s));
     setBroilerStds(bMap);
 
-    // Index Layer Standards by exact breed, white/brown type, and fallback week
+    // Smart Layer Standards Indexing (Supports breed/type column OR auto-detects White vs Brown by weight when multiple rows exist per week)
     const lMap: Record<string, any> = {};
+    const byWeek: Record<number, any[]> = {};
+
     (lStdData || []).forEach((s: any) => {
       const w = Number(s.age_weeks);
-      const breedRaw = String(s.breed || "shaver star cross 579 brown")
+      if (!byWeek[w]) byWeek[w] = [];
+      byWeek[w].push(s);
+
+      const rawTag = String(
+        s.breed || s.breed_name || s.layer_type || s.type || s.strain || ""
+      )
         .trim()
         .toLowerCase();
-      lMap[`${breedRaw}_${w}`] = s;
-      if (breedRaw.includes("white")) {
-        lMap[`white_${w}`] = s;
-      } else {
-        lMap[`brown_${w}`] = s;
+
+      if (rawTag) {
+        lMap[`${rawTag}_${w}`] = s;
+        if (isWhiteLayerBreedName(rawTag)) {
+          lMap[`white_${w}`] = s;
+        } else if (rawTag.includes("brown") || rawTag.includes("shaver")) {
+          lMap[`brown_${w}`] = s;
+        }
       }
       if (!lMap[`any_${w}`]) {
         lMap[`any_${w}`] = s;
       }
     });
+
+    // If a week has 2+ rows without explicit white/brown labels, lighter weight = White, heavier weight = Brown
+    Object.entries(byWeek).forEach(([wkStr, rows]) => {
+      const w = Number(wkStr);
+      if (rows.length >= 2 && (!lMap[`white_${w}`] || !lMap[`brown_${w}`])) {
+        const sortedByWt = [...rows].sort(
+          (a, b) => Number(a.weight || 0) - Number(b.weight || 0)
+        );
+        if (!lMap[`white_${w}`]) lMap[`white_${w}`] = sortedByWt[0];
+        if (!lMap[`brown_${w}`])
+          lMap[`brown_${w}`] = sortedByWt[sortedByWt.length - 1];
+      }
+    });
+
     setLayerStds(lMap);
 
     if (!vacData || vacData.length === 0) {
@@ -994,7 +1029,6 @@ export default function VetVisitsPage() {
     return `${diffDays}d`;
   }
 
-  // Standard Lookup for Broiler OR Sonali (Returns null for Sonali until sonali_standards has data)
   function getMeatStdForVisit(categoryName?: string, ageDays?: number) {
     const d = Number(ageDays || 0);
     const cat = String(categoryName || "Broiler")
@@ -1009,19 +1043,15 @@ export default function VetVisitsPage() {
     return null;
   }
 
-  // Standard Lookup for Layer (Correctly matches ANY White Layer breed to white standard & Brown to brown)
+  // Accurate Layer Standard Lookup for White vs Brown
   function getLayerStdForVisit(breedName?: string, ageWks?: number) {
     const w = Math.min(100, Math.max(1, ageWks || 1));
     const bLower = String(breedName || "")
       .trim()
       .toLowerCase();
-    const isWhite =
-      bLower.includes("white") ||
-      bLower.includes("bovans white") ||
-      bLower.includes("decalb") ||
-      bLower.includes("bb 300");
+    const isWhite = isWhiteLayerBreedName(bLower);
 
-    if (lMapHasExact(layerStds, `${bLower}_${w}`)) {
+    if (bLower && lMapHasExact(layerStds, `${bLower}_${w}`)) {
       return layerStds[`${bLower}_${w}`];
     }
     if (isWhite) {
@@ -1035,6 +1065,7 @@ export default function VetVisitsPage() {
     return (
       layerStds[`brown_${w}`] ||
       layerStds[`shaver star cross 579 brown_${w}`] ||
+      layerStds[`shaver star cross 579_${w}`] ||
       layerStds[`any_${w}`] ||
       null
     );
@@ -1312,6 +1343,7 @@ export default function VetVisitsPage() {
     return true;
   }
 
+  // Header Builder: Handles both Nourish vs Non-Nourish for Broiler, Sonali & Layer
   function buildWhatsAppHeaderLine(
     hatcheryName: string,
     feedCompName: string,
@@ -1328,11 +1360,12 @@ export default function VetVisitsPage() {
       return `*${defaultTitle}*`;
     }
     const catLabel = categoryName || "Broiler";
+    if (catLabel.toLowerCase() === "layer") {
+      return `*${hClean} Layer chick and ${fClean} layer feed performance report:*`;
+    }
     return `*${hClean} ${catLabel} chick and ${fClean} ${catLabel} feed Performance Report:*`;
   }
 
-  // Generate Broiler / Sonali WhatsApp Observation Message
-  // (For Sonali: if no standard is set in database, Std lines & comparison line are omitted automatically)
   function generateBroilerWhatsAppText(
     visit: any,
     rep: any,
@@ -1466,7 +1499,7 @@ ${currentUserProfile.region}`;
     setWhatsappPopupText(msg);
   }
 
-  // Generate Layer WhatsApp Observation Message (Uses exact Breed White/Brown Standard + Remarks)
+  // Layer WhatsApp Message (Resolves Breed accurately from Batch & Report + White/Brown Standard + Non-Nourish Header)
   function generateLayerWhatsAppText(
     visit: any,
     rep: any,
@@ -1478,12 +1511,21 @@ ${currentUserProfile.region}`;
     const agent = visit.agents || {};
     const vDate = rep.visit_date || reportVisitDate;
     const ageWks = getAgeWeeks(visit.hatch_date, vDate);
+
+    // Priority: visit.breed (batch breed) -> rep.breed -> fallback
     const breedName =
-      rep.breed || visit.breed || "Shaver Star Cross 579 Brown";
+      (isFromForm
+        ? rep.breed || visit.breed
+        : visit.breed || rep.breed) || "Shaver Star Cross 579 Brown";
+
     const std = getLayerStdForVisit(breedName, ageWks);
 
-    const hatcheryName = rep.hatchery || visit.hatchery || "Nourish";
+    const hatcheryName =
+      (isFromForm
+        ? rep.hatchery || visit.hatchery
+        : visit.hatchery || rep.hatchery) || "Nourish";
     const feedCompName = rep.feed_company || "Nourish";
+
     const headerTitle = buildWhatsAppHeaderLine(
       hatcheryName,
       feedCompName,
@@ -1495,9 +1537,10 @@ ${currentUserProfile.region}`;
 
     const mortVal = Number(rep.mortality ?? rep.mortality_pcs ?? 0);
     const baseBirds = Number(visit.t_birds || 0);
-    const displayBirds = isFromForm
-      ? Math.max(0, baseBirds - mortVal)
-      : baseBirds;
+    const displayBirds =
+      isFromForm && !editingReportId
+        ? Math.max(0, baseBirds - mortVal)
+        : baseBirds;
 
     const rmkText = getRemarkText(rep);
     const remarksLine = rmkText ? `\nRemarks: ${rmkText}\n` : "";
@@ -1641,6 +1684,7 @@ ${currentUserProfile.region}`;
     type: "before_sale" | "after_sale" | "layer_report",
     visit: any
   ) {
+    setEditingReportId(null);
     setActiveReportVisit(visit);
     setReportVisitDate(new Date().toISOString().split("T")[0]);
     setTransferAgentId("");
@@ -1716,6 +1760,128 @@ ${currentUserProfile.region}`;
     }
   }
 
+  // Open existing report in the exact same Report Modal (with Std values & Delete icon)
+  function openEditReport(
+    table: "before_sale_reports" | "after_sale_reports" | "layer_reports",
+    rep: any
+  ) {
+    const visit = selectedHistoryVisit;
+    if (!visit) return;
+
+    setEditingReportId(rep.id);
+    setActiveReportVisit(visit);
+    setReportVisitDate(
+      rep.visit_date || new Date().toISOString().split("T")[0]
+    );
+    setTransferAgentId("");
+    setShowCullReasonInput(false);
+    setCullReasonText("");
+
+    if (table === "before_sale_reports") {
+      setBeforeForm({
+        mortality_pcs: String(rep.mortality_pcs ?? ""),
+        weight_gm_b: String(rep.weight_gm_b ?? ""),
+        feed_t_kg: String(rep.feed_t_kg ?? ""),
+        feed_gm_b: String(rep.feed_gm_b ?? ""),
+        fcr_w_out_m: String(rep.fcr_w_out_m ?? ""),
+        fcr_with_m: String(rep.fcr_with_m ?? ""),
+        uneven: rep.uneven || "",
+        indigestion: rep.indigestion || "",
+        orange_feces: rep.orange_feces || "",
+        watery_feces: rep.watery_feces || "",
+        feeder: rep.feeder || "",
+        drinker: rep.drinker || "",
+        floor_space: rep.floor_space || "",
+        litter_condition: rep.litter_condition || "",
+        ventilation: rep.ventilation || "",
+        feed_scattering: rep.feed_scattering || "",
+        feed_hardness: rep.feed_hardness || "",
+        feed_company: rep.feed_company || "",
+        feed_type: rep.feed_type || "Broiler Pre Starter",
+        pro_date: rep.pro_date || "",
+        batch_no: rep.batch_no || "",
+        remarks: getRemarkText(rep),
+      });
+      setShowBeforeSaleModal(true);
+    } else if (table === "after_sale_reports") {
+      const tB = Number(visit.t_birds || 0);
+      const calcGm =
+        rep.feed_gm_b ||
+        (tB > 0 && Number(rep.feed_consumption_kg) > 0
+          ? ((Number(rep.feed_consumption_kg) * 1000) / tB).toFixed(1)
+          : "");
+      setAfterForm({
+        mortality: String(rep.mortality ?? ""),
+        weight: String(rep.weight ?? ""),
+        feed_consumption_kg: String(rep.feed_consumption_kg ?? ""),
+        feed_gm_b: String(calcGm ?? ""),
+        feed: rep.feed || "Broiler Finisher",
+        feed_mill: rep.feed_mill || "",
+        fcr_w_out_m: String(rep.fcr_w_out_m ?? ""),
+        fcr_with_m: String(rep.fcr_with_m ?? ""),
+        remarks: getRemarkText(rep),
+      });
+      setShowAfterSaleModal(true);
+    } else if (table === "layer_reports") {
+      const baseBirds = Number(visit.t_birds || 0);
+      const intakeG = Number(rep.feed_intake_g || 0);
+      const calcTotalKg =
+        rep.feed_total_kg ||
+        (baseBirds > 0 && intakeG > 0
+          ? ((intakeG * baseBirds) / 1000).toFixed(2)
+          : "");
+      setLayerForm({
+        mortality_pcs: String(rep.mortality ?? rep.mortality_pcs ?? "0"),
+        b_weight_g: String(rep.b_weight_g ?? ""),
+        feed_total_kg: String(calcTotalKg ?? ""),
+        feed_intake_g: String(rep.feed_intake_g ?? ""),
+        egg_production: String(rep.egg_production ?? ""),
+        egg_weight: String(rep.egg_weight ?? ""),
+        feed_company: rep.feed_company || "",
+        feed_type: rep.feed_type || "Layer Starter",
+        pro_date: rep.pro_date || "",
+        batch_no: rep.batch_no || "",
+        hatchery: rep.hatchery || visit.hatchery || "",
+        breed: rep.breed || visit.breed || "Shaver Star Cross 579 Brown",
+        disease: rep.disease || "",
+        remarks: getRemarkText(rep),
+      });
+      setShowLayerModal(true);
+    }
+  }
+
+  async function handleDeleteCurrentReport(
+    table: "before_sale_reports" | "after_sale_reports" | "layer_reports"
+  ) {
+    if (!editingReportId) return;
+    const ok = window.confirm(
+      "Are you sure you want to delete this report permanently?"
+    );
+    if (!ok) return;
+
+    try {
+      const { error } = await supabase
+        .from(table)
+        .delete()
+        .eq("id", editingReportId);
+      if (error) throw error;
+
+      setEditingReportId(null);
+      setShowBeforeSaleModal(false);
+      setShowAfterSaleModal(false);
+      setShowLayerModal(false);
+
+      if (selectedHistoryVisit) {
+        await handleHistoryClick(selectedHistoryVisit);
+      }
+      await loadVetVisits();
+    } catch (err: any) {
+      alert(err.message || "Failed to delete report.");
+    }
+  }
+
+  // ================= PART 2A OF 2 (Paste right below Part 1) =================
+
   async function handleBeforeSaleSubmit() {
     if (!activeReportVisit) return;
     if (!validateBeforeSaleInputs(beforeForm)) return;
@@ -1759,13 +1925,26 @@ ${currentUserProfile.region}`;
         remarks: cleanRemarks,
       };
 
-      const { error } = await supabase
-        .from("before_sale_reports")
-        .insert([payload]);
+      if (editingReportId) {
+        const { error } = await supabase
+          .from("before_sale_reports")
+          .update(payload)
+          .eq("id", editingReportId);
+        if (error) throw error;
+        alert("Before Sale Report updated!");
+      } else {
+        const { error } = await supabase
+          .from("before_sale_reports")
+          .insert([payload]);
+        if (error) throw error;
+        alert("Before Sale Report saved!");
+      }
 
-      if (error) throw error;
-      alert("Before Sale Report saved!");
+      setEditingReportId(null);
       setShowBeforeSaleModal(false);
+      if (showHistoryModal && selectedHistoryVisit) {
+        await handleHistoryClick(selectedHistoryVisit);
+      }
       loadVetVisits();
     } catch (err: any) {
       alert(err.message || "Failed to save report");
@@ -1802,40 +1981,60 @@ ${currentUserProfile.region}`;
         remarks: cleanRemarks,
       };
 
-      const { error } = await supabase
-        .from("after_sale_reports")
-        .insert([payload]);
-
-      if (error) {
-        delete payload.feed_gm_b;
-        const { error: retryErr } = await supabase
+      if (editingReportId) {
+        const { error } = await supabase
+          .from("after_sale_reports")
+          .update(payload)
+          .eq("id", editingReportId);
+        if (error) {
+          delete payload.feed_gm_b;
+          const { error: retryErr } = await supabase
+            .from("after_sale_reports")
+            .update(payload)
+            .eq("id", editingReportId);
+          if (retryErr) throw retryErr;
+        }
+        alert("After Sale Report updated!");
+      } else {
+        const { error } = await supabase
           .from("after_sale_reports")
           .insert([payload]);
-        if (retryErr) throw retryErr;
+
+        if (error) {
+          delete payload.feed_gm_b;
+          const { error: retryErr } = await supabase
+            .from("after_sale_reports")
+            .insert([payload]);
+          if (retryErr) throw retryErr;
+        }
+
+        await supabase
+          .from("vet_visits")
+          .update({ status: "Sold", closed_date: reportVisitDate })
+          .eq("id", activeReportVisit.id);
+
+        await supabase
+          .from("farmers")
+          .update({
+            status: "Active",
+            last_sale_date: reportVisitDate,
+          })
+          .eq("id", activeReportVisit.farmer_id);
+
+        alert("Batch marked as SOLD & moved to Active status!");
       }
 
-      await supabase
-        .from("vet_visits")
-        .update({ status: "Sold", closed_date: reportVisitDate })
-        .eq("id", activeReportVisit.id);
-
-      await supabase
-        .from("farmers")
-        .update({
-          status: "Active",
-          last_sale_date: reportVisitDate,
-        })
-        .eq("id", activeReportVisit.farmer_id);
-
-      alert("Batch marked as SOLD & moved to Active status!");
+      setEditingReportId(null);
       setShowAfterSaleModal(false);
+      if (showHistoryModal && selectedHistoryVisit) {
+        await handleHistoryClick(selectedHistoryVisit);
+      }
       loadVetVisits();
     } catch (err: any) {
       alert(err.message || "Failed to save after sale report");
     }
   }
 
-  // Layer Submit: If markAsCulled is true, report fields are NOT mandatory (only Reason + Confirm warning required)
   async function handleLayerReportSubmit(markAsCulled = false) {
     if (!activeReportVisit) return;
 
@@ -1874,6 +2073,13 @@ ${currentUserProfile.region}`;
               .join(" | ")
           : cleanRemarks;
 
+      const resolvedBreed =
+        layerForm.breed ||
+        activeReportVisit.breed ||
+        "Shaver Star Cross 579 Brown";
+      const resolvedHatchery =
+        layerForm.hatchery || activeReportVisit.hatchery || "";
+
       const hasAnyLayerMetrics =
         Number(layerForm.b_weight_g) > 0 ||
         Number(layerForm.feed_intake_g) > 0 ||
@@ -1899,28 +2105,55 @@ ${currentUserProfile.region}`;
           feed_type: layerForm.feed_type,
           pro_date: layerForm.pro_date || null,
           batch_no: layerForm.batch_no,
-          hatchery: layerForm.hatchery,
-          breed: layerForm.breed,
+          hatchery: resolvedHatchery,
+          breed: resolvedBreed,
           disease: layerForm.disease,
           vaccine: activeReportVisit.last_vaccine_name || "",
           remarks: finalRemarks,
         };
 
-        const { error } = await supabase
-          .from("layer_reports")
-          .insert([payload]);
-
-        if (error) {
-          delete payload.feed_total_kg;
-          delete payload.mortality;
-          const { error: retryErr } = await supabase
+        if (editingReportId) {
+          const { error } = await supabase
+            .from("layer_reports")
+            .update(payload)
+            .eq("id", editingReportId);
+          if (error) {
+            delete payload.feed_total_kg;
+            delete payload.mortality;
+            const { error: retryErr } = await supabase
+              .from("layer_reports")
+              .update(payload)
+              .eq("id", editingReportId);
+            if (retryErr) throw retryErr;
+          }
+        } else {
+          const { error } = await supabase
             .from("layer_reports")
             .insert([payload]);
-          if (retryErr) throw retryErr;
+
+          if (error) {
+            delete payload.feed_total_kg;
+            delete payload.mortality;
+            const { error: retryErr } = await supabase
+              .from("layer_reports")
+              .insert([payload]);
+            if (retryErr) throw retryErr;
+          }
         }
       }
 
-      if (mortNum > 0) {
+      // Sync breed/hatchery to vet_visits if updated
+      if (
+        resolvedBreed !== activeReportVisit.breed ||
+        resolvedHatchery !== activeReportVisit.hatchery
+      ) {
+        await supabase
+          .from("vet_visits")
+          .update({ breed: resolvedBreed, hatchery: resolvedHatchery })
+          .eq("id", activeReportVisit.id);
+      }
+
+      if (!editingReportId && mortNum > 0) {
         await supabase
           .from("vet_visits")
           .update({ t_birds: updatedTBirds })
@@ -1942,7 +2175,7 @@ ${currentUserProfile.region}`;
         const visitCullUpdate: Record<string, any> = {
           status: "Culled",
           closed_date: reportVisitDate,
-          t_birds: updatedTBirds,
+          t_birds: editingReportId ? prevBirds : updatedTBirds,
           culled_reason: cullReasonText.trim(),
         };
         const { error: cullErr } = await supabase
@@ -1968,12 +2201,18 @@ ${currentUserProfile.region}`;
 
         alert("Layer Batch marked as CULLED & moved to Active status!");
       } else {
-        alert("Layer Report saved!");
+        alert(
+          editingReportId ? "Layer Report updated!" : "Layer Report saved!"
+        );
       }
 
+      setEditingReportId(null);
       setShowLayerModal(false);
       setShowCullReasonInput(false);
       setCullReasonText("");
+      if (showHistoryModal && selectedHistoryVisit) {
+        await handleHistoryClick(selectedHistoryVisit);
+      }
       loadVetVisits();
     } catch (err: any) {
       alert(err.message || "Failed to save layer report");
@@ -2008,7 +2247,6 @@ ${currentUserProfile.region}`;
     await loadVaccinesList();
   }
 
-  // Open Add Farmer Modal (Pre-filled with Agent from Agent Header "+ 👨‍🌾" button)
   function openAddFarmerUnderAgent(agentGroup: any) {
     const agentObj = allAgents.find(
       (a) => String(a.id) === String(agentGroup.agentId)
@@ -2043,7 +2281,6 @@ ${currentUserProfile.region}`;
     setShowFarmerFormModal(true);
   }
 
-  // Open Full Farmer + Batch Edit Modal (Triggered from Action -> Edit)
   function handleFullEditRow(row: any) {
     const f = row.farmer;
     const v = row.visit;
@@ -2084,7 +2321,10 @@ ${currentUserProfile.region}`;
       bagda: String(f.bagda || ""),
       tengra: String(f.tengra || ""),
       feed_type: f.feed_type || "",
-      latitude: f.latitude !== null && f.latitude !== undefined ? String(f.latitude) : "",
+      latitude:
+        f.latitude !== null && f.latitude !== undefined
+          ? String(f.latitude)
+          : "",
       longitude:
         f.longitude !== null && f.longitude !== undefined
           ? String(f.longitude)
@@ -2213,7 +2453,6 @@ ${currentUserProfile.region}`;
     );
   }
 
-  // Remove Running Batch (Deletes the running batch & its reports after warning, then reverts farmer status to Active/Inactive)
   async function handleRemoveFromRunning(row: any) {
     if (row.kind !== "batch" || !row.visit) return;
     const visit = row.visit;
@@ -2240,7 +2479,6 @@ ${currentUserProfile.region}`;
         .eq("id", visit.id);
       if (delErr) throw delErr;
 
-      // Check remaining running batches of this farmer
       const remainingRunning = (farmer.runningVisits || []).filter(
         (rv: any) => String(rv.id) !== vId
       );
@@ -2268,6 +2506,7 @@ ${currentUserProfile.region}`;
     }
   }
 
+  // History Click: Only includes batches that actually have saved reports
   async function handleHistoryClick(visitOrBatch: any, farmerObj?: any) {
     const farmer =
       farmerObj ||
@@ -2277,24 +2516,6 @@ ${currentUserProfile.region}`;
       visitOrBatch?.farmers;
 
     const farmerIdStr = String(farmer?.id || visitOrBatch?.farmer_id || "");
-
-    const batchesForFarmer =
-      farmer?.allBatches && farmer.allBatches.length > 0
-        ? farmer.allBatches
-        : visitOrBatch
-        ? [visitOrBatch]
-        : [];
-
-    const initialBatch =
-      batchesForFarmer.find(
-        (b: any) => String(b.id) === String(visitOrBatch?.id)
-      ) ||
-      batchesForFarmer[0] ||
-      visitOrBatch;
-
-    setHistoryBatches(batchesForFarmer);
-    setSelectedHistoryVisit(initialBatch);
-    setShowHistoryModal(true);
 
     const [{ data: bData }, { data: aData }, { data: lData }, { data: fLogs }] =
       await Promise.all([
@@ -2320,12 +2541,46 @@ ${currentUserProfile.region}`;
           .order("change_date", { ascending: false }),
       ]);
 
+    const beforeList = bData || [];
+    const afterList = aData || [];
+    const layerList = lData || [];
+
+    const visitIdsWithReports = new Set<string>(
+      [...beforeList, ...afterList, ...layerList]
+        .map((r: any) => String(r.vet_visit_id || ""))
+        .filter(Boolean)
+    );
+
+    const allFarmerBatches =
+      farmer?.allBatches && farmer.allBatches.length > 0
+        ? farmer.allBatches
+        : visitOrBatch
+        ? [visitOrBatch]
+        : [];
+
+    const batchesWithReports = allFarmerBatches.filter((b: any) =>
+      visitIdsWithReports.has(String(b.id))
+    );
+
+    const finalBatches =
+      batchesWithReports.length > 0 ? batchesWithReports : allFarmerBatches;
+
+    const initialBatch =
+      finalBatches.find(
+        (b: any) => String(b.id) === String(visitOrBatch?.id)
+      ) ||
+      finalBatches[0] ||
+      visitOrBatch;
+
     setAllReportsForFarmer({
-      before: bData || [],
-      after: aData || [],
-      layer: lData || [],
+      before: beforeList,
+      after: afterList,
+      layer: layerList,
       feedLogs: fLogs || [],
     });
+    setHistoryBatches(finalBatches);
+    setSelectedHistoryVisit(initialBatch);
+    setShowHistoryModal(true);
   }
 
   const activeBatchBeforeReports = allReportsForFarmer.before.filter(
@@ -2350,67 +2605,129 @@ ${currentUserProfile.region}`;
     return "";
   })();
 
+  // Native File Save & Direct Open (Tries FileOpener first so Android shows "Open with" apps instead of social Share)
   async function saveBufferOrBlob(
-  bufferOrBlob: ArrayBuffer | Blob,
-  fileName: string
-) {
-  try {
-    const arrayBuffer =
-      bufferOrBlob instanceof Blob
-        ? await bufferOrBlob.arrayBuffer()
-        : bufferOrBlob;
-
-    if (Capacitor.isNativePlatform()) {
-      let binary = "";
-      const bytes = new Uint8Array(arrayBuffer);
-      const chunkSize = 0x8000;
-      for (let i = 0; i < bytes.length; i += chunkSize) {
-        binary += String.fromCharCode.apply(
-          null,
-          Array.from(bytes.subarray(i, i + chunkSize))
-        );
-      }
-      const base64Data = window.btoa(binary);
-
-      const savedFile = await Filesystem.writeFile({
-        path: fileName,
-        data: base64Data,
-        directory: Directory.Documents,
-        recursive: true,
-      });
-
-      alert(`File saved successfully:\n📁 Documents/${fileName}`);
-
-      if (savedFile.uri) {
-        try {
-          await Share.share({
-            title: fileName,
-            url: savedFile.uri,
-            dialogTitle: "Open or View Excel File",
-          });
-        } catch {}
-      }
-    } else {
-      const blob =
+    bufferOrBlob: ArrayBuffer | Blob,
+    fileName: string
+  ) {
+    try {
+      const arrayBuffer =
         bufferOrBlob instanceof Blob
-          ? bufferOrBlob
-          : new Blob([arrayBuffer], {
-              type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          ? await bufferOrBlob.arrayBuffer()
+          : bufferOrBlob;
+
+      if (Capacitor.isNativePlatform()) {
+        let binary = "";
+        const bytes = new Uint8Array(arrayBuffer);
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(
+            null,
+            Array.from(bytes.subarray(i, i + chunkSize))
+          );
+        }
+        const base64Data = window.btoa(binary);
+
+        const savedFile = await Filesystem.writeFile({
+          path: fileName,
+          data: base64Data,
+          directory: Directory.Documents,
+          recursive: true,
+        });
+
+        if (savedFile.uri) {
+          const capPlugins = (Capacitor as any).Plugins;
+          if (capPlugins?.FileOpener?.open) {
+            await capPlugins.FileOpener.open({
+              filePath: savedFile.uri,
+              contentType:
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              openWithDefault: true,
             });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
+          } else {
+            await Share.share({
+              url: savedFile.uri,
+              dialogTitle: "Open Excel File",
+            });
+          }
+        }
+      } else {
+        const blob =
+          bufferOrBlob instanceof Blob
+            ? bufferOrBlob
+            : new Blob([arrayBuffer], {
+                type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      }
+    } catch (err: any) {
+      console.error("Export save error:", err);
+      alert("File save error: " + (err?.message || ""));
     }
-  } catch (err: any) {
-    console.error("Export save error:", err);
-    alert("File save error: " + (err?.message || ""));
   }
-}
+
+  // Helper to apply clean professional styling to any ExcelJS worksheet
+  function styleExcelWorksheet(sheet: ExcelJS.Worksheet, headerArgb = "1E3A8A") {
+    sheet.views = [{ state: "frozen", ySplit: 1 }];
+    const headerRow = sheet.getRow(1);
+    headerRow.height = 24;
+    headerRow.eachCell((cell) => {
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: headerArgb },
+      };
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 10 };
+      cell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+        wrapText: true,
+      };
+      cell.border = {
+        top: { style: "thin", color: { argb: "CBD5E1" } },
+        left: { style: "thin", color: { argb: "CBD5E1" } },
+        bottom: { style: "medium", color: { argb: "0F172A" } },
+        right: { style: "thin", color: { argb: "CBD5E1" } },
+      };
+    });
+
+    sheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return;
+      row.height = 19;
+      const bg = rowNumber % 2 === 0 ? "FFFFFF" : "F8FAFC";
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: bg },
+        };
+        cell.font = { color: { argb: "0F172A" }, size: 10 };
+        cell.alignment = { vertical: "middle", wrapText: true };
+        cell.border = {
+          top: { style: "thin", color: { argb: "E2E8F0" } },
+          left: { style: "thin", color: { argb: "E2E8F0" } },
+          bottom: { style: "thin", color: { argb: "E2E8F0" } },
+          right: { style: "thin", color: { argb: "E2E8F0" } },
+        };
+      });
+    });
+
+    sheet.columns.forEach((col) => {
+      let maxLen = 10;
+      col.eachCell?.({ includeEmpty: true }, (c) => {
+        const len = String(c.value ?? "").length;
+        if (len > maxLen) maxLen = len;
+      });
+      col.width = Math.min(Math.max(maxLen + 3, 11), 32);
+    });
+  }
 
   async function exportVisitHistoryExcel() {
     if (!selectedHistoryVisit) return;
@@ -2420,133 +2737,185 @@ ${currentUserProfile.region}`;
 
     if (isLayer) {
       const s = workbook.addWorksheet("Layer History");
-      s.addRow([
+      const headers = [
         "Visit Date",
+        "Hatchery",
         "H.Date",
+        "Breed",
         "T.Birds",
         "Mortality",
         "Age (Wks)",
         "Wt (g)",
-        "Std Wt",
-        "Feed (g/b)",
-        "Std Feed",
+        "Std Wt (g)",
+        "Total Feed (Kg)",
+        "Feed (g/b/d)",
+        "Std Feed (g)",
         "Egg%",
         "Std Egg%",
-        "Egg Wt",
+        "Egg Wt (g)",
         "Std Egg Wt",
-        "Feed",
-        "Type",
+        "Feed Company",
+        "Feed Type",
+        "MFG Date",
+        "Batch No",
+        "Disease",
+        "Vaccine",
         "Remarks",
-      ]);
+      ];
+      s.addRow(headers);
+
       activeBatchLayerReports.forEach((r: any) => {
         const wks = getAgeWeeks(selectedHistoryVisit.hatch_date, r.visit_date);
-        const std = getLayerStdForVisit(
-          r.breed || selectedHistoryVisit.breed,
-          wks
-        );
+        const breedVal =
+          selectedHistoryVisit.breed || r.breed || "Shaver Star Cross 579 Brown";
+        const hatcheryVal = selectedHistoryVisit.hatchery || r.hatchery || "-";
+        const std = getLayerStdForVisit(breedVal, wks);
+
         s.addRow([
-          r.visit_date,
-          selectedHistoryVisit.hatch_date,
-          selectedHistoryVisit.t_birds,
+          r.visit_date || "-",
+          hatcheryVal,
+          selectedHistoryVisit.hatch_date || "-",
+          breedVal,
+          selectedHistoryVisit.t_birds || 0,
           r.mortality ?? 0,
           wks,
-          r.b_weight_g,
+          r.b_weight_g || 0,
           std?.weight || "-",
-          r.feed_intake_g,
+          r.feed_total_kg || "-",
+          r.feed_intake_g || 0,
           std?.feed_bird_day || "-",
-          r.egg_production,
+          r.egg_production || 0,
           std?.egg_production || "-",
-          r.egg_weight,
+          r.egg_weight || 0,
           std?.egg_weight || "-",
-          r.feed_company,
-          r.feed_type,
-          getRemarkText(r),
+          r.feed_company || "-",
+          r.feed_type || "-",
+          r.pro_date || "-",
+          r.batch_no || "-",
+          r.disease || "-",
+          r.vaccine || "-",
+          getRemarkText(r) || "-",
         ]);
       });
+
+      styleExcelWorksheet(s, "312E81");
     } else {
       const b = workbook.addWorksheet("Before Sale");
       b.addRow([
         "Visit Date",
+        "Hatchery",
         "H.Date",
+        "Breed",
         "T.Birds",
         "Age (Days)",
         "Mort.",
         "Wt (g)",
-        "Std Wt",
+        "Std Wt (g)",
         "Feed (Kg)",
         "Feed/B (g)",
-        "Std Feed",
+        "Std Feed (g)",
         "FCR(w/o)",
         "Std FCR",
         "FCR(With)",
-        "Feed",
-        "Type",
+        "Feed Company",
+        "Feed Type",
+        "MFG Date",
+        "Batch No",
+        "Uneven%",
+        "Indigestion%",
+        "Orange Faeces%",
+        "Watery Faeces%",
+        "Litter",
         "Remarks",
       ]);
+
       activeBatchBeforeReports.forEach((r: any) => {
         const d = getAgeDays(selectedHistoryVisit.hatch_date, r.visit_date);
         const std = getMeatStdForVisit(selectedHistoryVisit.category, d);
         b.addRow([
-          r.visit_date,
-          selectedHistoryVisit.hatch_date,
-          selectedHistoryVisit.t_birds,
+          r.visit_date || "-",
+          selectedHistoryVisit.hatchery || "-",
+          selectedHistoryVisit.hatch_date || "-",
+          selectedHistoryVisit.breed || "-",
+          selectedHistoryVisit.t_birds || 0,
           d,
-          r.mortality_pcs,
-          r.weight_gm_b,
+          r.mortality_pcs ?? 0,
+          r.weight_gm_b || 0,
           std?.weight || "-",
-          r.feed_t_kg,
-          r.feed_gm_b,
+          r.feed_t_kg || 0,
+          r.feed_gm_b || 0,
           std?.feed_intake || "-",
-          r.fcr_w_out_m,
+          r.fcr_w_out_m || "-",
           std?.fcr || "-",
-          r.fcr_with_m,
-          r.feed_company,
-          r.feed_type,
-          getRemarkText(r),
+          r.fcr_with_m || "-",
+          r.feed_company || "-",
+          r.feed_type || "-",
+          r.pro_date || "-",
+          r.batch_no || "-",
+          r.uneven || "-",
+          r.indigestion || "-",
+          r.orange_feces || "-",
+          r.watery_feces || "-",
+          r.litter_condition || "-",
+          getRemarkText(r) || "-",
         ]);
       });
+      styleExcelWorksheet(b, "065F46");
 
       const a = workbook.addWorksheet("After Sale");
       a.addRow([
         "Sale Date",
+        "Hatchery",
         "H.Date",
+        "Breed",
         "T.Birds",
         "Age (Days)",
         "Mort.",
         "Wt (g)",
-        "Std Wt",
+        "Std Wt (g)",
         "Feed (Kg)",
         "Feed/B (g)",
-        "Std Feed",
+        "Std Feed (g)",
         "FCR(w/o)",
         "Std FCR",
         "FCR(With)",
-        "Feed Mill",
+        "Feed Company",
         "Last Feed",
         "Remarks",
       ]);
+
       activeBatchAfterReports.forEach((r: any) => {
         const d = getAgeDays(selectedHistoryVisit.hatch_date, r.visit_date);
         const std = getMeatStdForVisit(selectedHistoryVisit.category, d);
+        const tB = Number(selectedHistoryVisit.t_birds || 0);
+        const fGm =
+          r.feed_gm_b ||
+          (tB > 0
+            ? ((Number(r.feed_consumption_kg || 0) * 1000) / tB).toFixed(1)
+            : "-");
+
         a.addRow([
-          r.visit_date,
-          selectedHistoryVisit.hatch_date,
-          selectedHistoryVisit.t_birds,
+          r.visit_date || "-",
+          selectedHistoryVisit.hatchery || "-",
+          selectedHistoryVisit.hatch_date || "-",
+          selectedHistoryVisit.breed || "-",
+          tB,
           d,
-          r.mortality,
-          r.weight,
+          r.mortality ?? 0,
+          r.weight || 0,
           std?.weight || "-",
-          r.feed_consumption_kg,
-          r.feed_gm_b,
+          r.feed_consumption_kg || 0,
+          fGm,
           std?.feed_intake || "-",
-          r.fcr_w_out_m,
+          r.fcr_w_out_m || "-",
           std?.fcr || "-",
-          r.fcr_with_m,
-          r.feed_mill,
-          r.feed,
-          getRemarkText(r),
+          r.fcr_with_m || "-",
+          r.feed_mill || "-",
+          r.feed || "-",
+          getRemarkText(r) || "-",
         ]);
       });
+      styleExcelWorksheet(a, "1E3A8A");
     }
 
     const batchName =
@@ -2959,33 +3328,36 @@ ${currentUserProfile.region}`;
         "Farmer Name",
         "Mobile",
         "Address",
+        "Hatchery",
+        "H.Date",
+        "Breed",
+        "Birds",
         "Nourish Conversion",
       ]);
-      sheet.getRow(1).eachCell((c) => {
-        c.fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: { argb: "0F172A" },
-        };
-        c.font = { bold: true, color: { argb: "FFFFFFFF" } };
-      });
+
       tableFilteredRows.forEach((r, idx) => {
         const f = r.farmer;
+        const v = r.visit;
         sheet.addRow([
           idx + 1,
           r.status,
-          r.kind === "batch" ? r.visit.hatch_date || "-" : f.statusDate || "-",
+          r.kind === "batch" ? v?.hatch_date || "-" : f.statusDate || "-",
           r.category,
           f.agentName,
-          r.visit?.displayBatchName || f.farmer_name,
+          v?.displayBatchName || f.farmer_name,
           f.mobile || "-",
           [f.village, f.upazila].filter(Boolean).join(", "),
+          v?.hatchery || "-",
+          v?.hatch_date || "-",
+          v?.breed || "-",
+          v?.t_birds || 0,
           f.nourishTag
             ? `${f.nourishTag}${f.nourishTagDate ? ` (${f.nourishTagDate})` : ""}`
             : "-",
         ]);
       });
-      sheet.columns.forEach((col) => (col.width = 20));
+
+      styleExcelWorksheet(sheet, "0F172A");
 
       const today = new Date().toISOString().slice(0, 10);
       const fileName = `Farmer_Status_${selectedStatusFilter || "All"}_${today}.xlsx`;
@@ -2998,101 +3370,6 @@ ${currentUserProfile.region}`;
     }
   }
 
-  const REPORT_FIELDS: Record<
-    string,
-    { key: string; label: string; type?: string }[]
-  > = {
-    before_sale_reports: [
-      { key: "visit_date", label: "Visit Date", type: "date" },
-      { key: "mortality_pcs", label: "Mortality (pcs)", type: "number" },
-      { key: "weight_gm_b", label: "Weight (g/b)", type: "number" },
-      { key: "feed_t_kg", label: "Feed Total (Kg)", type: "number" },
-      { key: "feed_gm_b", label: "Feed (g/b)", type: "number" },
-      { key: "fcr_w_out_m", label: "FCR (w/o M)", type: "number" },
-      { key: "fcr_with_m", label: "FCR (with M)", type: "number" },
-      { key: "uneven", label: "Uneven (%)" },
-      { key: "indigestion", label: "Indigestion (%)" },
-      { key: "orange_feces", label: "Orange Faeces (%)" },
-      { key: "watery_feces", label: "Watery Faeces (%)" },
-      { key: "feeder", label: "Feeder" },
-      { key: "drinker", label: "Drinker" },
-      { key: "floor_space", label: "Floor Space" },
-      { key: "litter_condition", label: "Litter Condition" },
-      { key: "ventilation", label: "Ventilation" },
-      { key: "feed_scattering", label: "Feed Scattering" },
-      { key: "feed_hardness", label: "Feed Hardness" },
-      { key: "feed_company", label: "Feed Company" },
-      { key: "feed_type", label: "Feed Type" },
-      { key: "pro_date", label: "MFG Date", type: "date" },
-      { key: "batch_no", label: "Batch No." },
-      { key: "remarks", label: "Remarks" },
-    ],
-    after_sale_reports: [
-      { key: "visit_date", label: "Sale Date", type: "date" },
-      { key: "mortality", label: "Mortality", type: "number" },
-      { key: "weight", label: "Weight (g)", type: "number" },
-      { key: "feed_consumption_kg", label: "Total Feed (Kg)", type: "number" },
-      { key: "feed_gm_b", label: "Feed/Bird (g)", type: "number" },
-      { key: "feed", label: "Last Feed" },
-      { key: "feed_mill", label: "Feed Company" },
-      { key: "fcr_w_out_m", label: "FCR (w/o M)", type: "number" },
-      { key: "fcr_with_m", label: "FCR (with M)", type: "number" },
-      { key: "remarks", label: "Remarks" },
-    ],
-    layer_reports: [
-      { key: "visit_date", label: "Visit Date", type: "date" },
-      { key: "mortality", label: "Mortality (pcs)", type: "number" },
-      { key: "b_weight_g", label: "Body Weight (g)", type: "number" },
-      { key: "feed_total_kg", label: "Feed Total (Kg)", type: "number" },
-      { key: "feed_intake_g", label: "Feed (g/b/d)", type: "number" },
-      { key: "egg_production", label: "Egg Production %", type: "number" },
-      { key: "egg_weight", label: "Egg Weight (g)", type: "number" },
-      { key: "feed_company", label: "Feed Company" },
-      { key: "feed_type", label: "Feed Type" },
-      { key: "pro_date", label: "MFG Date", type: "date" },
-      { key: "batch_no", label: "Batch No." },
-      { key: "hatchery", label: "Hatchery" },
-      { key: "breed", label: "Breed" },
-      { key: "disease", label: "Disease" },
-      { key: "remarks", label: "Remarks" },
-    ],
-  };
-
-  function openEditReport(table: string, rep: any) {
-    const form: Record<string, any> = {};
-    (REPORT_FIELDS[table] || []).forEach((fld) => {
-      if (fld.key === "remarks") {
-        form[fld.key] = getRemarkText(rep);
-      } else {
-        form[fld.key] = rep[fld.key] ?? "";
-      }
-    });
-    setEditReport({ table, id: rep.id, form });
-  }
-
-  async function handleSaveEditedReport() {
-    if (!editReport) return;
-    const fields = REPORT_FIELDS[editReport.table] || [];
-    const payload: Record<string, any> = {};
-    fields.forEach((fld) => {
-      const v = editReport.form[fld.key];
-      if (fld.type === "number") payload[fld.key] = Number(v) || 0;
-      else if (fld.type === "date") payload[fld.key] = v || null;
-      else payload[fld.key] = v ?? "";
-    });
-    const { error } = await supabase
-      .from(editReport.table)
-      .update(payload)
-      .eq("id", editReport.id);
-    if (error) {
-      alert(error.message || "Failed to update report");
-      return;
-    }
-    setEditReport(null);
-    if (selectedHistoryVisit) await handleHistoryClick(selectedHistoryVisit);
-    loadVetVisits();
-  }
-
   const activeAgeDays = getAgeDays(
     activeReportVisit?.hatch_date,
     reportVisitDate
@@ -3102,16 +3379,17 @@ ${currentUserProfile.region}`;
     reportVisitDate
   );
 
-  // For Before/After Sale Modal: Broiler gets Broiler Std, Sonali gets Sonali Std (blank if not set in DB)
   const activeMeatStd = getMeatStdForVisit(
     activeReportVisit?.category,
     activeAgeDays
   );
 
-  const activeLayerStd = getLayerStdForVisit(
-    layerForm.breed || activeReportVisit?.breed,
-    activeAgeWeeks
-  );
+  // Layer Standard uses visit's breed or layerForm's breed
+  const activeLayerBreed =
+    layerForm.breed ||
+    activeReportVisit?.breed ||
+    "Shaver Star Cross 579 Brown";
+  const activeLayerStd = getLayerStdForVisit(activeLayerBreed, activeAgeWeeks);
 
   const beforeChangedComp = getFeedChangeCompanyObj(beforeForm.feed_company);
   const afterChangedComp = getFeedChangeCompanyObj(afterForm.feed_mill);
@@ -3121,13 +3399,14 @@ ${currentUserProfile.region}`;
     UPDATED_FEED_TYPES_BY_CATEGORY[activeReportVisit?.category || "Broiler"] ||
     UPDATED_FEED_TYPES_BY_CATEGORY["Broiler"];
 
-  const liveLayerBirdsAfterMortality = Math.max(
-    0,
-    Number(activeReportVisit?.t_birds || 0) -
-      Math.max(0, Number(layerForm.mortality_pcs || 0))
-  );
+  const liveLayerBirdsAfterMortality = editingReportId
+    ? Number(activeReportVisit?.t_birds || 0)
+    : Math.max(
+        0,
+        Number(activeReportVisit?.t_birds || 0) -
+          Math.max(0, Number(layerForm.mortality_pcs || 0))
+      );
 
-  // Dynamic optional columns (Remarks is ALWAYS shown as a fixed column so it never hides)
   const beforeExtraCols = [
     { key: "pro_date", label: "MFG Date" },
     { key: "batch_no", label: "Batch No" },
@@ -3157,9 +3436,12 @@ ${currentUserProfile.region}`;
     activeBatchLayerReports.some((r) => hasValue(r[col.key]))
   );
 
-  // History Batch Bar: 1 Primary Batch upfront + Dropdown for all other batches
-  const primaryHistoryBatch = historyBatches[0] || null;
-  const otherHistoryBatches = historyBatches.slice(1);
+  // History Batch Bar: Selected batch is ALWAYS shown upfront; remaining batches are in compact dropdown on the right
+  const otherHistoryBatches = historyBatches.filter(
+    (b) => String(b.id) !== String(selectedHistoryVisit?.id)
+  );
+
+  // ================= PART 2B OF 2 (Paste right below Part 2A) =================
 
   return (
     <div className="p-3 sm:p-5 max-w-7xl mx-auto space-y-4">
@@ -3349,7 +3631,7 @@ ${currentUserProfile.region}`;
         </div>
       </div>
 
-      {/* Agent-wise Table (Strictly <= 2 lines per cell, horizontal expansion) */}
+      {/* Agent-wise Table */}
       {filteredAgentsList.length === 0 ? (
         <div className="bg-white border border-slate-300 rounded-xl p-8 text-center text-xs text-slate-400">
           {_loading ? "Loading..." : "No farmers found for the selected filter."}
@@ -3365,7 +3647,7 @@ ${currentUserProfile.region}`;
               key={idx}
               className="bg-white border border-slate-300 rounded-xl shadow-sm overflow-hidden"
             >
-              {/* Agent Header with small + Farmer icon beside Agent Name */}
+              {/* Agent Header */}
               <div className="bg-slate-100 px-3 py-1.5 border-b border-slate-300 flex flex-wrap justify-between items-center gap-2">
                 <div className="flex items-center gap-2">
                   <h2 className="font-bold text-xs sm:text-sm text-slate-800">
@@ -3467,9 +3749,9 @@ ${currentUserProfile.region}`;
                         ? "ring-4 ring-yellow-400 animate-pulse"
                         : "";
 
+                      // History is ONLY active if reports exist for this specific batch (or farmer when not running)
                       const repMeta = isBatch
-                        ? visitReportMeta[String(visit.id)] ||
-                          farmerReportMeta[String(farmer.id)]
+                        ? visitReportMeta[String(visit.id)]
                         : farmerReportMeta[String(farmer.id)];
                       const hasVisitHistory = Boolean(
                         repMeta && repMeta.count > 0
@@ -3490,7 +3772,7 @@ ${currentUserProfile.region}`;
                             isFocused ? "bg-yellow-50" : ""
                           }`}
                         >
-                          {/* 1. STATUS & DATE (Max 2 lines, whitespace-nowrap) */}
+                          {/* 1. STATUS & DATE */}
                           <td className="border border-slate-300 px-2 py-1 whitespace-nowrap">
                             <div className="flex items-center gap-1">
                               {!isBatch && (
@@ -3559,7 +3841,7 @@ ${currentUserProfile.region}`;
                             {category}
                           </td>
 
-                          {/* 4. FARMER (Max 2 lines) */}
+                          {/* 4. FARMER */}
                           <td className="border border-slate-300 px-2 py-1 font-bold text-slate-800 whitespace-nowrap">
                             <div>{farmer.farmer_name || "N/A"}</div>
                             {tag && (
@@ -3569,7 +3851,7 @@ ${currentUserProfile.region}`;
                             )}
                           </td>
 
-                          {/* 5. MOBILE & ADDRESS (Max 2 lines) */}
+                          {/* 5. MOBILE & ADDRESS */}
                           <td className="border border-slate-300 px-2 py-1 text-slate-600 whitespace-nowrap">
                             <div>{farmer.mobile || "-"}</div>
                             <div className="text-[10px] text-slate-500">
@@ -3586,7 +3868,7 @@ ${currentUserProfile.region}`;
                                 {visit.hatch_date || "-"}
                               </td>
 
-                              {/* 7. HATCHERY & BREED (Max 2 lines) */}
+                              {/* 7. HATCHERY & BREED */}
                               <td className="border border-slate-300 px-2 py-1 whitespace-nowrap">
                                 <div className="font-medium text-slate-800">
                                   {visit.hatchery || "-"}
@@ -3601,7 +3883,7 @@ ${currentUserProfile.region}`;
                                 {visit.t_birds || 0}
                               </td>
 
-                              {/* 9. VACCINE / ALERT (Strictly <= 2 lines, side-by-side badges) */}
+                              {/* 9. VACCINE / ALERT */}
                               <td className="border border-slate-300 px-2 py-1 whitespace-nowrap">
                                 <div className="flex items-center justify-between gap-1.5">
                                   <div className="leading-tight">
@@ -3648,7 +3930,7 @@ ${currentUserProfile.region}`;
                                 </div>
                               </td>
 
-                              {/* 10. TAKE REPORT (Side-by-side buttons to keep <= 2 lines) */}
+                              {/* 10. TAKE REPORT */}
                               <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap">
                                 {isLayer ? (
                                   <button
@@ -3717,7 +3999,7 @@ ${currentUserProfile.region}`;
                             </td>
                           )}
 
-                          {/* 11. HISTORY (Max 2 lines: Button + Last visit date) */}
+                          {/* 11. HISTORY (Only Active if reports exist inside) */}
                           <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap">
                             <button
                               type="button"
@@ -3741,7 +4023,7 @@ ${currentUserProfile.region}`;
                               className={`px-2 py-0.5 rounded text-[10px] font-semibold border transition ${
                                 hasVisitHistory
                                   ? "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 cursor-pointer"
-                                  : "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"
+                                  : "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-60"
                               }`}
                             >
                               History
@@ -3753,7 +4035,7 @@ ${currentUserProfile.region}`;
                             )}
                           </td>
 
-                          {/* 12. ACTION (Edit full farmer/batch, Remove from running, Add Batch/Run Farm/Activate) */}
+                          {/* 12. ACTION */}
                           <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap">
                             <select
                               value=""
@@ -3979,7 +4261,6 @@ ${currentUserProfile.region}`;
               </div>
             </div>
 
-            {/* Map Location Trigger */}
             <div className="mb-3 flex flex-wrap items-center gap-2 bg-slate-50 border border-slate-200 rounded p-2.5 text-xs">
               <button
                 type="button"
@@ -4000,7 +4281,6 @@ ${currentUserProfile.region}`;
               )}
             </div>
 
-            {/* Farm Category & Capacities */}
             <div className="mb-3 text-xs">
               <label className="block font-bold text-slate-600 mb-1">
                 Farm Category *
@@ -4123,7 +4403,6 @@ ${currentUserProfile.region}`;
               </div>
             </div>
 
-            {/* If editing a running batch row, also show batch fields */}
             {editingBatchVisit && (
               <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-3 mb-3 space-y-2.5 text-xs">
                 <div className="font-bold text-emerald-900 border-b border-emerald-200 pb-1">
@@ -4597,69 +4876,6 @@ ${currentUserProfile.region}`;
       )}
 
       {/* ==================================================
-          EDIT SAVED REPORT (from History)
-      ================================================== */}
-      {editReport && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[75] p-3">
-          <div className="bg-white rounded-xl p-4 w-full max-w-2xl max-h-[92vh] overflow-y-auto shadow-2xl border border-slate-300">
-            <div className="flex justify-between items-center pb-2 mb-3 border-b">
-              <h3 className="text-sm font-bold text-slate-800">Edit Report</h3>
-              <button
-                onClick={() => setEditReport(null)}
-                className="text-slate-500 font-bold"
-              >
-                ✖
-              </button>
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
-              {(REPORT_FIELDS[editReport.table] || []).map((fld) => (
-                <div
-                  key={fld.key}
-                  className={
-                    fld.key === "remarks" ? "col-span-2 sm:col-span-3" : ""
-                  }
-                >
-                  <label className="block font-semibold text-slate-600 mb-0.5">
-                    {fld.label}
-                  </label>
-                  <input
-                    type={fld.type || "text"}
-                    value={editReport.form[fld.key] ?? ""}
-                    onChange={(e) =>
-                      setEditReport({
-                        ...editReport,
-                        form: {
-                          ...editReport.form,
-                          [fld.key]: e.target.value,
-                        },
-                      })
-                    }
-                    className="w-full rounded-lg border border-slate-300 px-2 py-1.5 outline-none focus:border-emerald-500"
-                  />
-                </div>
-              ))}
-            </div>
-            <div className="flex justify-end gap-2 pt-3 mt-3 border-t">
-              <button
-                type="button"
-                onClick={() => setEditReport(null)}
-                className="px-4 py-1.5 rounded-lg bg-slate-200 text-slate-700 text-xs font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleSaveEditedReport}
-                className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold"
-              >
-                Save Changes
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ==================================================
           MODAL 0: QUICK "+" ADD GIVEN VACCINE MODAL
       ================================================== */}
       {showLogVaccineModal && activeVaccineVisit && (
@@ -4780,19 +4996,24 @@ ${currentUserProfile.region}`;
       )}
 
       {/* ==================================================
-          MODAL 1: BEFORE SALE REPORT (SONALI STD BLANK IF NOT IN DB)
+          MODAL 1: BEFORE SALE REPORT (Supports both New & Edit from History + Delete Icon)
       ================================================== */}
       {showBeforeSaleModal && activeReportVisit && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[70] p-2 sm:p-4">
           <div className="bg-white p-4 sm:p-5 rounded-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto shadow-2xl border border-slate-300 space-y-3.5">
             <div className="flex justify-between items-center border-b pb-2.5">
               <h3 className="text-sm sm:text-base font-bold text-slate-800">
-                Before Sale Report —{" "}
+                {editingReportId
+                  ? "Edit Before Sale Report — "
+                  : "Before Sale Report — "}
                 {activeReportVisit.farmers?.farmer_name ||
                   activeReportVisit.batch_label}
               </h3>
               <button
-                onClick={() => setShowBeforeSaleModal(false)}
+                onClick={() => {
+                  setEditingReportId(null);
+                  setShowBeforeSaleModal(false);
+                }}
                 className="text-slate-500 font-bold"
               >
                 ✖
@@ -5160,24 +5381,41 @@ ${currentUserProfile.region}`;
             </div>
 
             <div className="flex flex-wrap justify-between items-center gap-2 pt-3 border-t">
-              <button
-                type="button"
-                onClick={() =>
-                  generateBroilerWhatsAppText(
-                    activeReportVisit,
-                    beforeForm,
-                    reportVisitDate,
-                    true
-                  )
-                }
-                className="px-3.5 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-bold shadow-sm"
-              >
-                Generate WhatsApp Msg
-              </button>
+              <div className="flex items-center gap-2">
+                {editingReportId && (
+                  <button
+                    type="button"
+                    title="Delete this report"
+                    onClick={() =>
+                      handleDeleteCurrentReport("before_sale_reports")
+                    }
+                    className="p-1.5 rounded-lg border border-red-200 bg-red-50 hover:bg-red-100 text-red-600 transition"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() =>
+                    generateBroilerWhatsAppText(
+                      activeReportVisit,
+                      beforeForm,
+                      reportVisitDate,
+                      true
+                    )
+                  }
+                  className="px-3.5 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-bold shadow-sm"
+                >
+                  Generate WhatsApp Msg
+                </button>
+              </div>
 
               <div className="flex gap-2">
                 <button
-                  onClick={() => setShowBeforeSaleModal(false)}
+                  onClick={() => {
+                    setEditingReportId(null);
+                    setShowBeforeSaleModal(false);
+                  }}
                   className="px-4 py-1.5 rounded-lg bg-slate-200 text-slate-700 text-xs font-semibold"
                 >
                   Cancel
@@ -5186,7 +5424,7 @@ ${currentUserProfile.region}`;
                   onClick={handleBeforeSaleSubmit}
                   className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold"
                 >
-                  Save Report
+                  {editingReportId ? "Update Report" : "Save Report"}
                 </button>
               </div>
             </div>
@@ -5195,19 +5433,24 @@ ${currentUserProfile.region}`;
       )}
 
       {/* ==================================================
-          MODAL 2: AFTER SALE REPORT (SONALI STD BLANK IF NOT IN DB)
+          MODAL 2: AFTER SALE REPORT (Supports both New & Edit from History + Delete Icon)
       ================================================== */}
       {showAfterSaleModal && activeReportVisit && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[70] p-2 sm:p-4">
           <div className="bg-white p-4 sm:p-5 rounded-2xl w-full max-w-lg max-h-[92vh] overflow-y-auto shadow-2xl border border-slate-300 space-y-3.5">
             <div className="flex justify-between items-center border-b pb-2.5">
               <h3 className="text-sm sm:text-base font-bold text-slate-800">
-                After Sale Report —{" "}
+                {editingReportId
+                  ? "Edit After Sale Report — "
+                  : "After Sale Report — "}
                 {activeReportVisit.farmers?.farmer_name ||
                   activeReportVisit.batch_label}
               </h3>
               <button
-                onClick={() => setShowAfterSaleModal(false)}
+                onClick={() => {
+                  setEditingReportId(null);
+                  setShowAfterSaleModal(false);
+                }}
                 className="text-slate-500 font-bold"
               >
                 ✖
@@ -5461,51 +5704,83 @@ ${currentUserProfile.region}`;
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-3 border-t">
-              <button
-                onClick={() => setShowAfterSaleModal(false)}
-                className="px-4 py-1.5 rounded-lg bg-slate-200 text-slate-700 text-xs font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleAfterSaleSoldSubmit}
-                className="px-5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm"
-              >
-                Sold
-              </button>
+            <div className="flex justify-between items-center gap-2 pt-3 border-t">
+              <div>
+                {editingReportId && (
+                  <button
+                    type="button"
+                    title="Delete this report"
+                    onClick={() =>
+                      handleDeleteCurrentReport("after_sale_reports")
+                    }
+                    className="p-1.5 rounded-lg border border-red-200 bg-red-50 hover:bg-red-100 text-red-600 transition"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    setEditingReportId(null);
+                    setShowAfterSaleModal(false);
+                  }}
+                  className="px-4 py-1.5 rounded-lg bg-slate-200 text-slate-700 text-xs font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleAfterSaleSoldSubmit}
+                  className="px-5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm"
+                >
+                  {editingReportId ? "Update Report" : "Sold"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
 
       {/* ==================================================
-          MODAL 3: LAYER PERFORMANCE REPORT (CULLED BUTTON DISABLED WHEN REASON OPEN)
+          MODAL 3: LAYER PERFORMANCE REPORT (Supports both New & Edit from History + Delete Icon + Accurate White/Brown Std)
       ================================================== */}
       {showLayerModal && activeReportVisit && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[70] p-2 sm:p-4">
           <div className="bg-white p-4 sm:p-5 rounded-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto shadow-2xl border border-slate-300 space-y-3.5">
             <div className="flex justify-between items-center border-b pb-2.5">
               <h3 className="text-sm sm:text-base font-bold text-indigo-900">
-                Layer Performance Report —{" "}
+                {editingReportId
+                  ? "Edit Layer Performance Report — "
+                  : "Layer Performance Report — "}
                 {activeReportVisit.farmers?.farmer_name ||
                   activeReportVisit.batch_label}
               </h3>
               <button
-                onClick={() => setShowLayerModal(false)}
+                onClick={() => {
+                  setEditingReportId(null);
+                  setShowLayerModal(false);
+                }}
                 className="text-slate-500 font-bold"
               >
                 ✖
               </button>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 bg-indigo-50/70 border border-indigo-200 rounded-xl p-2.5 text-xs">
+            <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 bg-indigo-50/70 border border-indigo-200 rounded-xl p-2.5 text-xs">
               <div>
                 <span className="text-slate-500 block text-[10px] uppercase font-bold">
                   Hatchery (DOC)
                 </span>
                 <strong className="text-indigo-900">
-                  {activeReportVisit.hatchery || "-"}
+                  {activeReportVisit.hatchery || layerForm.hatchery || "-"}
+                </strong>
+              </div>
+              <div>
+                <span className="text-slate-500 block text-[10px] uppercase font-bold">
+                  Breed
+                </span>
+                <strong className="text-indigo-900 truncate block">
+                  {activeLayerBreed}
                 </strong>
               </div>
               <div>
@@ -5522,12 +5797,13 @@ ${currentUserProfile.region}`;
                 </span>
                 <strong className="text-slate-800">
                   {liveLayerBirdsAfterMortality} Pcs
-                  {Number(layerForm.mortality_pcs || 0) > 0 && (
-                    <span className="text-[10px] text-red-600 ml-1">
-                      ({activeReportVisit.t_birds} -{" "}
-                      {Number(layerForm.mortality_pcs)})
-                    </span>
-                  )}
+                  {!editingReportId &&
+                    Number(layerForm.mortality_pcs || 0) > 0 && (
+                      <span className="text-[10px] text-red-600 ml-1">
+                        ({activeReportVisit.t_birds} -{" "}
+                        {Number(layerForm.mortality_pcs)})
+                      </span>
+                    )}
                 </strong>
               </div>
               <div>
@@ -5554,7 +5830,7 @@ ${currentUserProfile.region}`;
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
               <div>
                 <label className="block font-bold text-red-700 mb-1">
-                  Mortality (Pcs) * [Deducts T.Birds]
+                  Mortality (Pcs) *
                 </label>
                 <input
                   type="number"
@@ -5835,7 +6111,6 @@ ${currentUserProfile.region}`;
               </div>
             </div>
 
-            {/* Culled Reason Prompt Box (Report fields NOT mandatory when confirming culled) */}
             {showCullReasonInput && (
               <div className="bg-red-50 border border-red-300 rounded-xl p-3 space-y-2 text-xs">
                 <label className="block font-bold text-red-900">
@@ -5861,7 +6136,17 @@ ${currentUserProfile.region}`;
             )}
 
             <div className="flex flex-wrap justify-between items-center gap-2 pt-3 border-t">
-              <div className="flex gap-2">
+              <div className="flex items-center gap-2">
+                {editingReportId && (
+                  <button
+                    type="button"
+                    title="Delete this report"
+                    onClick={() => handleDeleteCurrentReport("layer_reports")}
+                    className="p-1.5 rounded-lg border border-red-200 bg-red-50 hover:bg-red-100 text-red-600 transition"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() =>
@@ -5876,24 +6161,29 @@ ${currentUserProfile.region}`;
                   Generate WhatsApp Msg
                 </button>
 
-                <button
-                  type="button"
-                  disabled={showCullReasonInput}
-                  onClick={() => setShowCullReasonInput(true)}
-                  className={`px-3.5 py-1.5 rounded-lg text-xs font-bold shadow-sm transition ${
-                    showCullReasonInput
-                      ? "bg-slate-200 text-slate-400 cursor-not-allowed"
-                      : "bg-red-600 hover:bg-red-700 text-white"
-                  }`}
-                >
-                  Culled
-                </button>
+                {!editingReportId && (
+                  <button
+                    type="button"
+                    disabled={showCullReasonInput}
+                    onClick={() => setShowCullReasonInput(true)}
+                    className={`px-3.5 py-1.5 rounded-lg text-xs font-bold shadow-sm transition ${
+                      showCullReasonInput
+                        ? "bg-slate-200 text-slate-400 cursor-not-allowed"
+                        : "bg-red-600 hover:bg-red-700 text-white"
+                    }`}
+                  >
+                    Culled
+                  </button>
+                )}
               </div>
 
               <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={() => setShowLayerModal(false)}
+                  onClick={() => {
+                    setEditingReportId(null);
+                    setShowLayerModal(false);
+                  }}
                   className="px-4 py-1.5 rounded-lg bg-slate-200 text-slate-700 text-xs font-semibold"
                 >
                   Cancel
@@ -5903,7 +6193,9 @@ ${currentUserProfile.region}`;
                   onClick={() => handleLayerReportSubmit(false)}
                   className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold"
                 >
-                  Save Layer Report
+                  {editingReportId
+                    ? "Update Layer Report"
+                    : "Save Layer Report"}
                 </button>
               </div>
             </div>
@@ -6069,113 +6361,74 @@ ${currentUserProfile.region}`;
       )}
 
       {/* ==================================================
-          MODAL 5: BATCH-WISE HISTORY MODAL (1 PRIMARY BATCH BUTTON + OTHER BATCHES DROPDOWN + PERMANENT REMARKS COLUMN)
+          MODAL 5: COMPACT BATCH-WISE HISTORY MODAL
+          (Selected Batch upfront + Dropdown for other batches + Hatchery, H.Date & Breed in table)
       ================================================== */}
       {showHistoryModal && selectedHistoryVisit && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-3">
-          <div className="bg-white p-5 rounded-xl w-full max-w-6xl max-h-[92vh] overflow-y-auto shadow-2xl border border-slate-300 space-y-4">
-            <div className="flex flex-wrap justify-between items-center gap-2 border-b pb-2.5">
-              <div>
-                <h3 className="text-base font-bold text-slate-800">
-                  History —{" "}
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-3">
+          <div className="bg-white p-3.5 sm:p-4 rounded-xl w-full max-w-6xl max-h-[92vh] overflow-y-auto shadow-2xl border border-slate-300 space-y-3">
+            {/* Compact Header + Selected Batch upfront + Other Batches Dropdown on Side */}
+            <div className="flex flex-wrap justify-between items-center gap-2 border-b pb-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm sm:text-base font-bold text-slate-800">
+                  History:
+                </h3>
+                <span className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-xs font-bold shadow-xs">
                   {selectedHistoryVisit.displayBatchName ||
                     selectedHistoryVisit.batch_label ||
                     selectedHistoryVisit.farmers?.farmer_name}{" "}
-                  ({selectedHistoryVisit.category})
-                </h3>
-                <p className="text-xs text-slate-500">
-                  Hatchery: {selectedHistoryVisit.hatchery || "-"} • H.Date:{" "}
-                  {selectedHistoryVisit.hatch_date || "-"} • Total Birds:{" "}
-                  {selectedHistoryVisit.t_birds || 0} • Breed:{" "}
-                  {selectedHistoryVisit.breed || "-"} • Status:{" "}
-                  <b>{selectedHistoryVisit.status}</b>
-                  {selectedHistoryVisit.closed_date
-                    ? ` (${formatDmy(selectedHistoryVisit.closed_date)})`
-                    : ""}
-                </p>
+                  ({selectedHistoryVisit.category} •{" "}
+                  {selectedHistoryVisit.status === "Activated"
+                    ? "Running"
+                    : selectedHistoryVisit.status}
+                  )
+                </span>
+
+                {otherHistoryBatches.length > 0 && (
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      const found = historyBatches.find(
+                        (b) => String(b.id) === e.target.value
+                      );
+                      if (found) setSelectedHistoryVisit(found);
+                    }}
+                    className="border border-slate-300 rounded-lg px-2 py-1 bg-slate-50 hover:bg-slate-100 text-[11px] font-semibold text-slate-700 outline-none cursor-pointer"
+                  >
+                    <option value="">
+                      Other Batches ({otherHistoryBatches.length}) ▾
+                    </option>
+                    {otherHistoryBatches.map((b: any) => (
+                      <option key={b.id} value={String(b.id)}>
+                        {b.displayBatchName || b.batch_label} — {b.category} (
+                        {b.status === "Activated" ? "Running" : b.status} •{" "}
+                        {b.hatch_date})
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
                 <button
                   type="button"
                   onClick={exportVisitHistoryExcel}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded-lg text-[11px] font-semibold shadow-xs"
                 >
                   Export Excel
                 </button>
                 <button
                   onClick={() => setShowHistoryModal(false)}
-                  className="px-2.5 py-1 rounded bg-slate-100 text-slate-600 font-bold"
+                  className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold"
                 >
                   ✖
                 </button>
               </div>
             </div>
 
-            {/* Batch Selector Bar: Shows ONLY 1 Primary Batch upfront + Dropdown for other batches */}
-            {primaryHistoryBatch && (
-              <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-bold text-slate-600">Batch:</span>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedHistoryVisit(primaryHistoryBatch)}
-                    className={`px-3 py-1 rounded-lg font-bold border transition ${
-                      String(primaryHistoryBatch.id) ===
-                      String(selectedHistoryVisit.id)
-                        ? "bg-emerald-600 text-white border-emerald-600 shadow-sm"
-                        : "bg-white text-slate-700 border-slate-300 hover:bg-slate-100"
-                    }`}
-                  >
-                    {primaryHistoryBatch.displayBatchName ||
-                      primaryHistoryBatch.batch_label}{" "}
-                    ({primaryHistoryBatch.category} •{" "}
-                    {primaryHistoryBatch.status === "Activated"
-                      ? "Running"
-                      : primaryHistoryBatch.status}
-                    )
-                  </button>
-                </div>
-
-                {otherHistoryBatches.length > 0 && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-semibold text-slate-600">
-                      Other Batches ({otherHistoryBatches.length}):
-                    </span>
-                    <select
-                      value={
-                        otherHistoryBatches.some(
-                          (b) =>
-                            String(b.id) === String(selectedHistoryVisit.id)
-                        )
-                          ? String(selectedHistoryVisit.id)
-                          : ""
-                      }
-                      onChange={(e) => {
-                        const found = historyBatches.find(
-                          (b) => String(b.id) === e.target.value
-                        );
-                        if (found) setSelectedHistoryVisit(found);
-                      }}
-                      className="border border-slate-300 rounded-lg px-2.5 py-1 bg-white font-semibold text-slate-800 outline-none"
-                    >
-                      <option value="">-- Select Batch --</option>
-                      {otherHistoryBatches.map((b: any) => (
-                        <option key={b.id} value={String(b.id)}>
-                          {b.displayBatchName || b.batch_label} — {b.category} (
-                          {b.status === "Activated" ? "Running" : b.status} •
-                          H.Date: {b.hatch_date})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-              </div>
-            )}
-
             {(selectedHistoryVisit.status === "Culled" ||
               selectedBatchCulledReason) && (
-              <div className="bg-red-50 border border-red-200 rounded-xl p-2.5 text-xs text-red-900">
+              <div className="bg-red-50 border border-red-200 rounded-lg px-2.5 py-1.5 text-[11px] text-red-900">
                 <b>Culled Batch</b>
                 {selectedHistoryVisit.closed_date
                   ? ` on ${formatDmy(selectedHistoryVisit.closed_date)}`
@@ -6187,7 +6440,7 @@ ${currentUserProfile.region}`;
             )}
 
             {allReportsForFarmer.feedLogs.length > 0 && (
-              <div className="bg-amber-50 border border-amber-200 rounded-xl p-2.5 text-xs">
+              <div className="bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 text-[11px]">
                 <strong className="text-amber-900">
                   Feed Conversion History:{" "}
                 </strong>
@@ -6201,52 +6454,58 @@ ${currentUserProfile.region}`;
 
             {(selectedHistoryVisit.category || "").toLowerCase() === "layer" ? (
               <div>
-                <h4 className="text-xs font-bold uppercase text-indigo-800 mb-2">
+                <h4 className="text-[11px] font-bold uppercase text-indigo-800 mb-1.5">
                   Layer Performance History ({activeBatchLayerReports.length})
                 </h4>
                 <div className="overflow-x-auto">
-                  <table className="w-full border-collapse border border-slate-300 text-xs">
-                    <thead className="bg-indigo-50 text-indigo-950">
+                  <table className="w-full border-collapse border border-slate-300 text-[11px] leading-tight">
+                    <thead className="bg-indigo-50 text-indigo-950 whitespace-nowrap">
                       <tr>
-                        <th className="border border-slate-300 px-2 py-1.5">
+                        <th className="border border-slate-300 px-1.5 py-1">
                           Visit Date
                         </th>
-                        <th className="border border-slate-300 px-2 py-1.5">
+                        <th className="border border-slate-300 px-1.5 py-1">
+                          Hatchery
+                        </th>
+                        <th className="border border-slate-300 px-1.5 py-1">
                           H.Date
                         </th>
-                        <th className="border border-slate-300 px-2 py-1.5">
+                        <th className="border border-slate-300 px-1.5 py-1">
+                          Breed
+                        </th>
+                        <th className="border border-slate-300 px-1.5 py-1 text-center">
                           T.B
                         </th>
-                        <th className="border border-slate-300 px-2 py-1.5">
+                        <th className="border border-slate-300 px-1.5 py-1 text-center">
                           Age
                         </th>
-                        <th className="border border-slate-300 px-2 py-1.5">
+                        <th className="border border-slate-300 px-1.5 py-1 text-center">
                           Wt / Std (g)
                         </th>
-                        <th className="border border-slate-300 px-2 py-1.5">
-                          Feed / Std (g/b/d)
+                        <th className="border border-slate-300 px-1.5 py-1 text-center">
+                          Feed / Std (g)
                         </th>
-                        <th className="border border-slate-300 px-2 py-1.5">
+                        <th className="border border-slate-300 px-1.5 py-1 text-center">
                           Egg% / Std%
                         </th>
-                        <th className="border border-slate-300 px-2 py-1.5">
+                        <th className="border border-slate-300 px-1.5 py-1 text-center">
                           Egg Wt / Std
                         </th>
-                        <th className="border border-slate-300 px-2 py-1.5">
+                        <th className="border border-slate-300 px-1.5 py-1">
                           Feed & Type
                         </th>
                         {layerExtraCols.map((col) => (
                           <th
                             key={col.key}
-                            className="border border-slate-300 px-2 py-1.5"
+                            className="border border-slate-300 px-1.5 py-1"
                           >
                             {col.label}
                           </th>
                         ))}
-                        <th className="border border-slate-300 px-2 py-1.5">
+                        <th className="border border-slate-300 px-1.5 py-1">
                           Remarks
                         </th>
-                        <th className="border border-slate-300 px-2 py-1.5 text-center">
+                        <th className="border border-slate-300 px-1.5 py-1 text-center">
                           Action
                         </th>
                       </tr>
@@ -6255,8 +6514,8 @@ ${currentUserProfile.region}`;
                       {activeBatchLayerReports.length === 0 ? (
                         <tr>
                           <td
-                            colSpan={11 + layerExtraCols.length}
-                            className="border border-slate-300 py-4 text-center text-slate-400"
+                            colSpan={13 + layerExtraCols.length}
+                            className="border border-slate-300 py-3 text-center text-slate-400"
                           >
                             No layer reports found for this batch.
                           </td>
@@ -6267,55 +6526,69 @@ ${currentUserProfile.region}`;
                             selectedHistoryVisit.hatch_date,
                             rep.visit_date
                           );
-                          const std = getLayerStdForVisit(
-                            rep.breed || selectedHistoryVisit.breed,
-                            wks
-                          );
+                          const breedVal =
+                            selectedHistoryVisit.breed ||
+                            rep.breed ||
+                            "Shaver Star Cross 579 Brown";
+                          const hatcheryVal =
+                            selectedHistoryVisit.hatchery ||
+                            rep.hatchery ||
+                            "-";
+                          const std = getLayerStdForVisit(breedVal, wks);
                           return (
-                            <tr key={i} className="hover:bg-slate-50">
-                              <td className="border border-slate-300 px-2 py-1">
+                            <tr
+                              key={i}
+                              className="hover:bg-slate-50 whitespace-nowrap"
+                            >
+                              <td className="border border-slate-300 px-1.5 py-0.5">
                                 {rep.visit_date || "-"}
                               </td>
-                              <td className="border border-slate-300 px-2 py-1">
+                              <td className="border border-slate-300 px-1.5 py-0.5">
+                                {hatcheryVal}
+                              </td>
+                              <td className="border border-slate-300 px-1.5 py-0.5">
                                 {selectedHistoryVisit.hatch_date || "-"}
                               </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center">
+                              <td className="border border-slate-300 px-1.5 py-0.5 font-medium text-indigo-900">
+                                {breedVal}
+                              </td>
+                              <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                 {selectedHistoryVisit.t_birds || 0}
                               </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center font-bold">
+                              <td className="border border-slate-300 px-1.5 py-0.5 text-center font-bold">
                                 {wks}w
                               </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center">
+                              <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                 <b>{rep.b_weight_g}</b> / {std?.weight || "-"}
                               </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center">
+                              <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                 <b>{rep.feed_intake_g}</b> /{" "}
                                 {std?.feed_bird_day || "-"}
                               </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center">
+                              <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                 <b>{rep.egg_production}%</b> /{" "}
                                 {std?.egg_production || "-"}%
                               </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center">
+                              <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                 <b>{rep.egg_weight}</b> /{" "}
                                 {std?.egg_weight || "-"}
                               </td>
-                              <td className="border border-slate-300 px-2 py-1">
+                              <td className="border border-slate-300 px-1.5 py-0.5">
                                 {rep.feed_company || "-"}{" "}
                                 {rep.feed_type ? `(${rep.feed_type})` : ""}
                               </td>
                               {layerExtraCols.map((col) => (
                                 <td
                                   key={col.key}
-                                  className="border border-slate-300 px-2 py-1"
+                                  className="border border-slate-300 px-1.5 py-0.5"
                                 >
                                   {hasValue(rep[col.key]) ? rep[col.key] : "-"}
                                 </td>
                               ))}
-                              <td className="border border-slate-300 px-2 py-1">
+                              <td className="border border-slate-300 px-1.5 py-0.5">
                                 {getRemarkText(rep) || "-"}
                               </td>
-                              <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap">
+                              <td className="border border-slate-300 px-1.5 py-0.5 text-center whitespace-nowrap">
                                 <button
                                   type="button"
                                   onClick={() =>
@@ -6325,7 +6598,7 @@ ${currentUserProfile.region}`;
                                       false
                                     )
                                   }
-                                  className="bg-green-600 text-white px-2 py-0.5 rounded text-[10px] font-bold"
+                                  className="bg-green-600 text-white px-1.5 py-0.5 rounded text-[10px] font-bold"
                                 >
                                   WtsApp
                                 </button>
@@ -6334,7 +6607,7 @@ ${currentUserProfile.region}`;
                                   onClick={() =>
                                     openEditReport("layer_reports", rep)
                                   }
-                                  className="ml-1 bg-amber-500 text-white px-2 py-0.5 rounded text-[10px] font-bold"
+                                  className="ml-1 bg-amber-500 text-white px-1.5 py-0.5 rounded text-[10px] font-bold"
                                 >
                                   Edit
                                 </button>
@@ -6350,58 +6623,64 @@ ${currentUserProfile.region}`;
             ) : (
               <>
                 <div>
-                  <h4 className="text-xs font-bold uppercase text-emerald-800 mb-2">
+                  <h4 className="text-[11px] font-bold uppercase text-emerald-800 mb-1.5">
                     Before Sale Reports ({activeBatchBeforeReports.length})
                   </h4>
                   <div className="overflow-x-auto">
-                    <table className="w-full border-collapse border border-slate-300 text-xs">
-                      <thead className="bg-slate-100">
+                    <table className="w-full border-collapse border border-slate-300 text-[11px] leading-tight">
+                      <thead className="bg-slate-100 whitespace-nowrap">
                         <tr>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1">
                             Visit Date
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1">
+                            Hatchery
+                          </th>
+                          <th className="border border-slate-300 px-1.5 py-1">
                             H.Date
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1">
+                            Breed
+                          </th>
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             T.B
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             Age
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             Mort.
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             Wt / Std (g)
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             Feed (Kg)
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             Feed/B / Std (g)
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             FCR(w/o) / Std
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             FCR(With)
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1">
                             Feed & Type
                           </th>
                           {beforeExtraCols.map((col) => (
                             <th
                               key={col.key}
-                              className="border border-slate-300 px-2 py-1.5"
+                              className="border border-slate-300 px-1.5 py-1"
                             >
                               {col.label}
                             </th>
                           ))}
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1">
                             Remarks
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5 text-center">
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             Action
                           </th>
                         </tr>
@@ -6410,8 +6689,8 @@ ${currentUserProfile.region}`;
                         {activeBatchBeforeReports.length === 0 ? (
                           <tr>
                             <td
-                              colSpan={13 + beforeExtraCols.length}
-                              className="border border-slate-300 py-4 text-center text-slate-400"
+                              colSpan={15 + beforeExtraCols.length}
+                              className="border border-slate-300 py-3 text-center text-slate-400"
                             >
                               No before sale reports found for this batch.
                             </td>
@@ -6428,57 +6707,66 @@ ${currentUserProfile.region}`;
                                 d
                               );
                               return (
-                                <tr key={i} className="hover:bg-slate-50">
-                                  <td className="border border-slate-300 px-2 py-1">
+                                <tr
+                                  key={i}
+                                  className="hover:bg-slate-50 whitespace-nowrap"
+                                >
+                                  <td className="border border-slate-300 px-1.5 py-0.5">
                                     {rep.visit_date}
                                   </td>
-                                  <td className="border border-slate-300 px-2 py-1">
-                                    {selectedHistoryVisit.hatch_date}
+                                  <td className="border border-slate-300 px-1.5 py-0.5">
+                                    {selectedHistoryVisit.hatchery || "-"}
                                   </td>
-                                  <td className="border border-slate-300 px-2 py-1 text-center">
+                                  <td className="border border-slate-300 px-1.5 py-0.5">
+                                    {selectedHistoryVisit.hatch_date || "-"}
+                                  </td>
+                                  <td className="border border-slate-300 px-1.5 py-0.5">
+                                    {selectedHistoryVisit.breed || "-"}
+                                  </td>
+                                  <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                     {selectedHistoryVisit.t_birds}
                                   </td>
-                                  <td className="border border-slate-300 px-2 py-1 text-center font-bold">
+                                  <td className="border border-slate-300 px-1.5 py-0.5 text-center font-bold">
                                     {d}d
                                   </td>
-                                  <td className="border border-slate-300 px-2 py-1 text-center">
+                                  <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                     {rep.mortality_pcs}
                                   </td>
-                                  <td className="border border-slate-300 px-2 py-1 text-center">
+                                  <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                     <b>{rep.weight_gm_b}</b> /{" "}
                                     {std?.weight || "-"}
                                   </td>
-                                  <td className="border border-slate-300 px-2 py-1 text-center">
+                                  <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                     {rep.feed_t_kg}
                                   </td>
-                                  <td className="border border-slate-300 px-2 py-1 text-center">
+                                  <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                     <b>{rep.feed_gm_b}</b> /{" "}
                                     {std?.feed_intake || "-"}
                                   </td>
-                                  <td className="border border-slate-300 px-2 py-1 text-center font-bold">
+                                  <td className="border border-slate-300 px-1.5 py-0.5 text-center font-bold">
                                     {rep.fcr_w_out_m} / {std?.fcr || "-"}
                                   </td>
-                                  <td className="border border-slate-300 px-2 py-1 text-center">
+                                  <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                     {rep.fcr_with_m}
                                   </td>
-                                  <td className="border border-slate-300 px-2 py-1">
+                                  <td className="border border-slate-300 px-1.5 py-0.5">
                                     {rep.feed_company || "-"}{" "}
                                     {rep.feed_type ? `(${rep.feed_type})` : ""}
                                   </td>
                                   {beforeExtraCols.map((col) => (
                                     <td
                                       key={col.key}
-                                      className="border border-slate-300 px-2 py-1"
+                                      className="border border-slate-300 px-1.5 py-0.5"
                                     >
                                       {hasValue(rep[col.key])
                                         ? rep[col.key]
                                         : "-"}
                                     </td>
                                   ))}
-                                  <td className="border border-slate-300 px-2 py-1">
+                                  <td className="border border-slate-300 px-1.5 py-0.5">
                                     {getRemarkText(rep) || "-"}
                                   </td>
-                                  <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap">
+                                  <td className="border border-slate-300 px-1.5 py-0.5 text-center whitespace-nowrap">
                                     <button
                                       type="button"
                                       onClick={() =>
@@ -6489,7 +6777,7 @@ ${currentUserProfile.region}`;
                                           false
                                         )
                                       }
-                                      className="bg-green-600 text-white px-2 py-0.5 rounded text-[10px] font-bold"
+                                      className="bg-green-600 text-white px-1.5 py-0.5 rounded text-[10px] font-bold"
                                     >
                                       WtsApp
                                     </button>
@@ -6501,7 +6789,7 @@ ${currentUserProfile.region}`;
                                           rep
                                         )
                                       }
-                                      className="ml-1 bg-amber-500 text-white px-2 py-0.5 rounded text-[10px] font-bold"
+                                      className="ml-1 bg-amber-500 text-white px-1.5 py-0.5 rounded text-[10px] font-bold"
                                     >
                                       Edit
                                     </button>
@@ -6517,50 +6805,56 @@ ${currentUserProfile.region}`;
                 </div>
 
                 <div>
-                  <h4 className="text-xs font-bold uppercase text-blue-800 mb-2">
+                  <h4 className="text-[11px] font-bold uppercase text-blue-800 mb-1.5">
                     After Sale Reports ({activeBatchAfterReports.length})
                   </h4>
                   <div className="overflow-x-auto">
-                    <table className="w-full border-collapse border border-slate-300 text-xs">
-                      <thead className="bg-slate-100">
+                    <table className="w-full border-collapse border border-slate-300 text-[11px] leading-tight">
+                      <thead className="bg-slate-100 whitespace-nowrap">
                         <tr>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1">
                             Sale Date
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1">
+                            Hatchery
+                          </th>
+                          <th className="border border-slate-300 px-1.5 py-1">
                             H.Date
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1">
+                            Breed
+                          </th>
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             T.B
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             Age
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             Mort.
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             Wt / Std (g)
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             Feed (Kg)
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             Feed/B / Std (g)
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             FCR(w/o) / Std
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             FCR(With)
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1">
                             Feed Company & Last Feed
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5">
+                          <th className="border border-slate-300 px-1.5 py-1">
                             Remarks
                           </th>
-                          <th className="border border-slate-300 px-2 py-1.5 text-center">
+                          <th className="border border-slate-300 px-1.5 py-1 text-center">
                             Edit
                           </th>
                         </tr>
@@ -6569,8 +6863,8 @@ ${currentUserProfile.region}`;
                         {activeBatchAfterReports.length === 0 ? (
                           <tr>
                             <td
-                              colSpan={13}
-                              className="border border-slate-300 py-4 text-center text-slate-400"
+                              colSpan={15}
+                              className="border border-slate-300 py-3 text-center text-slate-400"
                             >
                               No after sale reports found for this batch.
                             </td>
@@ -6598,53 +6892,62 @@ ${currentUserProfile.region}`;
                                   ).toFixed(1)
                                 : "-");
                             return (
-                              <tr key={i} className="hover:bg-slate-50">
-                                <td className="border border-slate-300 px-2 py-1">
+                              <tr
+                                key={i}
+                                className="hover:bg-slate-50 whitespace-nowrap"
+                              >
+                                <td className="border border-slate-300 px-1.5 py-0.5">
                                   {rep.visit_date}
                                 </td>
-                                <td className="border border-slate-300 px-2 py-1">
-                                  {selectedHistoryVisit.hatch_date}
+                                <td className="border border-slate-300 px-1.5 py-0.5">
+                                  {selectedHistoryVisit.hatchery || "-"}
                                 </td>
-                                <td className="border border-slate-300 px-2 py-1 text-center">
+                                <td className="border border-slate-300 px-1.5 py-0.5">
+                                  {selectedHistoryVisit.hatch_date || "-"}
+                                </td>
+                                <td className="border border-slate-300 px-1.5 py-0.5">
+                                  {selectedHistoryVisit.breed || "-"}
+                                </td>
+                                <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                   {tB}
                                 </td>
-                                <td className="border border-slate-300 px-2 py-1 text-center font-bold">
+                                <td className="border border-slate-300 px-1.5 py-0.5 text-center font-bold">
                                   {d}d
                                 </td>
-                                <td className="border border-slate-300 px-2 py-1 text-center">
+                                <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                   {rep.mortality}
                                 </td>
-                                <td className="border border-slate-300 px-2 py-1 text-center">
+                                <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                   <b>{rep.weight}</b> / {std?.weight || "-"}
                                 </td>
-                                <td className="border border-slate-300 px-2 py-1 text-center">
+                                <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                   {rep.feed_consumption_kg}
                                 </td>
-                                <td className="border border-slate-300 px-2 py-1 text-center">
+                                <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                   <b>{fGm}</b> / {std?.feed_intake || "-"}
                                 </td>
-                                <td className="border border-slate-300 px-2 py-1 text-center font-bold">
+                                <td className="border border-slate-300 px-1.5 py-0.5 text-center font-bold">
                                   {rep.fcr_w_out_m} / {std?.fcr || "-"}
                                 </td>
-                                <td className="border border-slate-300 px-2 py-1 text-center">
+                                <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                   {rep.fcr_with_m}
                                 </td>
-                                <td className="border border-slate-300 px-2 py-1">
+                                <td className="border border-slate-300 px-1.5 py-0.5">
                                   {rep.feed_mill || "-"}{" "}
                                   {rep.feed
                                     ? `(Last Feed: ${rep.feed})`
                                     : ""}
                                 </td>
-                                <td className="border border-slate-300 px-2 py-1">
+                                <td className="border border-slate-300 px-1.5 py-0.5">
                                   {getRemarkText(rep) || "-"}
                                 </td>
-                                <td className="border border-slate-300 px-2 py-1 text-center">
+                                <td className="border border-slate-300 px-1.5 py-0.5 text-center">
                                   <button
                                     type="button"
                                     onClick={() =>
                                       openEditReport("after_sale_reports", rep)
                                     }
-                                    className="bg-amber-500 text-white px-2 py-0.5 rounded text-[10px] font-bold"
+                                    className="bg-amber-500 text-white px-1.5 py-0.5 rounded text-[10px] font-bold"
                                   >
                                     Edit
                                   </button>
@@ -6667,7 +6970,7 @@ ${currentUserProfile.region}`;
           MODAL 6: WHATSAPP MESSAGE PREVIEW & COPY POPUP
       ================================================== */}
       {whatsappPopupText && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-3">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-3">
           <div className="bg-white rounded-2xl p-5 w-full max-w-md shadow-2xl border border-slate-300 space-y-3">
             <div className="flex justify-between items-center border-b pb-2">
               <h3 className="text-sm font-bold text-slate-800">

@@ -41,23 +41,73 @@ import { Geolocation } from "@capacitor/geolocation";
 import SearchableSelect from "../../components/common/SearchableSelect";
 import { UserAvatar, renderNoteWithMentions } from "../../utils/avatarHelper";
 
+function calcDistanceKm(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
 
+function formatDistance(km: number): string {
+  if (km < 1) return `${Math.round(km * 1000)} m`;
+  return `${km.toFixed(2)} km`;
+}
 
-function FitBounds({ locations }: { locations: { lat: number; lng: number }[] }) {
+function FitBounds({
+  locations,
+  skip,
+}: {
+  locations: { lat: number; lng: number }[];
+  skip?: boolean;
+}) {
   const map = useMap();
 
   useEffect(() => {
-   
+    if (skip) return;
     if (!locations || locations.length === 0) return;
 
     const bounds = L.latLngBounds(locations.map((loc) => [loc.lat, loc.lng]));
-
     map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
-  }, [locations, map]);
+  }, [locations, map, skip]);
 
   return null;
 }
 
+function MapFocusController({
+  farmerPos,
+  myPos,
+  myLocationMode,
+}: {
+  farmerPos: [number, number] | null;
+  myPos: [number, number] | null;
+  myLocationMode: boolean;
+}) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (myPos && farmerPos) {
+      const bounds = L.latLngBounds([myPos, farmerPos]);
+      map.fitBounds(bounds, { padding: [65, 65], maxZoom: 16, animate: true });
+    } else if (farmerPos) {
+      map.flyTo(farmerPos, 17, { animate: true, duration: 1.0 });
+    } else if (myLocationMode && myPos) {
+      map.flyTo(myPos, 16, { animate: true, duration: 1.0 });
+    }
+  }, [farmerPos, myPos, myLocationMode, map]);
+
+  return null;
+}
 
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 
@@ -168,26 +218,39 @@ function getFarmerBadgeInfo(farmer: any) {
 }
 
 // Clean Marker without circular background; auto-scales horizontal vs square/round logos
-function buildCustomFarmMarker(farmer: any) {
+function buildCustomFarmMarker(
+  farmer: any,
+  highlight = false,
+  distText?: string
+) {
   const { emoji, border } = getFarmerBadgeInfo(farmer);
   const logoUrl = farmer.companies?.logo_url;
   const safeName = (farmer.farmer_name || "Farmer")
     .replace(/</g, "&lt;")
     .slice(0, 16);
 
+  const ring = highlight
+    ? "0 0 0 3px rgba(16,185,129,0.45)"
+    : "0 1px 2px rgba(0,0,0,0.15)";
+
+  const distBadge = distText
+    ? `<div style="margin-top:2px;background:#0f172a;color:#ffffff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;white-space:nowrap;">${distText}</div>`
+    : "";
+
   const html = `
     <div style="display:flex;flex-direction:column;align-items:center;transform:translateY(-14px);">
       <div style="position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;">
-        <span style="font-size:20px;line-height:1;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.35));">${emoji}</span>
+        <span style="font-size:${highlight ? 25 : 20}px;line-height:1;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.35));">${emoji}</span>
         ${
           logoUrl
             ? `<img src="${logoUrl}" onload="if(this.naturalWidth > this.naturalHeight * 1.3){this.style.width='44px';this.style.height='auto';this.style.maxHeight='20px';}else{this.style.width='22px';this.style.height='22px';}" style="margin-top:1px;width:24px;height:22px;object-fit:contain;background:rgba(255,255,255,0.92);padding:1px 2px;border-radius:3px;box-shadow:0 1px 2px rgba(0,0,0,0.2);" />`
             : ""
         }
       </div>
-      <div style="margin-top:2px;background:rgba(252, 244, 236, 0.95);border:1px solid ${border};color:#314158;font-size:10px;font-weight:700;padding:0px 5px;border-radius:4px;white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,0.15);">
+      <div style="margin-top:2px;background:rgba(252, 244, 236, 0.95);border:1.5px solid ${border};color:#314158;font-size:10px;font-weight:700;padding:0px 5px;border-radius:4px;white-space:nowrap;box-shadow:${ring};">
         ${safeName}
       </div>
+      ${distBadge}
     </div>
   `;
 
@@ -214,17 +277,6 @@ function getStockBreakdownList(farmer: any): { label: string; qty: number }[] {
   });
   return list;
 }
-
-function RecenterMap({ position }: { position: [number, number] }) {
-  const map = useMap();
-  useEffect(() => {
-    if (!position) return;
-    map.flyTo(position, 17, { animate: true, duration: 1.2 });
-  }, [position, map]);
-  return null;
-}
-
-
 
 export default function FarmersPage() {
   const { role } = useAuth();
@@ -290,27 +342,25 @@ export default function FarmersPage() {
 
   const [allUsers, setAllUsers] = useState<any[]>([]);
 
-useEffect(() => {
-  supabase
-    .from("users")
-    .select("id, full_name, avatar_url")
-    .then(({ data }) => {
-      if (data) setAllUsers(data);
-    });
-}, []);
+  useEffect(() => {
+    supabase
+      .from("users")
+      .select("id, full_name, avatar_url")
+      .then(({ data }) => {
+        if (data) setAllUsers(data);
+      });
+  }, []);
 
-function getUserAvatar(userId?: string, userName?: string): string | null {
-  const found = allUsers.find(
-    (u) =>
-      (userId && String(u.id) === String(userId)) ||
-      (userName &&
-        String(u.full_name || "").trim().toLowerCase() ===
-          String(userName).trim().toLowerCase())
-  );
-  return found?.avatar_url || null;
-}
-
-  
+  function getUserAvatar(userId?: string, userName?: string): string | null {
+    const found = allUsers.find(
+      (u) =>
+        (userId && String(u.id) === String(userId)) ||
+        (userName &&
+          String(u.full_name || "").trim().toLowerCase() ===
+            String(userName).trim().toLowerCase())
+    );
+    return found?.avatar_url || null;
+  }
 
   async function loadData() {
     const {
@@ -483,6 +533,7 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
     }
   }
 
+  // ✅ Map বাটনে ক্লিক করলে শুধু ওই ফার্মে জুম করবে (নিজে থেকে পপআপ ওপেন হবে না)
   function handleViewFarmerOnMap(farmer: any) {
     if (!farmer.latitude || !farmer.longitude) {
       alert("No map coordinates saved for this farmer.");
@@ -496,16 +547,15 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
     setSelectedFarmerPosition([lat, lng]);
     loadFarmerNotes(farmer.id);
 
+    // যদি আগে কোনো পপআপ খোলা থাকে, তা বন্ধ করে দেবে যাতে ম্যাপ পরিষ্কার দেখা যায়
+    Object.values(farmerMarkerRefs.current).forEach((m) => m?.closePopup());
+
     setTimeout(() => {
       mapSectionRef.current?.scrollIntoView({
         behavior: "smooth",
         block: "center",
       });
-      const marker = farmerMarkerRefs.current[farmer.id];
-      if (marker) {
-        marker.openPopup();
-      }
-    }, 350);
+    }, 300);
   }
 
   const selectedDistrict = districts.find((d) => d.name === form.district);
@@ -531,7 +581,6 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
           );
       setUpazilas(allowed);
 
-      // Auto-select first upazila if none selected or not in list
       if (
         allowed.length > 0 &&
         (!form.upazila || !allowed.some((u: any) => u.name === form.upazila))
@@ -560,7 +609,6 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
     loadUnions();
   }, [selectedUpazila]);
 
-  // Form Agents filtered by selected Company AND selected Upazila
   const formAvailableAgents = agents.filter((a: any) => {
     if (form.company_id && String(a.company_id) !== String(form.company_id)) {
       return false;
@@ -716,16 +764,16 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
   // Universal Location Helper (Works on both Android Native App & Browser)
   async function getDeviceCoordinates(): Promise<{ lat: number; lng: number }> {
     if (Capacitor.isNativePlatform()) {
-      // ১. অ্যান্ড্রয়েড অ্যাপের লোকেশন পারমিশন চেক এবং রিকোয়েস্ট করা
       let perm = await Geolocation.checkPermissions();
       if (perm.location !== "granted") {
         perm = await Geolocation.requestPermissions();
       }
       if (perm.location !== "granted") {
-        throw new Error("Location permission denied. Please allow GPS access.");
+        throw new Error(
+          "Location permission denied. Please allow GPS access."
+        );
       }
 
-      // ২. প্রথমে High Accuracy GPS চেষ্টা করবে, রুমের ভেতরে থাকলে Network লোকেশনে ফলব্যাক করবে
       try {
         const pos = await Geolocation.getCurrentPosition({
           enableHighAccuracy: true,
@@ -738,17 +786,20 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
           enableHighAccuracy: false,
           timeout: 10000,
         });
-        return { lat: fallbackPos.coords.latitude, lng: fallbackPos.coords.longitude };
+        return {
+          lat: fallbackPos.coords.latitude,
+          lng: fallbackPos.coords.longitude,
+        };
       }
     } else {
-      // ব্রাউজারের জন্য সাধারণ Geolocation
       return new Promise((resolve, reject) => {
         if (!navigator.geolocation) {
           reject(new Error("Geolocation is not supported by your browser."));
           return;
         }
         navigator.geolocation.getCurrentPosition(
-          (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+          (pos) =>
+            resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
           (err) => reject(err),
           { enableHighAccuracy: true, timeout: 10000 }
         );
@@ -756,7 +807,6 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
     }
   }
 
-  // Updated Locate Me in Picker Modal
   async function handleLocateMeInPicker() {
     setLocatingInPicker(true);
     try {
@@ -768,25 +818,30 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
         longitude: lng.toFixed(6),
       }));
     } catch (err: any) {
-      alert(err?.message || "Unable to retrieve your location. Please allow GPS access.");
+      alert(
+        err?.message ||
+          "Unable to retrieve your location. Please allow GPS access."
+      );
     } finally {
       setLocatingInPicker(false);
     }
   }
 
-  // Main Farmer Map-এর "Locate Me" বাটন হ্যান্ডলার
+  // ✅ Main Farmer Map-এর "Locate Me" বাটন হ্যান্ডলার (selectedFarmerPosition মুছে ফেলবে না, ফলে ডিসট্যান্স ও Polyline দেখাবে)
   async function handleLocateMeOnMainMap() {
     try {
       const { lat, lng } = await getDeviceCoordinates();
-      setSelectedFarmerPosition(null);
       setMyPosition([lat, lng]);
       setMyLocationMode(true);
     } catch (err: any) {
-      alert(err?.message || "Unable to retrieve your location. Please allow GPS access.");
+      alert(
+        err?.message ||
+          "Unable to retrieve your location. Please allow GPS access."
+      );
     }
   }
 
-   const filteredFarmers = farmers
+  const filteredFarmers = farmers
     .filter((f) => {
       const q = search.toLowerCase();
       const matchSearch =
@@ -850,18 +905,34 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
             !isNaN(Number(f.latitude)) &&
             !isNaN(Number(f.longitude))
         )
-        .map((f) => ({
-          ...f,
-          distance: Math.round(
-            Math.sqrt(
-              Math.pow(Number(f.latitude) - myPosition[0], 2) +
-                Math.pow(Number(f.longitude) - myPosition[1], 2)
-            ) * 111
-          ),
-        }))
-        .sort((a, b) => a.distance - b.distance)
+        .map((f) => {
+          const km = calcDistanceKm(
+            myPosition[0],
+            myPosition[1],
+            Number(f.latitude),
+            Number(f.longitude)
+          );
+          return {
+            ...f,
+            distanceKm: km,
+            distanceText: formatDistance(km),
+          };
+        })
+        .sort((a, b) => a.distanceKm - b.distanceKm)
         .slice(0, 10)
     : [];
+
+  const activeDistanceText =
+    myPosition && selectedFarmerPosition
+      ? formatDistance(
+          calcDistanceKm(
+            myPosition[0],
+            myPosition[1],
+            selectedFarmerPosition[0],
+            selectedFarmerPosition[1]
+          )
+        )
+      : null;
 
   const companySummary = Object.values(
     filteredFarmers.reduce((acc: any, farmer: any) => {
@@ -1021,77 +1092,74 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
     worksheet.pageSetup.fitToHeight = 0;
   }
 
-
-
   async function saveWorkbook(workbook: ExcelJS.Workbook, fileName: string) {
-  const buffer = await workbook.xlsx.writeBuffer();
-  await saveBufferOrBlob(buffer, fileName);
-}
-
-
-async function saveBufferOrBlob(bufferOrBlob: ArrayBuffer | Blob, fileName: string) {
-  try {
-    const arrayBuffer =
-      bufferOrBlob instanceof Blob
-        ? await bufferOrBlob.arrayBuffer()
-        : bufferOrBlob;
-
-    if (Capacitor.isNativePlatform()) {
-      let binary = "";
-      const bytes = new Uint8Array(arrayBuffer);
-      const chunkSize = 0x8000;
-      for (let i = 0; i < bytes.length; i += chunkSize) {
-        binary += String.fromCharCode.apply(
-          null,
-          Array.from(bytes.subarray(i, i + chunkSize))
-        );
-      }
-      const base64Data = window.btoa(binary);
-
-      const savedFile = await Filesystem.writeFile({
-        path: fileName,
-        data: base64Data,
-        directory: Directory.Documents,
-        recursive: true,
-      });
-
-      alert(`File saved successfully:\n📁 Documents/${fileName}`);
-
-      if (savedFile.uri) {
-        try {
-          await Share.share({
-            title: fileName,
-            url: savedFile.uri,
-            dialogTitle: "Open or View Excel File",
-          });
-        } catch {
-          // user cancelled share dialog, ignore
-        }
-      }
-    } else {
-      // for web, create a temporary link to download the file
-      const blob =
-        bufferOrBlob instanceof Blob
-          ? bufferOrBlob
-          : new Blob([arrayBuffer], {
-              type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
-    }
-  } catch (err: any) {
-    console.error("Export save error:", err);
-    alert("Export save error: " + (err?.message || ""));
+    const buffer = await workbook.xlsx.writeBuffer();
+    await saveBufferOrBlob(buffer, fileName);
   }
-}
 
+  async function saveBufferOrBlob(
+    bufferOrBlob: ArrayBuffer | Blob,
+    fileName: string
+  ) {
+    try {
+      const arrayBuffer =
+        bufferOrBlob instanceof Blob
+          ? await bufferOrBlob.arrayBuffer()
+          : bufferOrBlob;
 
+      if (Capacitor.isNativePlatform()) {
+        let binary = "";
+        const bytes = new Uint8Array(arrayBuffer);
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(
+            null,
+            Array.from(bytes.subarray(i, i + chunkSize))
+          );
+        }
+        const base64Data = window.btoa(binary);
+
+        const savedFile = await Filesystem.writeFile({
+          path: fileName,
+          data: base64Data,
+          directory: Directory.Documents,
+          recursive: true,
+        });
+
+        alert(`File saved successfully:\n📁 Documents/${fileName}`);
+
+        if (savedFile.uri) {
+          try {
+            await Share.share({
+              title: fileName,
+              url: savedFile.uri,
+              dialogTitle: "Open or View Excel File",
+            });
+          } catch {
+            // user cancelled share dialog, ignore
+          }
+        }
+      } else {
+        const blob =
+          bufferOrBlob instanceof Blob
+            ? bufferOrBlob
+            : new Blob([arrayBuffer], {
+                type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      }
+    } catch (err: any) {
+      console.error("Export save error:", err);
+      alert("Export save error: " + (err?.message || ""));
+    }
+  }
 
   async function exportAllFarmersExcel() {
     try {
@@ -1493,7 +1561,7 @@ async function saveBufferOrBlob(bufferOrBlob: ArrayBuffer | Blob, fileName: stri
       ];
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, "Company Summary");
-      
+
       const today = new Date().toISOString().split("T")[0];
       const fileName = `Company_Farmer_Summary_${today}.xlsx`;
 
@@ -1742,80 +1810,89 @@ async function saveBufferOrBlob(bufferOrBlob: ArrayBuffer | Blob, fileName: stri
           </div>
 
           <SearchableSelect
-          searchable={false}
-  value={districtFilter}
-  onChange={(v) => {
-    setDistrictFilter(v);
-    setUpazilaFilter("");
-    setUnionFilter("");
-    setAgentFilter("");
-  }}
-  placeholder="All Districts"
-  options={districts.map((d) => ({ value: d.name, label: d.name }))}
-/>
+            searchable={false}
+            value={districtFilter}
+            onChange={(v) => {
+              setDistrictFilter(v);
+              setUpazilaFilter("");
+              setUnionFilter("");
+              setAgentFilter("");
+            }}
+            placeholder="All Districts"
+            options={districts.map((d) => ({ value: d.name, label: d.name }))}
+          />
 
-<SearchableSelect
-  value={upazilaFilter}
-  onChange={(v) => {
-    setUpazilaFilter(v);
-    setUnionFilter("");
-    setAgentFilter("");
-  }}
-  placeholder="All Upazilas"
-  options={filterUpazilas.map((u: any) => ({ value: u.name, label: u.name }))}
-/>
+          <SearchableSelect
+            value={upazilaFilter}
+            onChange={(v) => {
+              setUpazilaFilter(v);
+              setUnionFilter("");
+              setAgentFilter("");
+            }}
+            placeholder="All Upazilas"
+            options={filterUpazilas.map((u: any) => ({
+              value: u.name,
+              label: u.name,
+            }))}
+          />
 
-<SearchableSelect
-  value={unionFilter}
-  onChange={setUnionFilter}
-  placeholder="All Unions"
-  options={filterUnions.map((u: any) => ({ value: u.name, label: u.name }))}
-/>
+          <SearchableSelect
+            value={unionFilter}
+            onChange={setUnionFilter}
+            placeholder="All Unions"
+            options={filterUnions.map((u: any) => ({
+              value: u.name,
+              label: u.name,
+            }))}
+          />
 
-<SearchableSelect
-searchable={false}
-  value={farmCategoryFilter}
-  onChange={setFarmCategoryFilter}
-  placeholder="All Categories"
-  options={[
-    { value: "Poultry", label: "🐔 Poultry" },
-    { value: "Cattle", label: "🐄 Cattle" },
-    { value: "Fish", label: "🐟 Fish" },
-  ]}
-/>
+          <SearchableSelect
+            searchable={false}
+            value={farmCategoryFilter}
+            onChange={setFarmCategoryFilter}
+            placeholder="All Categories"
+            options={[
+              { value: "Poultry", label: "🐔 Poultry" },
+              { value: "Cattle", label: "🐄 Cattle" },
+              { value: "Fish", label: "🐟 Fish" },
+            ]}
+          />
 
-<SearchableSelect
-  value={companyFilter}
-  onChange={(v) => {
-    setCompanyFilter(v);
-    setAgentFilter("");
-  }}
-  placeholder="All Companies"
-  options={companies.map((c) => ({ value: String(c.id), label: c.company_name }))}
-/>
+          <SearchableSelect
+            value={companyFilter}
+            onChange={(v) => {
+              setCompanyFilter(v);
+              setAgentFilter("");
+            }}
+            placeholder="All Companies"
+            options={companies.map((c) => ({
+              value: String(c.id),
+              label: c.company_name,
+            }))}
+          />
 
-<div className="flex items-center gap-1.5">
-  <SearchableSelect
-    className="w-full"
-    value={agentFilter}
-    onChange={setAgentFilter}
-    placeholder="All Agents"
-    options={availableFilterAgents.map((a) => ({
-      value: String(a.id),
-      label: a.agent_name,
-    }))}
-  />
+          <div className="flex items-center gap-1.5">
+            <SearchableSelect
+              className="w-full"
+              value={agentFilter}
+              onChange={setAgentFilter}
+              placeholder="All Agents"
+              options={availableFilterAgents.map((a) => ({
+                value: String(a.id),
+                label: a.agent_name,
+              }))}
+            />
 
-  <button
-    onClick={clearFilters}
-    title="Reset Filters"
-    className="shrink-0 inline-flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition"
-  >
-    <RotateCcw size={13} />
-  </button>
-</div>
-</div>
-</div>
+            <button
+              onClick={clearFilters}
+              title="Reset Filters"
+              className="shrink-0 inline-flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition"
+            >
+              <RotateCcw size={13} />
+            </button>
+          </div>
+        </div>
+      </div>
 
       {/* 2. ACTION BAR */}
       <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-slate-300 rounded-xl px-3.5 py-2 shadow-sm">
@@ -1829,7 +1906,6 @@ searchable={false}
                 ) || companies[0];
               const defCompId = nourishComp ? String(nourishComp.id) : "";
 
-              // Chronologically sorted assigned districts: default to 1st
               const sortedDists = [...districts].sort((a, b) =>
                 (a.name || "").localeCompare(b.name || "")
               );
@@ -1973,69 +2049,23 @@ searchable={false}
               zoom={8}
               style={{ height: "480px", width: "100%", zIndex: 1 }}
             >
-              <FitBounds 
-              locations={filteredFarmers
-                .filter((f) => f.latitude && f.longitude) // যাদের লোকেশন আছে শুধু তাদের নিবে
-                .map((f) => ({ lat: f.latitude, lng: f.longitude }))
-              } 
-            />
+              <FitBounds
+                skip={Boolean(selectedFarmerPosition || myPosition)}
+                locations={filteredFarmers
+                  .filter((f) => f.latitude && f.longitude)
+                  .map((f) => ({
+                    lat: Number(f.latitude),
+                    lng: Number(f.longitude),
+                  }))}
+              />
               <MapLayers />
 
-              {myLocationMode && myPosition ? (
-                <RecenterMap position={myPosition} />
-              ) : selectedFarmerPosition ? (
-                <RecenterMap position={selectedFarmerPosition} />
-              ) : null}
-
-              {myPosition && (
-                <Marker position={myPosition}>
-                  <Tooltip permanent direction="top" offset={[0, -15]}>
-                    📍 My Location
-                  </Tooltip>
-                  <Popup>
-                    <div className="max-h-60 overflow-y-auto w-52 text-xs space-y-1.5">
-                      <h3 className="font-bold text-slate-800">
-                        📍 Nearest Farmers
-                      </h3>
-                      {nearestFarmers.length === 0 ? (
-                        <div>No nearby farmers found.</div>
-                      ) : (
-                        nearestFarmers.map((farmer, index) => (
-                          <div key={farmer.id} className="border-b pb-1">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const targetPos: [number, number] = [
-                                  Number(farmer.latitude),
-                                  Number(farmer.longitude),
-                                ];
-                                setMyLocationMode(false);
-                                setSelectedFarmerPosition(targetPos);
-                                setNewNoteText("");
-                                loadFarmerNotes(farmer.id);
-
-                                
-                                setTimeout(() => {
-                                  const marker = farmerMarkerRefs.current[farmer.id];
-                                  if (marker) {
-                                    marker.openPopup();
-                                  }
-                                }, 400);
-                              }}
-                              className="text-blue-600 font-bold hover:underline text-left"
-                            >
-                              {index + 1}. {farmer.farmer_name}
-                            </button>
-                            <div className="text-slate-500">
-                              {farmer.distance} km away
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </Popup>
-                </Marker>
-              )}
+              {/* অটো ফোকাস ও বাউন্ডস কন্ট্রোলার */}
+              <MapFocusController
+                farmerPos={selectedFarmerPosition}
+                myPos={myPosition}
+                myLocationMode={myLocationMode}
+              />
 
               {myPosition && (
                 <Marker
@@ -2078,7 +2108,8 @@ searchable={false}
                                 ];
                                 setMyLocationMode(false);
                                 setSelectedFarmerPosition(targetPos);
-                                // সাথে সাথে পপ-আপ ওপেন হবে না এবং স্ক্রিন ক্লিন রাখতে My Location পপ-আপটিও বন্ধ হয়ে যাবে
+                                setNewNoteText("");
+                                loadFarmerNotes(farmer.id);
                                 myLocationMarkerRef.current?.closePopup();
                               }}
                               className="text-blue-600 font-bold hover:underline text-left"
@@ -2086,7 +2117,7 @@ searchable={false}
                               {index + 1}. {farmer.farmer_name}
                             </button>
                             <div className="text-slate-500">
-                              {farmer.distance} km away
+                              {farmer.distanceText} away
                             </div>
                           </div>
                         ))
@@ -2113,6 +2144,24 @@ searchable={false}
                 .map((farmer) => {
                   const badge = getFarmerBadgeInfo(farmer);
                   const breakdown = getStockBreakdownList(farmer);
+                  const fLat = Number(farmer.latitude);
+                  const fLng = Number(farmer.longitude);
+                  const isHighlighted =
+                    selectedFarmerPosition !== null &&
+                    selectedFarmerPosition[0] === fLat &&
+                    selectedFarmerPosition[1] === fLng;
+
+                  const distFromMe =
+                    myPosition && isHighlighted
+                      ? formatDistance(
+                          calcDistanceKm(
+                            myPosition[0],
+                            myPosition[1],
+                            fLat,
+                            fLng
+                          )
+                        )
+                      : undefined;
 
                   return (
                     <Marker
@@ -2120,13 +2169,15 @@ searchable={false}
                       ref={(ref) => {
                         farmerMarkerRefs.current[farmer.id] = ref;
                       }}
-                      position={[
-                        Number(farmer.latitude),
-                        Number(farmer.longitude),
-                      ]}
-                      icon={buildCustomFarmMarker(farmer)}
+                      position={[fLat, fLng]}
+                      icon={buildCustomFarmMarker(
+                        farmer,
+                        isHighlighted,
+                        distFromMe ? `${distFromMe} away` : undefined
+                      )}
                       eventHandlers={{
                         click: () => {
+                          setSelectedFarmerPosition([fLat, fLng]);
                           setNewNoteText("");
                           loadFarmerNotes(farmer.id);
                         },
@@ -2153,72 +2204,82 @@ searchable={false}
                           </div>
 
                           <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-2 space-y-1.5">
-                              <div className="font-bold text-[11px] text-emerald-900">
-                                📝 Farmer Tracking
-                              </div>
-                              <div className="max-h-24 overflow-y-auto space-y-1 pr-0.5">
-                                {loadingNotes && activeTrackingFarmerId === farmer.id ? (
-                                  <div className="text-[11px] text-slate-400">Loading...</div>
-                                ) : activeTrackingFarmerId === farmer.id && farmerNotes.length > 0 ? (
-                                  farmerNotes
-                                    .slice()
-                                    .reverse()
-                                    .map((n) => (
-                                      <div
-                                        key={n.id}
-                                        className="bg-white border border-emerald-100 rounded px-2 py-1 text-[11px] flex items-start gap-1.5"
-                                      >
-                                        <div className="mt-0.5 shrink-0">
-                                          <UserAvatar
-                                            name={n.user_name || "Officer"}
-                                            avatarUrl={getUserAvatar(
-                                              n.user_id,
-                                              n.user_name
-                                            )}
-                                            size="w-4 h-4"
-                                            textSize="text-[8px]"
-                                          />
-                                        </div>
-                                        <div className="min-w-0 flex-1 break-words">
-                                          <span className="font-bold text-emerald-800">
-                                            {n.user_name}:
-                                          </span>{" "}
-                                          <span className="text-slate-700">
-                                            {renderNoteWithMentions(n.note)}
-                                          </span>
-                                        </div>
-                                      </div>
-                                    ))
-                                ) : (
-                                  <div className="text-[10px] text-slate-400">
-                                    No tracking note yet.
-                                  </div>
-                                )}
-                              </div>
-
-                              <form
-                                onSubmit={(e) => handleAddFarmerNote(e, farmer.id)}
-                                className="flex gap-1"
-                              >
-                                <input
-                                  type="text"
-                                  placeholder="Write note..."
-                                  value={activeTrackingFarmerId === farmer.id ? newNoteText : ""}
-                                  onChange={(e) => {
-                                    setActiveTrackingFarmerId(farmer.id);
-                                    setNewNoteText(e.target.value);
-                                  }}
-                                  className="flex-1 border border-emerald-300 rounded px-2 py-1 text-[11px] bg-white outline-none"
-                                />
-                                <button
-                                  type="submit"
-                                  disabled={savingNote}
-                                  className="bg-emerald-600 text-white px-2 py-1 rounded text-[11px] font-semibold"
-                                >
-                                  Track
-                                </button>
-                              </form>
+                            <div className="font-bold text-[11px] text-emerald-900">
+                              📝 Farmer Tracking
                             </div>
+                            <div className="max-h-24 overflow-y-auto space-y-1 pr-0.5">
+                              {loadingNotes &&
+                              activeTrackingFarmerId === farmer.id ? (
+                                <div className="text-[11px] text-slate-400">
+                                  Loading...
+                                </div>
+                              ) : activeTrackingFarmerId === farmer.id &&
+                                farmerNotes.length > 0 ? (
+                                farmerNotes
+                                  .slice()
+                                  .reverse()
+                                  .map((n) => (
+                                    <div
+                                      key={n.id}
+                                      className="bg-white border border-emerald-100 rounded px-2 py-1 text-[11px] flex items-start gap-1.5"
+                                    >
+                                      <div className="mt-0.5 shrink-0">
+                                        <UserAvatar
+                                          name={n.user_name || "Officer"}
+                                          avatarUrl={getUserAvatar(
+                                            n.user_id,
+                                            n.user_name
+                                          )}
+                                          size="w-4 h-4"
+                                          textSize="text-[8px]"
+                                        />
+                                      </div>
+                                      <div className="min-w-0 flex-1 break-words">
+                                        <span className="font-bold text-emerald-800">
+                                          {n.user_name}:
+                                        </span>{" "}
+                                        <span className="text-slate-700">
+                                          {renderNoteWithMentions(n.note)}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  ))
+                              ) : (
+                                <div className="text-[10px] text-slate-400">
+                                  No tracking note yet.
+                                </div>
+                              )}
+                            </div>
+
+                            <form
+                              onSubmit={(e) =>
+                                handleAddFarmerNote(e, farmer.id)
+                              }
+                              className="flex gap-1"
+                            >
+                              <input
+                                type="text"
+                                placeholder="Write note..."
+                                value={
+                                  activeTrackingFarmerId === farmer.id
+                                    ? newNoteText
+                                    : ""
+                                }
+                                onChange={(e) => {
+                                  setActiveTrackingFarmerId(farmer.id);
+                                  setNewNoteText(e.target.value);
+                                }}
+                                className="flex-1 border border-emerald-300 rounded px-2 py-1 text-[11px] bg-white outline-none"
+                              />
+                              <button
+                                type="submit"
+                                disabled={savingNote}
+                                className="bg-emerald-600 text-white px-2 py-1 rounded text-[11px] font-semibold"
+                              >
+                                Track
+                              </button>
+                            </form>
+                          </div>
 
                           <table className="w-full border-collapse border border-slate-200 text-[11px]">
                             <tbody>
@@ -2284,24 +2345,36 @@ searchable={false}
                 })}
             </MapContainer>
 
-            {/* Floating Locate Me Button */}
-            <button
-              type="button"
-              onClick={handleLocateMeOnMainMap}
-              className="absolute top-3 left-1/2 -translate-x-1/2 z-[500] flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg px-3.5 py-1.5 text-xs font-semibold transition"
-            >
-              <MapPin size={15} /> Locate Me
-            </button>
+           
+            {/* Floating Locate Me + Close Button (Middle Side-by-Side) */}
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[500] flex flex-col items-center gap-1.5">
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={handleLocateMeOnMainMap}
+                  className="flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg px-2.5 py-1.5 text-xs font-semibold whitespace-nowrap transition"
+                >
+                  <MapPin size={15} /> Locate Me
+                </button>
 
-            {/* Floating Top-Right Close Map Icon */}
-            <button
-              type="button"
-              onClick={() => setShowFarmerMap(false)}
-              title="Close Map"
-              className="absolute top-3 right-3 z-[500] flex items-center gap-1 bg-red-600 hover:bg-red-700 text-white rounded-full shadow-lg px-3 py-1.5 text-xs font-bold transition"
-            >
-              <X size={14} /> Close
-            </button>
+                <button
+                  type="button"
+                  onClick={() => setShowFarmerMap(false)}
+                  title="Close Map"
+                  className="flex items-center gap-1 bg-purple-500 hover:bg-red-700 text-white rounded-full shadow-lg px-3 py-1.5 text-xs font-bold whitespace-nowrap transition"
+                >
+                  <X size={14} /> Close
+                </button>
+              </div>
+
+              {activeDistanceText && (
+                <div className="rounded-full bg-slate-900/90 text-white px-3 py-1 text-[11px] font-bold shadow-md whitespace-nowrap">
+                  📍 Distance: {activeDistanceText}
+                </div>
+              )}
+            </div>
+
+            
           </div>
         </div>
       )}
@@ -2412,9 +2485,9 @@ searchable={false}
                             <button
                               onClick={() => handleViewFarmerOnMap(farmer)}
                               className="inline-flex items-center gap-1 bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded text-[11px]"
-                              >
-                                <MapPin size={10} className="shrink-0" />
-                                <span>Map</span>
+                            >
+                              <MapPin size={10} className="shrink-0" />
+                              <span>Map</span>
                             </button>
                             <button
                               onClick={() => openEditForm(farmer)}
@@ -2440,7 +2513,7 @@ searchable={false}
         </div>
       )}
 
-      {/* 5. VIEW FARMER MODAL (z-[2000] so it always renders ABOVE Leaflet map) */}
+      {/* 5. VIEW FARMER MODAL */}
       {selectedFarmer && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[2000] p-2 sm:p-4">
           <div className="bg-white rounded-xl w-full max-w-xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl border border-slate-300">
@@ -2512,7 +2585,9 @@ searchable={false}
                             </div>
                           </div>
                           <span className="text-[10px] text-slate-400 shrink-0">
-                            {new Date(item.created_at).toLocaleDateString("en-GB")}
+                            {new Date(item.created_at).toLocaleDateString(
+                              "en-GB"
+                            )}
                           </span>
                         </div>
                       ))
@@ -2650,282 +2725,300 @@ searchable={false}
         </div>
       )}
 
-      {/* 6. ADD / EDIT FARMER MODAL (Company -> District -> Upazila -> Agent -> Rest) */}
-{showForm && (
-  <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[2000] p-2 sm:p-4">
-    <div className="bg-white rounded-xl p-4 sm:p-5 w-full max-w-2xl max-h-[92vh] overflow-y-auto shadow-2xl">
-      <div className="flex justify-between items-center pb-2.5 mb-3 border-b">
-        <h2 className="text-base font-bold text-slate-800">
-          {editingId ? "Edit Farmer" : "Add Farmer"}
-        </h2>
-        <button onClick={() => setShowForm(false)}>
-          <X size={18} />
-        </button>
-      </div>
+      {/* 6. ADD / EDIT FARMER MODAL */}
+      {showForm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[2000] p-2 sm:p-4">
+          <div className="bg-white rounded-xl p-4 sm:p-5 w-full max-w-2xl max-h-[92vh] overflow-y-auto shadow-2xl">
+            <div className="flex justify-between items-center pb-2.5 mb-3 border-b">
+              <h2 className="text-base font-bold text-slate-800">
+                {editingId ? "Edit Farmer" : "Add Farmer"}
+              </h2>
+              <button onClick={() => setShowForm(false)}>
+                <X size={18} />
+              </button>
+            </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-        {/* 1. Company (Default Nourish) */}
-        <div>
-          <label className="block text-xs font-bold text-slate-600 mb-1">
-            Company *
-          </label>
-          <SearchableSelect
-            value={form.company_id}
-            onChange={(companyId) =>
-              setForm({ ...form, company_id: companyId, agent_id: "" })
-            }
-            placeholder="Select Company"
-            options={companies.map((c) => ({
-              value: String(c.id),
-              label: c.company_name,
-            }))}
-          />
-        </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  Company *
+                </label>
+                <SearchableSelect
+                  value={form.company_id}
+                  onChange={(companyId) =>
+                    setForm({ ...form, company_id: companyId, agent_id: "" })
+                  }
+                  placeholder="Select Company"
+                  options={companies.map((c) => ({
+                    value: String(c.id),
+                    label: c.company_name,
+                  }))}
+                />
+              </div>
 
-        {/* 2. District (Assigned Districts Chronologically) */}
-        <div>
-          <label className="block text-xs font-bold text-slate-600 mb-1">
-            District *
-          </label>
-          <SearchableSelect
-          searchable={false}
-            value={form.district}
-            onChange={(v) =>
-              setForm({
-                ...form,
-                district: v,
-                upazila: "",
-                union_name: "",
-                agent_id: "",
-              })
-            }
-            placeholder="Select District"
-            options={districts.map((d) => ({ value: d.name, label: d.name }))}
-          />
-        </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  District *
+                </label>
+                <SearchableSelect
+                  searchable={false}
+                  value={form.district}
+                  onChange={(v) =>
+                    setForm({
+                      ...form,
+                      district: v,
+                      upazila: "",
+                      union_name: "",
+                      agent_id: "",
+                    })
+                  }
+                  placeholder="Select District"
+                  options={districts.map((d) => ({
+                    value: d.name,
+                    label: d.name,
+                  }))}
+                />
+              </div>
 
-        {/* 3. Upazila (Under Selected District) */}
-        <div>
-          <label className="block text-xs font-bold text-slate-600 mb-1">
-            Upazila *
-          </label>
-          <SearchableSelect
-            value={form.upazila}
-            onChange={(v) =>
-              setForm({
-                ...form,
-                upazila: v,
-                union_name: "",
-                agent_id: "",
-              })
-            }
-            placeholder="Select Upazila"
-            options={upazilas.map((u) => ({ value: u.name, label: u.name }))}
-          />
-        </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  Upazila *
+                </label>
+                <SearchableSelect
+                  value={form.upazila}
+                  onChange={(v) =>
+                    setForm({
+                      ...form,
+                      upazila: v,
+                      union_name: "",
+                      agent_id: "",
+                    })
+                  }
+                  placeholder="Select Upazila"
+                  options={upazilas.map((u) => ({
+                    value: u.name,
+                    label: u.name,
+                  }))}
+                />
+              </div>
 
-        {/* 4. Agent (Filtered by Selected Company & Upazila) */}
-        <div>
-          <label className="block text-xs font-bold text-slate-600 mb-1">
-            Agent *
-          </label>
-          <SearchableSelect
-            value={form.agent_id}
-            onChange={(v) => setForm({ ...form, agent_id: v })}
-            placeholder="Select Agent"
-            options={formAvailableAgents.map((a) => ({
-              value: String(a.id),
-              label: a.agent_name,
-            }))}
-          />
-        </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  Agent *
+                </label>
+                <SearchableSelect
+                  value={form.agent_id}
+                  onChange={(v) => setForm({ ...form, agent_id: v })}
+                  placeholder="Select Agent"
+                  options={formAvailableAgents.map((a) => ({
+                    value: String(a.id),
+                    label: a.agent_name,
+                  }))}
+                />
+              </div>
 
-        {/* 5. Remaining Fields (District & Upazila not repeated) */}
-        <div>
-          <label className="block text-xs font-bold text-slate-600 mb-1">
-            Farmer Name *
-          </label>
-          <input
-            placeholder="Farmer Name"
-            value={form.farmer_name}
-            onChange={(e) => setForm({ ...form, farmer_name: e.target.value })}
-            className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-          />
-        </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  Farmer Name *
+                </label>
+                <input
+                  placeholder="Farmer Name"
+                  value={form.farmer_name}
+                  onChange={(e) =>
+                    setForm({ ...form, farmer_name: e.target.value })
+                  }
+                  className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
+                />
+              </div>
 
-        <div>
-          <label className="block text-xs font-bold text-slate-600 mb-1">
-            Mobile
-          </label>
-          <input
-            placeholder="017XXXXXXXX"
-            value={form.mobile}
-            onChange={(e) => setForm({ ...form, mobile: e.target.value })}
-            className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-          />
-        </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  Mobile
+                </label>
+                <input
+                  placeholder="017XXXXXXXX"
+                  value={form.mobile}
+                  onChange={(e) => setForm({ ...form, mobile: e.target.value })}
+                  className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
+                />
+              </div>
 
-        <div>
-          <label className="block text-xs font-bold text-slate-600 mb-1">
-            Union
-          </label>
-          <SearchableSelect
-            value={form.union_name}
-            onChange={(v) => setForm({ ...form, union_name: v })}
-            placeholder="Select Union"
-            options={unions.map((u) => ({ value: u.name, label: u.name }))}
-          />
-        </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  Union
+                </label>
+                <SearchableSelect
+                  value={form.union_name}
+                  onChange={(v) => setForm({ ...form, union_name: v })}
+                  placeholder="Select Union"
+                  options={unions.map((u) => ({
+                    value: u.name,
+                    label: u.name,
+                  }))}
+                />
+              </div>
 
-        <div>
-          <label className="block text-xs font-bold text-slate-600 mb-1">
-            Village
-          </label>
-          <input
-            placeholder="Village"
-            value={form.village}
-            onChange={(e) => setForm({ ...form, village: e.target.value })}
-            className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-          />
-        </div>
-      </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  Village
+                </label>
+                <input
+                  placeholder="Village"
+                  value={form.village}
+                  onChange={(e) =>
+                    setForm({ ...form, village: e.target.value })
+                  }
+                  className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
+                />
+              </div>
+            </div>
 
-      <div className="mb-3 flex flex-wrap items-center gap-2 bg-slate-50 border border-slate-200 rounded p-2.5">
-        <button
-          type="button"
-          onClick={() => {
-            setPickerCenterOverride(null);
-            setShowMap(true);
-          }}
-          className="inline-flex items-center gap-1.5 bg-blue-600 text-white px-3 py-1.5 rounded text-xs font-semibold"
-        >
-          <MapPin size={13} /> Select Location from Map
-        </button>
+            <div className="mb-3 flex flex-wrap items-center gap-2 bg-slate-50 border border-slate-200 rounded p-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setPickerCenterOverride(null);
+                  setShowMap(true);
+                }}
+                className="inline-flex items-center gap-1.5 bg-blue-600 text-white px-3 py-1.5 rounded text-xs font-semibold"
+              >
+                <MapPin size={13} /> Select Location from Map
+              </button>
 
-        {form.latitude && form.longitude && (
-          <span className="text-emerald-700 text-xs font-semibold">
-            📍 Selected ({Number(form.latitude).toFixed(4)},{" "}
-            {Number(form.longitude).toFixed(4)})
-          </span>
-        )}
-      </div>
+              {form.latitude && form.longitude && (
+                <span className="text-emerald-700 text-xs font-semibold">
+                  📍 Selected ({Number(form.latitude).toFixed(4)},{" "}
+                  {Number(form.longitude).toFixed(4)})
+                </span>
+              )}
+            </div>
 
-    <div className="mb-3">
-  <label className="block text-xs font-bold text-slate-600 mb-1">
-    Farm Category *
-  </label>
-  <SearchableSelect
-    searchable={false}
-    value={form.farm_category || ""}
-    onChange={(v) => setForm({ ...form, farm_category: v })}
-    placeholder="Select Category"
-    options={[
-      { value: "Poultry", label: "🐔 Poultry" },
-      { value: "Cattle", label: "🐄 Cattle" },
-      { value: "Fish", label: "🐟 Fish" },
-    ]}
-  />
-</div>
-
-      {form.farm_category === "Poultry" && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3 bg-amber-50 border border-amber-200 rounded p-2.5">
-          {POULTRY_FIELDS.map((item) => (
-            <div key={item}>
-              <label className="block text-[11px] font-semibold capitalize">
-                {item.replace("_", " ")}
+            <div className="mb-3">
+              <label className="block text-xs font-bold text-slate-600 mb-1">
+                Farm Category *
               </label>
-              <input
-                type="number"
-                min="0"
-                value={(form as any)[item] || ""}
-                onChange={(e) => setForm({ ...form, [item]: e.target.value })}
-                className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+              <SearchableSelect
+                searchable={false}
+                value={form.farm_category || ""}
+                onChange={(v) => setForm({ ...form, farm_category: v })}
+                placeholder="Select Category"
+                options={[
+                  { value: "Poultry", label: "🐔 Poultry" },
+                  { value: "Cattle", label: "🐄 Cattle" },
+                  { value: "Fish", label: "🐟 Fish" },
+                ]}
               />
             </div>
-          ))}
-        </div>
-      )}
 
-      {form.farm_category === "Cattle" && (
-        <div className="grid grid-cols-3 gap-2 mb-3 bg-emerald-50 border border-emerald-200 rounded p-2.5">
-          {CATTLE_FIELDS.map((item) => (
-            <div key={item}>
-              <label className="block text-[11px] font-semibold capitalize">
-                {item.replace("_", " ")}
-              </label>
-              <input
-                type="number"
-                min="0"
-                value={(form as any)[item] || ""}
-                onChange={(e) => setForm({ ...form, [item]: e.target.value })}
-                className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-              />
+            {form.farm_category === "Poultry" && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3 bg-amber-50 border border-amber-200 rounded p-2.5">
+                {POULTRY_FIELDS.map((item) => (
+                  <div key={item}>
+                    <label className="block text-[11px] font-semibold capitalize">
+                      {item.replace("_", " ")}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={(form as any)[item] || ""}
+                      onChange={(e) =>
+                        setForm({ ...form, [item]: e.target.value })
+                      }
+                      className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {form.farm_category === "Cattle" && (
+              <div className="grid grid-cols-3 gap-2 mb-3 bg-emerald-50 border border-emerald-200 rounded p-2.5">
+                {CATTLE_FIELDS.map((item) => (
+                  <div key={item}>
+                    <label className="block text-[11px] font-semibold capitalize">
+                      {item.replace("_", " ")}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={(form as any)[item] || ""}
+                      onChange={(e) =>
+                        setForm({ ...form, [item]: e.target.value })
+                      }
+                      className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {form.farm_category === "Fish" && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3 bg-sky-50 border border-sky-200 rounded p-2.5">
+                {FISH_FIELDS.map((item) => (
+                  <div key={item}>
+                    <label className="block text-[11px] font-semibold capitalize">
+                      {item}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={(form as any)[item] || ""}
+                      onChange={(e) =>
+                        setForm({ ...form, [item]: e.target.value })
+                      }
+                      className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  Feed Type
+                </label>
+                <input
+                  placeholder="Feed Type"
+                  value={form.feed_type}
+                  onChange={(e) =>
+                    setForm({ ...form, feed_type: e.target.value })
+                  }
+                  className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  Remarks
+                </label>
+                <input
+                  placeholder="Remarks"
+                  value={form.remarks}
+                  onChange={(e) =>
+                    setForm({ ...form, remarks: e.target.value })
+                  }
+                  className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
+                />
+              </div>
             </div>
-          ))}
-        </div>
-      )}
 
-      {form.farm_category === "Fish" && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3 bg-sky-50 border border-sky-200 rounded p-2.5">
-          {FISH_FIELDS.map((item) => (
-            <div key={item}>
-              <label className="block text-[11px] font-semibold capitalize">
-                {item}
-              </label>
-              <input
-                type="number"
-                min="0"
-                value={(form as any)[item] || ""}
-                onChange={(e) => setForm({ ...form, [item]: e.target.value })}
-                className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-              />
+            <div className="flex justify-end gap-2 pt-2 border-t">
+              <button
+                onClick={() => setShowForm(false)}
+                className="px-4 py-1.5 rounded border border-slate-300 text-xs font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSave}
+                className="px-4 py-1.5 rounded bg-green-600 text-white text-xs font-semibold"
+              >
+                {editingId ? "Update Farmer" : "Save Farmer"}
+              </button>
             </div>
-          ))}
+          </div>
         </div>
       )}
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
-        <div>
-          <label className="block text-xs font-bold text-slate-600 mb-1">
-            Feed Type
-          </label>
-          <input
-            placeholder="Feed Type"
-            value={form.feed_type}
-            onChange={(e) => setForm({ ...form, feed_type: e.target.value })}
-            className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-bold text-slate-600 mb-1">
-            Remarks
-          </label>
-          <input
-            placeholder="Remarks"
-            value={form.remarks}
-            onChange={(e) => setForm({ ...form, remarks: e.target.value })}
-            className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-          />
-        </div>
-      </div>
-
-      <div className="flex justify-end gap-2 pt-2 border-t">
-        <button
-          onClick={() => setShowForm(false)}
-          className="px-4 py-1.5 rounded border border-slate-300 text-xs font-semibold"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={handleSave}
-          className="px-4 py-1.5 rounded bg-green-600 text-white text-xs font-semibold"
-        >
-          {editingId ? "Update Farmer" : "Save Farmer"}
-        </button>
-      </div>
-    </div>
-  </div>
-)}
 
       {/* 7. LOCATION PICKER MODAL */}
       {showMap && (

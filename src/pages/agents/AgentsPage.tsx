@@ -73,6 +73,29 @@ const EMPTY_FORM = {
   status: "Active",
 };
 
+function calcDistanceKm(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function formatDistance(km: number): string {
+  if (km < 1) return `${Math.round(km * 1000)} m`;
+  return `${km.toFixed(2)} km`;
+}
+
 function parseList(val: any): string[] {
   if (!val) return [];
   if (Array.isArray(val)) return val.map(String).filter(Boolean);
@@ -105,30 +128,50 @@ function isNourishName(name?: string) {
   return Boolean(name && name.toLowerCase().includes("nourish"));
 }
 
-function RecenterMap({ position }: { position: [number, number] }) {
-  const map = useMap();
-  useEffect(() => {
-    if (!position) return;
-    map.flyTo(position, 17, { animate: true, duration: 1.3 });
-  }, [position, map]);
-  return null;
-}
-
-function FitBounds({ locations }: { locations: { lat: number; lng: number }[] }) {
+function FitBounds({
+  locations,
+  skip,
+}: {
+  locations: { lat: number; lng: number }[];
+  skip?: boolean;
+}) {
   const map = useMap();
 
   useEffect(() => {
+    if (skip) return;
     if (!locations || locations.length === 0) return;
 
     const bounds = L.latLngBounds(locations.map((loc) => [loc.lat, loc.lng]));
-
     map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
-  }, [locations, map]);
+  }, [locations, map, skip]);
 
   return null;
 }
 
+function MapFocusController({
+  agentPos,
+  myPos,
+  myLocationMode,
+}: {
+  agentPos: [number, number] | null;
+  myPos: [number, number] | null;
+  myLocationMode: boolean;
+}) {
+  const map = useMap();
 
+  useEffect(() => {
+    if (myPos && agentPos) {
+      const bounds = L.latLngBounds([myPos, agentPos]);
+      map.fitBounds(bounds, { padding: [65, 65], maxZoom: 16, animate: true });
+    } else if (agentPos) {
+      map.flyTo(agentPos, 17, { animate: true, duration: 1.0 });
+    } else if (myLocationMode && myPos) {
+      map.flyTo(myPos, 16, { animate: true, duration: 1.0 });
+    }
+  }, [agentPos, myPos, myLocationMode, map]);
+
+  return null;
+}
 
 export default function AgentsPage() {
   const { role } = useAuth();
@@ -212,25 +255,25 @@ export default function AgentsPage() {
 
   const [allUsers, setAllUsers] = useState<any[]>([]);
 
-useEffect(() => {
-  supabase
-    .from("users")
-    .select("id, full_name, avatar_url")
-    .then(({ data }) => {
-      if (data) setAllUsers(data);
-    });
-}, []);
+  useEffect(() => {
+    supabase
+      .from("users")
+      .select("id, full_name, avatar_url")
+      .then(({ data }) => {
+        if (data) setAllUsers(data);
+      });
+  }, []);
 
-function getUserAvatar(userId?: string, userName?: string): string | null {
-  const found = allUsers.find(
-    (u) =>
-      (userId && String(u.id) === String(userId)) ||
-      (userName &&
-        String(u.full_name || "").trim().toLowerCase() ===
-          String(userName).trim().toLowerCase())
-  );
-  return found?.avatar_url || null;
-}
+  function getUserAvatar(userId?: string, userName?: string): string | null {
+    const found = allUsers.find(
+      (u) =>
+        (userId && String(u.id) === String(userId)) ||
+        (userName &&
+          String(u.full_name || "").trim().toLowerCase() ===
+            String(userName).trim().toLowerCase())
+    );
+    return found?.avatar_url || null;
+  }
 
   // ==================================================
   // INITIALIZE USER & DATA
@@ -406,6 +449,7 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
     }
   }
 
+  // ✅ Map বাটনে ক্লিক করলে শুধু ওই এজেন্টে জুম করবে (নিজে থেকে পপআপ ওপেন হবে না)
   function handleViewAgentOnMap(agent: any) {
     if (!agent.latitude || !agent.longitude) {
       alert("Location not available for this agent.");
@@ -420,16 +464,15 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
     setSelectedLocation([lat, lng]);
     loadAgentNotes(agent.id);
 
+    // আগে খোলা থাকা যেকোনো পপআপ বন্ধ করে দেওয়া হচ্ছে যাতে ম্যাপ পরিষ্কার দেখা যায়
+    Object.values(agentMarkerRefs.current).forEach((m) => m?.closePopup());
+
     setTimeout(() => {
       mapSectionRef.current?.scrollIntoView({
         behavior: "smooth",
         block: "center",
       });
-      const marker = agentMarkerRefs.current[agent.id];
-      if (marker) {
-        marker.openPopup();
-      }
-    }, 350);
+    }, 300);
   }
 
   // ==================================================
@@ -654,7 +697,9 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
         perm = await Geolocation.requestPermissions();
       }
       if (perm.location !== "granted") {
-        throw new Error("Location permission denied. Please allow GPS access.");
+        throw new Error(
+          "Location permission denied. Please allow GPS access."
+        );
       }
 
       try {
@@ -669,7 +714,10 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
           enableHighAccuracy: false,
           timeout: 10000,
         });
-        return { lat: fallbackPos.coords.latitude, lng: fallbackPos.coords.longitude };
+        return {
+          lat: fallbackPos.coords.latitude,
+          lng: fallbackPos.coords.longitude,
+        };
       }
     } else {
       return new Promise((resolve, reject) => {
@@ -678,7 +726,8 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
           return;
         }
         navigator.geolocation.getCurrentPosition(
-          (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+          (pos) =>
+            resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
           (err) => reject(err),
           { enableHighAccuracy: true, timeout: 10000 }
         );
@@ -697,51 +746,39 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
         longitude: lng.toFixed(6),
       }));
     } catch (err: any) {
-      alert(err?.message || "Unable to retrieve your location. Please allow GPS access.");
+      alert(
+        err?.message ||
+          "Unable to retrieve your location. Please allow GPS access."
+      );
     } finally {
       setLocatingInPicker(false);
     }
   }
 
-  function getDistanceKm(
-    lat1: number,
-    lon1: number,
-    lat2: number,
-    lon2: number
-  ) {
-    const R = 6371;
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLon = ((lon2 - lon1) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return Math.round(R * c * 100) / 100;
-  }
-
+  // ✅ Locate Me ক্লিক করলে selectedLocation মুছে ফেলবে না, ফলে সিলেক্ট করা এজেন্টের সাথে ডিসট্যান্স ও Polyline দেখাবে
   async function getMyLocation() {
     try {
       const { lat, lng } = await getDeviceCoordinates();
       const coords: [number, number] = [lat, lng];
       setUserLocation(coords);
-      setSelectedLocation(null); // ক্লিক করার আগ পর্যন্ত ড্যাশ লাইন অফ থাকবে
       setMyLocationMode(true);
 
       const nearest = filteredAgents
         .filter((a) => a.latitude && a.longitude)
-        .map((a) => ({
-          ...a,
-          distance: getDistanceKm(
+        .map((a) => {
+          const km = calcDistanceKm(
             coords[0],
             coords[1],
             Number(a.latitude),
             Number(a.longitude)
-          ),
-        }))
-        .sort((a, b) => a.distance - b.distance)
+          );
+          return {
+            ...a,
+            distanceKm: km,
+            distanceText: formatDistance(km),
+          };
+        })
+        .sort((a, b) => a.distanceKm - b.distanceKm)
         .slice(0, 10);
 
       setNearestAgents(nearest);
@@ -749,6 +786,7 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
       alert(err?.message || "Location access denied");
     }
   }
+
   // ==================================================
   // FILTERED AGENTS & COMPANY-WISE GROUPING
   // ==================================================
@@ -781,6 +819,18 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
       matchBazar
     );
   });
+
+  const activeDistanceText =
+    userLocation && selectedLocation
+      ? formatDistance(
+          calcDistanceKm(
+            userLocation[0],
+            userLocation[1],
+            selectedLocation[0],
+            selectedLocation[1]
+          )
+        )
+      : null;
 
   const sortedAgents = [...filteredAgents].sort((a: any, b: any) => {
     const companyCompare = (
@@ -850,149 +900,152 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
   // EXCEL EXPORT
   // ==================================================
   async function exportAgentsExcel() {
-  try {
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet("Agents");
+    try {
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet("Agents");
 
-    worksheet.getRow(1).values = [
-      "Company",
-      "Agent ID",
-      "Agent Name",
-      "Proprietor",
-      "Mobile",
-      "Bazar",
-      "District",
-      "Upazila",
-      "Union",
-      "Broiler Sale",
-      "Layer Sale",
-      "Sonali Sale",
-      "Cattle Sale",
-      "Fish Sale",
-      "Total Monthly Sale",
-      "Focus Item",
-      "Status",
-    ];
+      worksheet.getRow(1).values = [
+        "Company",
+        "Agent ID",
+        "Agent Name",
+        "Proprietor",
+        "Mobile",
+        "Bazar",
+        "District",
+        "Upazila",
+        "Union",
+        "Broiler Sale",
+        "Layer Sale",
+        "Sonali Sale",
+        "Cattle Sale",
+        "Fish Sale",
+        "Total Monthly Sale",
+        "Focus Item",
+        "Status",
+      ];
 
-    sortedAgents.forEach((agent: any) => {
-      worksheet.addRow([
-        agent.companies?.company_name || "",
-        agent.agent_code || "-",
-        agent.agent_name || "",
-        agent.proprietor || "",
-        agent.mobile || "",
-        agent.bazar || "",
-        agent.district || "",
-        agent.upazila || "",
-        agent.union_name || "",
-        Number(agent.broiler_sale || 0),
-        Number(agent.layer_sale || 0),
-        Number(agent.sonali_sale || 0),
-        Number(agent.cattle_sale || 0),
-        Number(agent.fish_sale || 0),
-        Number(agent.monthly_sale || 0),
-        agent.focus_item || "",
-        agent.status || "",
-      ]);
-    });
-
-    for (let col = 1; col <= 17; col++) {
-      const cell = worksheet.getCell(1, col);
-      cell.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: {
-          argb:
-            col === 15
-              ? "15803D"
-              : col >= 10 && col <= 14
-              ? "D97706"
-              : "1E3A8A",
-        },
-      };
-      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-      cell.alignment = {
-        horizontal: "center",
-        vertical: "middle",
-        wrapText: true,
-      };
-      cell.border = {
-        top: { style: "thin", color: { argb: "FFFFFF" } },
-        left: { style: "thin", color: { argb: "FFFFFF" } },
-        bottom: { style: "thin", color: { argb: "FFFFFF" } },
-        right: { style: "thin", color: { argb: "FFFFFF" } },
-      };
-    }
-
-    worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber >= 2) {
-        row.eachCell((cell) => {
-          cell.border = {
-            top: { style: "thin", color: { argb: "D1D5DB" } },
-            left: { style: "thin", color: { argb: "D1D5DB" } },
-            bottom: { style: "thin", color: { argb: "D1D5DB" } },
-            right: { style: "thin", color: { argb: "D1D5DB" } },
-          };
-          cell.alignment = { vertical: "middle", wrapText: true };
-        });
-      }
-    });
-
-    const widths = [
-      24, 14, 22, 20, 16, 20, 18, 18, 18, 15, 15, 15, 15, 15, 20, 20, 14,
-    ];
-    widths.forEach((w, idx) => (worksheet.getColumn(idx + 1).width = w));
-    worksheet.getRow(1).height = 30;
-    worksheet.views = [{ state: "frozen", ySplit: 1 }];
-    worksheet.autoFilter = { from: "A1", to: "Q1" };
-
-    const today = new Date().toISOString().split("T")[0];
-    const safeCompanyName = (selectedCompanyName || "Report").replace(/[\s\/\\:@?*]+/g, "_");
-    const fileName = `Agents_${safeCompanyName}_${today}.xlsx`;
-
-    const excelBuffer = await workbook.xlsx.writeBuffer();
-
-    if (Capacitor.isNativePlatform()) {
-      let binary = "";
-      const bytes = new Uint8Array(excelBuffer);
-      const chunkSize = 0x8000;
-      for (let i = 0; i < bytes.length; i += chunkSize) {
-        binary += String.fromCharCode.apply(
-          null,
-          Array.from(bytes.subarray(i, i + chunkSize))
-        );
-      }
-      const base64Data = window.btoa(binary);
-
-      const savedFile = await Filesystem.writeFile({
-        path: fileName,
-        data: base64Data,
-        directory: Directory.Documents,
-        recursive: true,
+      sortedAgents.forEach((agent: any) => {
+        worksheet.addRow([
+          agent.companies?.company_name || "",
+          agent.agent_code || "-",
+          agent.agent_name || "",
+          agent.proprietor || "",
+          agent.mobile || "",
+          agent.bazar || "",
+          agent.district || "",
+          agent.upazila || "",
+          agent.union_name || "",
+          Number(agent.broiler_sale || 0),
+          Number(agent.layer_sale || 0),
+          Number(agent.sonali_sale || 0),
+          Number(agent.cattle_sale || 0),
+          Number(agent.fish_sale || 0),
+          Number(agent.monthly_sale || 0),
+          agent.focus_item || "",
+          agent.status || "",
+        ]);
       });
 
-      alert(`File saved successfully:\n📁 Documents/${fileName}`);
+      for (let col = 1; col <= 17; col++) {
+        const cell = worksheet.getCell(1, col);
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: {
+            argb:
+              col === 15
+                ? "15803D"
+                : col >= 10 && col <= 14
+                ? "D97706"
+                : "1E3A8A",
+          },
+        };
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.alignment = {
+          horizontal: "center",
+          vertical: "middle",
+          wrapText: true,
+        };
+        cell.border = {
+          top: { style: "thin", color: { argb: "FFFFFF" } },
+          left: { style: "thin", color: { argb: "FFFFFF" } },
+          bottom: { style: "thin", color: { argb: "FFFFFF" } },
+          right: { style: "thin", color: { argb: "FFFFFF" } },
+        };
+      }
 
-      if (savedFile.uri) {
-        try {
-          await Share.share({
-            title: fileName,
-            url: savedFile.uri,
-            dialogTitle: "Open or View Excel File",
+      worksheet.eachRow((row, rowNumber) => {
+        if (rowNumber >= 2) {
+          row.eachCell((cell) => {
+            cell.border = {
+              top: { style: "thin", color: { argb: "D1D5DB" } },
+              left: { style: "thin", color: { argb: "D1D5DB" } },
+              bottom: { style: "thin", color: { argb: "D1D5DB" } },
+              right: { style: "thin", color: { argb: "D1D5DB" } },
+            };
+            cell.alignment = { vertical: "middle", wrapText: true };
           });
-        } catch {}
-      }
-    } else {
-      const blob = new Blob([excelBuffer], {
-        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
       });
-      saveAs(blob, fileName);
+
+      const widths = [
+        24, 14, 22, 20, 16, 20, 18, 18, 18, 15, 15, 15, 15, 15, 20, 20, 14,
+      ];
+      widths.forEach((w, idx) => (worksheet.getColumn(idx + 1).width = w));
+      worksheet.getRow(1).height = 30;
+      worksheet.views = [{ state: "frozen", ySplit: 1 }];
+      worksheet.autoFilter = { from: "A1", to: "Q1" };
+
+      const today = new Date().toISOString().split("T")[0];
+      const safeCompanyName = (selectedCompanyName || "Report").replace(
+        /[\s\/\\:@?*]+/g,
+        "_"
+      );
+      const fileName = `Agents_${safeCompanyName}_${today}.xlsx`;
+
+      const excelBuffer = await workbook.xlsx.writeBuffer();
+
+      if (Capacitor.isNativePlatform()) {
+        let binary = "";
+        const bytes = new Uint8Array(excelBuffer);
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(
+            null,
+            Array.from(bytes.subarray(i, i + chunkSize))
+          );
+        }
+        const base64Data = window.btoa(binary);
+
+        const savedFile = await Filesystem.writeFile({
+          path: fileName,
+          data: base64Data,
+          directory: Directory.Documents,
+          recursive: true,
+        });
+
+        alert(`File saved successfully:\n📁 Documents/${fileName}`);
+
+        if (savedFile.uri) {
+          try {
+            await Share.share({
+              title: fileName,
+              url: savedFile.uri,
+              dialogTitle: "Open or View Excel File",
+            });
+          } catch {}
+        }
+      } else {
+        const blob = new Blob([excelBuffer], {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        });
+        saveAs(blob, fileName);
+      }
+    } catch (error) {
+      console.error("Agent Excel Export Error:", error);
+      alert("Agent Excel export failed.");
     }
-  } catch (error) {
-    console.error("Agent Excel Export Error:", error);
-    alert("Agent Excel export failed.");
   }
-}
 
   function openEditForm(agent: any) {
     setEditingId(agent.id);
@@ -1219,7 +1272,7 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
         <div
           ref={mapSectionRef}
           id="agent-map-section"
-          className="bg-white rounded-xl shadow border border-slate-300 p-3"
+          className="bg-white rounded-xl shadow border border-slate-300 p-3 relative z-10"
         >
           <h3 className="text-sm font-bold text-slate-800 mb-2">
             Agent Locations
@@ -1229,21 +1282,25 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
             <MapContainer
               center={mapCenter}
               zoom={8}
-              style={{ height: "480px", width: "100%" }}
+              style={{ height: "480px", width: "100%", zIndex: 1 }}
             >
-              <FitBounds 
+              <FitBounds
+                skip={Boolean(selectedLocation || userLocation)}
                 locations={filteredAgents
                   .filter((agent) => agent.latitude && agent.longitude)
-                  .map((agent) => ({ lat: agent.latitude, lng: agent.longitude }))
-                } 
+                  .map((agent) => ({
+                    lat: Number(agent.latitude),
+                    lng: Number(agent.longitude),
+                  }))}
               />
               <MapLayers />
 
-              {myLocationMode && userLocation ? (
-                <RecenterMap position={userLocation} />
-              ) : selectedLocation ? (
-                <RecenterMap position={selectedLocation} />
-              ) : null}
+              {/* অটো ফোকাস ও বাউন্ডস কন্ট্রোলার */}
+              <MapFocusController
+                agentPos={selectedLocation}
+                myPos={userLocation}
+                myLocationMode={myLocationMode}
+              />
 
               {userLocation && (
                 <Marker
@@ -1286,7 +1343,8 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
                                 ];
                                 setMyLocationMode(false);
                                 setSelectedLocation(targetPos);
-                                // সাথে সাথে পপ-আপ ওপেন হবে না এবং স্ক্রিন ক্লিন রাখতে My Location পপ-আপটিও বন্ধ হয়ে যাবে
+                                setNewNoteText("");
+                                loadAgentNotes(a.id);
                                 myLocationMarkerRef.current?.closePopup();
                               }}
                               className="text-blue-600 font-bold hover:underline text-left"
@@ -1294,7 +1352,7 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
                               {index + 1}. {a.agent_name}
                             </button>
                             <div className="text-slate-500">
-                              {a.distance} km away
+                              {a.distanceText} away
                             </div>
                           </div>
                         ))
@@ -1320,6 +1378,8 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
                 .filter((a) => a.latitude && a.longitude)
                 .map((agent) => {
                   const breakdown = getSaleBreakdown(agent);
+                  const aLat = Number(agent.latitude);
+                  const aLng = Number(agent.longitude);
 
                   return (
                     <Marker
@@ -1327,16 +1387,14 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
                       ref={(ref) => {
                         agentMarkerRefs.current[agent.id] = ref;
                       }}
-                      position={[
-                        Number(agent.latitude),
-                        Number(agent.longitude),
-                      ]}
+                      position={[aLat, aLng]}
                       icon={createAgentMarker(
                         agent.companies?.logo_url || "",
                         agent.agent_name || ""
                       )}
                       eventHandlers={{
                         click: () => {
+                          setSelectedLocation([aLat, aLng]);
                           setNewNoteText("");
                           loadAgentNotes(agent.id);
                         },
@@ -1498,12 +1556,33 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
                 })}
             </MapContainer>
 
-            <button
-              onClick={getMyLocation}
-              className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg px-3.5 py-1.5 text-xs font-semibold transition"
-            >
-              <MapPin size={15} /> Locate Me
-            </button>
+            {/* Floating Locate Me + Close Button (Middle Side-by-Side) */}
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[500] flex flex-col items-center gap-1.5">
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={getMyLocation}
+                  className="flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg px-2.5 py-1.5 text-xs font-semibold whitespace-nowrap transition"
+                >
+                  <MapPin size={15} /> Locate Me
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowMap(false)}
+                  title="Close Map"
+                  className="flex items-center gap-1 bg-purple-500 hover:bg-red-700 text-white rounded-full shadow-lg px-3 py-1.5 text-xs font-bold whitespace-nowrap transition"
+                >
+                  <X size={14} /> Close
+                </button>
+              </div>
+
+              {activeDistanceText && (
+                <div className="rounded-full bg-slate-900/90 text-white px-3 py-1 text-[11px] font-bold shadow-md whitespace-nowrap">
+                  📍 Distance: {activeDistanceText}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1676,7 +1755,7 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
           5. VIEW AGENT MODAL
       ================================================== */}
       {selectedAgent && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[2000] p-2 sm:p-4">
           <div className="bg-white rounded-xl w-full max-w-xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl border border-slate-300">
             <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-300 bg-slate-100">
               <h2 className="text-sm sm:text-base font-bold text-slate-800">
@@ -1743,7 +1822,9 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
                           </div>
                         </div>
                         <span className="text-[10px] text-slate-400 shrink-0">
-                          {new Date(item.created_at).toLocaleDateString("en-GB")}
+                          {new Date(item.created_at).toLocaleDateString(
+                            "en-GB"
+                          )}
                         </span>
                       </div>
                     ))
@@ -1877,7 +1958,7 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
           6. ADD / EDIT AGENT MODAL (WITH NOURISH AGENT ID OPTION)
       ================================================== */}
       {showForm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[2000] p-2 sm:p-4">
           <div className="bg-white rounded-xl p-4 sm:p-5 w-full max-w-2xl max-h-[92vh] overflow-y-auto shadow-2xl">
             <div className="flex justify-between items-center pb-2.5 mb-3 border-b">
               <h2 className="text-base font-bold text-slate-800">
@@ -2241,7 +2322,7 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
           7. LOCATION PICKER MODAL WITH LOCATE ME BUTTON
       ================================================== */}
       {showAgentMap && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-2 sm:p-4">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[2100] p-2 sm:p-4">
           <div className="bg-white p-3 sm:p-4 rounded-xl w-full max-w-4xl shadow-2xl space-y-2.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="font-bold text-sm sm:text-base">
@@ -2342,7 +2423,7 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
           8. AGENT SUMMARY MODAL
       ================================================== */}
       {showSummary && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[2000] p-2 sm:p-4">
           <div className="bg-white rounded-xl p-4 sm:p-6 w-full max-w-3xl max-h-[85vh] overflow-auto">
             <div className="flex justify-between items-center pb-3 mb-4 border-b">
               <div>

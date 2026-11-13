@@ -118,23 +118,40 @@ function esc(s: string) {
 function buildMarker(agent: any, highlight = false, distText?: string) {
   const { emoji, border } = getAgentBadgeInfo(agent);
   const name = esc((agent.agent_name || "Agent").slice(0, 16));
-  const logo = agent.logo_url || ""; // If you have logo
+  const logo =
+    agent?.companies?.logo_url ||
+    agent?.companies?.logo ||
+    agent?.company_logo ||
+    agent?.logo_url ||
+    "";
 
-  const ring = highlight ? "box-shadow:0 0 0 4px rgba(59,130,246,0.35);" : "box-shadow:0 1px 2px rgba(0,0,0,0.15);";
+  const size = highlight ? 34 : 28;
+  const ring = highlight
+    ? "box-shadow:0 0 0 4px rgba(59,130,246,0.35);"
+    : "box-shadow:0 1px 2px rgba(0,0,0,0.15);";
   const distHtml = distText
     ? `<div style="margin-top:2px;background:#0f172a;color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;white-space:nowrap;">${esc(distText)}</div>`
     : "";
-    
+
+  const iconHtml = logo
+    ? `<img src="${logo}" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:contain;background:#ffffff;border:2px solid ${border};padding:1px;box-shadow:0 2px 4px rgba(0,0,0,0.3);" />`
+    : `<span style="font-size:${highlight ? 30 : 24}px;line-height:1;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.35));">${emoji}</span>`;
+
   const html = `
     <div style="display:flex;flex-direction:column;align-items:center;transform:translateY(-10px);">
-      <span style="font-size:${highlight ? 30 : 24}px;line-height:1;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.35));">${logo ? `<img src="${logo}" style="width:30px;height:30px;border-radius:50%;object-fit:cover;background:#fff;"/>` : emoji}</span>
+      ${iconHtml}
       <div style="margin-top:2px;background:rgba(255,255,255,0.96);border:1px solid ${border};color:#0f172a;font-size:10px;font-weight:700;padding:0 5px;border-radius:4px;white-space:nowrap;${ring}">
         ${name}
       </div>
       ${distHtml}
     </div>`;
-    
-  return L.divIcon({ className: "ft-div-icon", html, iconSize: [70, 56], iconAnchor: [35, 42] });
+
+  return L.divIcon({
+    className: "ft-div-icon",
+    html,
+    iconSize: [70, 56],
+    iconAnchor: [35, 42],
+  });
 }
 
 function toYmd(iso: string) {
@@ -724,7 +741,7 @@ function TrackingContent({ role }: { role: any }) {
     setCurrentUserName(uName);
 
     const [{ data: agentData }, { data: usersList }] = await Promise.all([
-      supabase.from("agents").select("*, companies(company_name)"),
+      supabase.from("agents").select("*, companies(*)"),
       supabase.from("users").select("id, full_name, email, avatar_url"),
     ]);
 

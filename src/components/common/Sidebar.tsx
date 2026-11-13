@@ -15,12 +15,18 @@ import {
   FaUserCircle,
   FaMapMarkerAlt,
   FaStethoscope,
+  FaDownload,
 } from "react-icons/fa";
+import { Capacitor } from "@capacitor/core";
 import { supabase } from "../../lib/supabase";
 import {
   compressImageToTinyBase64,
   UserAvatar,
 } from "../../utils/avatarHelper";
+
+// ✅ এখানে আপনার Supabase Public Bucket-এর APK ফাইলের Direct URL বসান:
+const APK_DOWNLOAD_URL =
+  "https://YOUR_PROJECT_ID.supabase.co/storage/v1/object/public/app-releases/smart-team.apk";
 
 function parseList(val: any): string[] {
   if (!val) return [];
@@ -54,6 +60,9 @@ export default function Sidebar({
   setSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
   const location = useLocation();
+
+  // ব্রাউজার (Web) নাকি মোবাইল অ্যাপ (Native) তা চেক করা হচ্ছে
+  const isWebBrowser = !Capacitor.isNativePlatform();
 
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [savingMeta, setSavingMeta] = useState(false);
@@ -193,17 +202,6 @@ export default function Sidebar({
             Visit
           </div>
 
-          {/*
-          <Link
-            to="/farmer-status"
-            onClick={handleMenuClick}
-            className={menuClass("/farmer-status")}
-          >
-            <FaUserCheck className="text-base shrink-0" />
-            <span>Farmer Status</span>
-          </Link> 
-          */}
-
           <Link
             to="/visits"
             onClick={handleMenuClick}
@@ -329,7 +327,22 @@ export default function Sidebar({
           )}
         </nav>
 
-        <div className="mt-auto border-t border-slate-200 p-3.5 bg-slate-50/70 space-y-3 shrink-0">
+        <div className="mt-auto border-t border-slate-200 p-3.5 bg-slate-50/70 space-y-2.5 shrink-0">
+          {/* ✅ শুধুমাত্র ওয়েব বা ব্রাউজার থেকে ঢুকলে Download App বাটন দেখাবে */}
+          {isWebBrowser && (
+            <a
+              href={APK_DOWNLOAD_URL}
+              download
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={handleMenuClick}
+              className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white py-2 px-3 rounded-xl text-xs sm:text-sm font-semibold shadow-sm transition"
+            >
+              <FaDownload className="text-xs shrink-0" />
+              <span>Download App</span>
+            </a>
+          )}
+
           <button
             type="button"
             onClick={() => setShowProfileModal(true)}

@@ -24,9 +24,9 @@ import {
   UserAvatar,
 } from "../../utils/avatarHelper";
 
-// ✅ এখানে আপনার Supabase Public Bucket-এর APK ফাইলের Direct URL বসান:
+
 const APK_DOWNLOAD_URL =
-  "https://YOUR_PROJECT_ID.supabase.co/storage/v1/object/public/app-releases/smart-team.apk";
+  "https://vqqlckzchnppvidkckrw.supabase.co/storage/v1/object/public/app-releases/Nourish-Smart-Team.apk";
 
 function parseList(val: any): string[] {
   if (!val) return [];
@@ -61,7 +61,7 @@ export default function Sidebar({
 }) {
   const location = useLocation();
 
-  // ব্রাউজার (Web) নাকি মোবাইল অ্যাপ (Native) তা চেক করা হচ্ছে
+  
   const isWebBrowser = !Capacitor.isNativePlatform();
 
   const [showProfileModal, setShowProfileModal] = useState(false);
@@ -328,7 +328,7 @@ export default function Sidebar({
         </nav>
 
         <div className="mt-auto border-t border-slate-200 p-3.5 bg-slate-50/70 space-y-2.5 shrink-0">
-          {/* ✅ শুধুমাত্র ওয়েব বা ব্রাউজার থেকে ঢুকলে Download App বাটন দেখাবে */}
+          
           {isWebBrowser && (
             <a
               href={APK_DOWNLOAD_URL}

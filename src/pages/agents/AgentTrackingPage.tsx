@@ -1,10 +1,9 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../context/AuthContext";
 import {
   MapContainer,
   Marker,
-
   CircleMarker,
   useMap,
 } from "react-leaflet";
@@ -28,10 +27,12 @@ import {
   UserCheck,
   Pencil,
   Check,
+  AtSign,
 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { Geolocation } from "@capacitor/geolocation";
 import { Capacitor } from "@capacitor/core";
+import { UserAvatar, renderNoteWithMentions } from "../../utils/avatarHelper";
 
 /* -------------------------------------------------------------------------- */
 /*  Helpers & Status Tag Parser                                               */
@@ -204,12 +205,6 @@ function FitBounds({ positions, flyTarget }: { positions: [number, number][]; fl
 /* -------------------------------------------------------------------------- */
 async function sendFirebaseNotification(title: string, body: string, targetId: string) {
   try {
-    // এখানে আপনার Edge Function কল করতে হবে (ঠিক ফার্মার পেজের মতো)
-    /*
-    await supabase.functions.invoke("send-notification", {
-      body: { title, body, type: "agent_tracking", target_id: targetId }
-    });
-    */
     console.log("FCM Triggered:", { title, body, targetId });
   } catch (error) {
     console.error("Failed to send notification", error);
@@ -223,7 +218,7 @@ const labelCls = "block text-[11px] font-semibold text-slate-500 mb-0.5";
 /*  Shared Components                                                          */
 /* -------------------------------------------------------------------------- */
 
-function NoteThread({ notes, initialLimit = 10, currentUserId, currentUserName, isFullAccess, onEditNote }: any) {
+function NoteThread({ notes, initialLimit = 10, currentUserId, currentUserName, isFullAccess, onEditNote, getUserAvatar, onTagUser }: any) {
   const [limit, setLimit] = useState(initialLimit);
   const [editingId, setEditingId] = useState<any>(null);
   const [editValue, setEditValue] = useState("");
@@ -260,21 +255,35 @@ function NoteThread({ notes, initialLimit = 10, currentUserId, currentUserName, 
         const isEditing = editingId === n.id;
 
         const boxStyle = isRisky ? "border-red-300 bg-red-50/70" : isWeak ? "border-teal-300 bg-teal-50/70" : isResolved ? "border-blue-300 bg-blue-50/70" : i === 0 ? "border-blue-400 bg-blue-50/80 shadow-2xs" : "border-slate-200 bg-white";
+        const avatarUrl = getUserAvatar ? getUserAvatar(n.user_id, n.user_name) : null;
 
         return (
           <div key={n.id} id={`track-note-${n.id}`} className={`rounded-lg border px-3 py-2 transition ${boxStyle}`}>
             <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px]">
               <span className="flex items-center gap-1.5 font-bold text-slate-800 flex-wrap">
-                <span className={`flex h-4.5 w-4.5 items-center justify-center rounded-full text-[9px] font-bold text-white ${isRisky ? "bg-red-600" : isWeak ? "bg-teal-600" : isResolved ? "bg-blue-600" : i === 0 ? "bg-blue-600" : "bg-slate-700"}`}>
-                  {(n.user_name || "?").charAt(0).toUpperCase()}
-                </span>
+                <UserAvatar
+                  name={n.user_name || "Officer"}
+                  avatarUrl={avatarUrl}
+                  size="w-5 h-5"
+                  textSize="text-[9px]"
+                />
                 <span>{n.user_name || "Officer"}</span>
                 {isRisky && <span className="inline-flex items-center gap-0.5 rounded bg-red-600 px-1.5 py-px text-[9px] font-bold text-white uppercase tracking-wide">⚠️ Marked Risky</span>}
                 {isWeak && <span className="inline-flex items-center gap-0.5 rounded bg-teal-600 px-1.5 py-px text-[9px] font-bold text-white uppercase tracking-wide">🌱 Weak to Nourish</span>}
                 {isResolved && <span className="inline-flex items-center gap-0.5 rounded bg-blue-600 px-1.5 py-px text-[9px] font-bold text-white uppercase tracking-wide">✓ Mark Cleared</span>}
                 {i === 0 && meta.type === "normal" && <span className="rounded bg-blue-600 px-1.5 py-px text-[9px] font-bold text-white uppercase tracking-wide">Latest</span>}
               </span>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
+                {onTagUser && (
+                  <button
+                    type="button"
+                    onClick={() => onTagUser(n.user_name || "Officer")}
+                    title={`Tag ${n.user_name || "Officer"}`}
+                    className="inline-flex items-center gap-0.5 rounded bg-blue-50 hover:bg-blue-100 border border-blue-200 px-1.5 py-0.5 text-[10px] font-bold text-blue-700 transition"
+                  >
+                    @ Tag
+                  </button>
+                )}
                 <span className="text-slate-500 font-medium">{fmtDateTime(n.created_at)} ({timeAgo(n.created_at)})</span>
                 {canEdit(n) && !isEditing && (
                   <button type="button" onClick={() => { setEditingId(n.id); setEditValue(meta.cleanText); }} className="rounded p-1 text-slate-400 hover:bg-slate-200/70 hover:text-blue-700 transition">
@@ -294,7 +303,9 @@ function NoteThread({ notes, initialLimit = 10, currentUserId, currentUserName, 
                 </div>
               </div>
             ) : (
-              <p className="mt-1 whitespace-pre-wrap break-words text-[13px] sm:text-sm font-medium leading-snug text-slate-900">{meta.cleanText}</p>
+              <p className="mt-1 whitespace-pre-wrap break-words text-[13px] sm:text-sm font-medium leading-snug text-slate-900">
+                {renderNoteWithMentions(meta.cleanText)}
+              </p>
             )}
           </div>
         );
@@ -444,15 +455,25 @@ function AgentMapModal({ agent, onClose, onDetails }: any) {
   );
 }
 
-function AgentModal({ agent, notes, initialTab, userId, userName, isFullAccess, onSave, onEditNote, onViewMap, onClose }: any) {
+function AgentModal({ agent, notes, initialTab, initialTagUser, userId, userName, isFullAccess, allUsers, getUserAvatar, onSave, onEditNote, onViewMap, onClose }: any) {
   const [tab, setTab] = useState<"track" | "details">(initialTab);
-  const [text, setText] = useState("");
+  const [text, setText] = useState(() => initialTagUser ? `@[${initialTagUser}] ` : "");
   const [postMode, setPostMode] = useState<"normal" | "risky" | "weak" | "clear">("normal");
   const [saving, setSaving] = useState(false);
+  const [showMentionList, setShowMentionList] = useState(false);
+  const modalTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const badge = getAgentBadgeInfo(agent);
   const nourish = isNourishAgent(agent);
   const statusInfo = getAgentSpecialStatus(notes, agent);
+
+  function handleModalTagUser(targetName: string) {
+    if (!targetName) return;
+    const token = `@[${targetName.trim()}] `;
+    setText((prev) => (prev.includes(token.trim()) ? prev : `${token}${prev}`));
+    setShowMentionList(false);
+    setTimeout(() => modalTextareaRef.current?.focus(), 40);
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -503,31 +524,60 @@ function AgentModal({ agent, notes, initialTab, userId, userName, isFullAccess, 
         <div className="overflow-y-auto p-4">
           {tab === "track" ? (
             <div className="space-y-3">
-              <div className="flex flex-wrap items-center gap-1.5">
-                {nourish ? (
-                  statusInfo.isRisky ? (
+              <div className="relative flex flex-wrap items-center justify-between gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {nourish ? (
+                    statusInfo.isRisky ? (
+                      <button type="button" onClick={() => setPostMode(postMode === "clear" ? "normal" : "clear")} className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${postMode === "clear" ? "border-blue-600 bg-blue-600 text-white" : "border-blue-300 bg-blue-50 text-blue-800 hover:bg-blue-100"}`}>
+                        <UserCheck size={11} /> Clear Risky Mark
+                      </button>
+                    ) : (
+                      <button type="button" onClick={() => setPostMode(postMode === "risky" ? "normal" : "risky")} className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${postMode === "risky" ? "border-red-600 bg-red-600 text-white" : "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"}`}>
+                        <AlertTriangle size={11} /> Mark as Risky
+                      </button>
+                    )
+                  ) : statusInfo.isWeak ? (
                     <button type="button" onClick={() => setPostMode(postMode === "clear" ? "normal" : "clear")} className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${postMode === "clear" ? "border-blue-600 bg-blue-600 text-white" : "border-blue-300 bg-blue-50 text-blue-800 hover:bg-blue-100"}`}>
-                      <UserCheck size={11} /> Clear Risky Mark
+                      <UserCheck size={11} /> Clear Weak Mark
                     </button>
                   ) : (
-                    <button type="button" onClick={() => setPostMode(postMode === "risky" ? "normal" : "risky")} className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${postMode === "risky" ? "border-red-600 bg-red-600 text-white" : "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"}`}>
-                      <AlertTriangle size={11} /> Mark as Risky
+                    <button type="button" onClick={() => setPostMode(postMode === "weak" ? "normal" : "weak")} className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${postMode === "weak" ? "border-teal-600 bg-teal-600 text-white" : "border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100"}`}>
+                      <Sprout size={11} /> Weak to Nourish
                     </button>
-                  )
-                ) : statusInfo.isWeak ? (
-                  <button type="button" onClick={() => setPostMode(postMode === "clear" ? "normal" : "clear")} className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${postMode === "clear" ? "border-blue-600 bg-blue-600 text-white" : "border-blue-300 bg-blue-50 text-blue-800 hover:bg-blue-100"}`}>
-                    <UserCheck size={11} /> Clear Weak Mark
-                  </button>
-                ) : (
-                  <button type="button" onClick={() => setPostMode(postMode === "weak" ? "normal" : "weak")} className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${postMode === "weak" ? "border-teal-600 bg-teal-600 text-white" : "border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100"}`}>
-                    <Sprout size={11} /> Weak to Nourish
-                  </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowMentionList((v) => !v)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 text-[11px] font-bold text-blue-700 transition"
+                >
+                  <AtSign size={11} /> Tag User
+                </button>
+
+                {showMentionList && (
+                  <div className="absolute right-0 top-8 z-40 w-56 max-h-48 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl space-y-0.5">
+                    {(allUsers || []).map((u: any) => {
+                      const uName = u.full_name || u.email?.split("@")[0] || "Officer";
+                      return (
+                        <button
+                          key={u.id}
+                          type="button"
+                          onClick={() => handleModalTagUser(uName)}
+                          className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-blue-50 rounded-lg transition"
+                        >
+                          <UserAvatar name={uName} avatarUrl={u.avatar_url} size="w-5 h-5" textSize="text-[9px]" />
+                          <span className="font-semibold text-slate-700 truncate">{uName}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
 
               <form onSubmit={submit} className="space-y-1.5">
-                <textarea autoFocus rows={3} value={text} onChange={(e) => setText(e.target.value)}
-                  placeholder={postMode === "risky" ? "Write comment for marking as Risky..." : postMode === "weak" ? "Write comment for marking as Weak..." : postMode === "clear" ? "Write comment why clearing mark..." : "Write a new tracking message or remark..."}
+                <textarea ref={modalTextareaRef} autoFocus rows={3} value={text} onChange={(e) => setText(e.target.value)}
+                  placeholder={postMode === "risky" ? "Write comment for marking as Risky..." : postMode === "weak" ? "Write comment for marking as Weak..." : postMode === "clear" ? "Write comment why clearing mark..." : "Write a new tracking message or @tag someone..."}
                   className={`w-full resize-none rounded-lg border px-3 py-2 text-sm outline-none transition ${postMode === "risky" ? "border-red-400 bg-red-50/40 focus:border-red-600" : postMode === "weak" ? "border-teal-400 bg-teal-50/40 focus:border-teal-600" : postMode === "clear" ? "border-blue-500 bg-blue-50/60 focus:border-blue-700" : "border-slate-300 bg-white focus:border-blue-500"}`}
                 />
                 <div className="flex items-center justify-between">
@@ -537,7 +587,16 @@ function AgentModal({ agent, notes, initialTab, userId, userName, isFullAccess, 
                   </button>
                 </div>
               </form>
-              <NoteThread notes={notes} initialLimit={10} currentUserId={userId} currentUserName={userName} isFullAccess={isFullAccess} onEditNote={onEditNote} />
+              <NoteThread
+                notes={notes}
+                initialLimit={10}
+                currentUserId={userId}
+                currentUserName={userName}
+                isFullAccess={isFullAccess}
+                onEditNote={onEditNote}
+                getUserAvatar={getUserAvatar}
+                onTagUser={handleModalTagUser}
+              />
             </div>
           ) : (
             <AgentInfoGrid agent={agent} />
@@ -548,7 +607,7 @@ function AgentModal({ agent, notes, initialTab, userId, userName, isFullAccess, 
   );
 }
 
-function AgentTrackingGroupCard({ agent, notes, currentUserId, currentUserName, isFullAccess, onRetrack, onDetails, onViewMap, onEditNote }: any) {
+function AgentTrackingGroupCard({ agent, notes, currentUserId, currentUserName, isFullAccess, getUserAvatar, onTagFromNote, onRetrack, onDetails, onViewMap, onEditNote }: any) {
   const badge = getAgentBadgeInfo(agent);
   const statusInfo = getAgentSpecialStatus(notes, agent);
 
@@ -576,7 +635,16 @@ function AgentTrackingGroupCard({ agent, notes, currentUserId, currentUserName, 
           </div>
         </div>
         <div className="lg:col-span-8 min-w-0" id={`agent-notes-${agent.id}`}>
-          <NoteThread notes={notes} initialLimit={10} currentUserId={currentUserId} currentUserName={currentUserName} isFullAccess={isFullAccess} onEditNote={onEditNote} />
+          <NoteThread
+            notes={notes}
+            initialLimit={10}
+            currentUserId={currentUserId}
+            currentUserName={currentUserName}
+            isFullAccess={isFullAccess}
+            onEditNote={onEditNote}
+            getUserAvatar={getUserAvatar}
+            onTagUser={(targetUserName: string) => onTagFromNote(agent, targetUserName)}
+          />
         </div>
       </div>
     </div>
@@ -597,6 +665,7 @@ function TrackingContent({ role }: { role: any }) {
   const isFullAccess = role === "super_admin" || role === "manager";
   const [currentUserId, setCurrentUserId] = useState("");
   const [currentUserName, setCurrentUserName] = useState("User");
+  const [allUsers, setAllUsers] = useState<any[]>([]);
   
   const [agents, setAgents] = useState<any[]>([]);
   const [trackings, setTrackings] = useState<any[]>([]);
@@ -614,6 +683,8 @@ function TrackingContent({ role }: { role: any }) {
   const [pickedMode, setPickedMode] = useState<"normal" | "risky" | "weak" | "clear">("normal");
   const [saving, setSaving] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
+  const [showMentionList, setShowMentionList] = useState(false);
+  const pickedTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const [statusTab, setStatusTab] = useState<"all" | "risky" | "weak">("all");
   const [dateMode, setDateMode] = useState<"all" | "single" | "range">("all");
@@ -625,7 +696,7 @@ function TrackingContent({ role }: { role: any }) {
   const [logUpazila, setLogUpazila] = useState("");
   const [visibleCount, setVisibleCount] = useState(20);
 
-  const [modal, setModal] = useState<{ agent: any; tab: "track" | "details" } | null>(null);
+  const [modal, setModal] = useState<{ agent: any; tab: "track" | "details"; tagUser?: string } | null>(null);
   const [mapAgent, setMapAgent] = useState<any>(null);
 
   /* Data Loading */
@@ -652,7 +723,13 @@ function TrackingContent({ role }: { role: any }) {
     }
     setCurrentUserName(uName);
 
-    const { data: agentData } = await supabase.from("agents").select("*, companies(company_name)");
+    const [{ data: agentData }, { data: usersList }] = await Promise.all([
+      supabase.from("agents").select("*, companies(company_name)"),
+      supabase.from("users").select("id, full_name, email, avatar_url"),
+    ]);
+
+    if (usersList) setAllUsers(usersList);
+
     let allowedAgents = agentData || [];
     if (!isFullAccess) {
       allowedAgents = allowedAgents.filter((a: any) => {
@@ -668,6 +745,35 @@ function TrackingContent({ role }: { role: any }) {
 
   useEffect(() => { loadData(); }, [role]);
   useEffect(() => { if (toast) { const t = setTimeout(() => setToast(""), 2500); return () => clearTimeout(t); } }, [toast]);
+
+  function getUserAvatar(userId?: string, userName?: string): string | null {
+    const found = allUsers.find(
+      (u) =>
+        (userId && String(u.id) === String(userId)) ||
+        (userName && String(u.full_name || "").trim().toLowerCase() === String(userName).trim().toLowerCase())
+    );
+    return found?.avatar_url || null;
+  }
+
+  function handlePickedTagUser(targetName: string) {
+    if (!targetName) return;
+    const token = `@[${targetName.trim()}] `;
+    setNoteText((prev) => (prev.includes(token.trim()) ? prev : `${token}${prev}`));
+    setShowMentionList(false);
+    setTimeout(() => pickedTextareaRef.current?.focus(), 40);
+  }
+
+  function handleTagFromGroupCard(agent: any, targetUserName: string) {
+    setPickedAgent(agent);
+    setAgentQuery(agent.agent_name || "");
+    setComboOpen(false);
+    setPickedMode("normal");
+    setTrackOpen(true);
+    const token = `@[${targetUserName.trim()}] `;
+    setNoteText((prev) => (prev.includes(token.trim()) ? prev : `${token}${prev}`));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    setTimeout(() => pickedTextareaRef.current?.focus(), 180);
+  }
 
   // Derived Data
   const agentMap = useMemo(() => new Map(agents.map(a => [String(a.id), a])), [agents]);
@@ -740,7 +846,7 @@ function TrackingContent({ role }: { role: any }) {
 
   useEffect(() => { setVisibleCount(20); }, [statusTab, dateMode, dateFrom, dateTo, logSearch, logUser, logDistrict, logUpazila]);
 
-  // Realtime subscription (Same as Farmer Tracking)
+  // Realtime subscription
   useEffect(() => {
     const ch = supabase.channel("page_live_agent_trackings")
       .on("postgres_changes", { event: "*", schema: "public", table: "agent_trackings" }, () => { loadTrackings(); })
@@ -777,7 +883,6 @@ function TrackingContent({ role }: { role: any }) {
     const { data, error } = await supabase.from("agent_trackings").insert([{ agent_id: agent.id, note: text.trim(), user_id: currentUserId || null, user_name: currentUserName }]).select().single();
     if (error) { alert("Failed to save"); return false; }
     
-    // Notification Fire
     await sendFirebaseNotification(`New tracking for ${agent.agent_name}`, text.trim(), String(data.id));
 
     setTrackings(p => [data, ...p]);
@@ -840,7 +945,7 @@ function TrackingContent({ role }: { role: any }) {
         </div>
 
         <div className={`grid transition-all duration-300 ease-in-out ${trackOpen ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0 pointer-events-none"}`}>
-          <div className={comboOpen ? "overflow-visible" : "overflow-hidden"}>
+          <div className={comboOpen || showMentionList ? "overflow-visible" : "overflow-hidden"}>
             <div className="border-t border-slate-100 bg-slate-50/40 p-3 sm:p-4 space-y-3 rounded-b-xl">
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
                 <div>
@@ -908,10 +1013,17 @@ function TrackingContent({ role }: { role: any }) {
                     )}
                   </div>
 
-                  <div className="flex flex-col md:col-span-2">
+                  <div className="flex flex-col md:col-span-2 relative">
                     <div className="mb-1.5 flex flex-wrap items-center justify-between gap-1.5">
                       <label className="text-[11px] font-semibold text-slate-500">Tracking message *</label>
-                      <div className="flex items-center gap-1">
+                      <div className="flex flex-wrap items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setShowMentionList((v) => !v)}
+                          className="inline-flex items-center gap-0.5 rounded border border-blue-200 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-blue-700 transition"
+                        >
+                          <AtSign size={10} /> Tag User
+                        </button>
                         {isNourishAgent(pickedAgent) ? (
                           pickedStatus.isRisky ? (
                             <button type="button" onClick={() => setPickedMode(pickedMode === "clear" ? "normal" : "clear")} className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold transition ${pickedMode === "clear" ? "bg-blue-600 text-white" : "border border-blue-300 bg-blue-50 text-blue-800 hover:bg-blue-100"}`}><UserCheck size={10} /> Clear Risky Mark</button>
@@ -925,7 +1037,27 @@ function TrackingContent({ role }: { role: any }) {
                         )}
                       </div>
                     </div>
-                    <textarea value={noteText} onChange={e => setNoteText(e.target.value)} placeholder={pickedMode === "risky" ? "Comment why risky..." : pickedMode === "weak" ? "Comment why weak..." : pickedMode === "clear" ? "Comment why clearing mark..." : "Write tracking message..."} className={`min-h-[115px] flex-1 resize-none rounded-lg border px-3 py-2 text-sm outline-none transition ${pickedMode === "risky" ? "border-red-400 bg-red-50/40 focus:border-red-600" : pickedMode === "weak" ? "border-teal-400 bg-teal-50/40 focus:border-teal-600" : pickedMode === "clear" ? "border-blue-500 bg-blue-50/60 focus:border-blue-700" : "border-slate-300 bg-white focus:border-blue-500"}`} />
+
+                    {showMentionList && (
+                      <div className="absolute right-0 top-7 z-40 w-56 max-h-48 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl space-y-0.5">
+                        {allUsers.map((u: any) => {
+                          const uName = u.full_name || u.email?.split("@")[0] || "Officer";
+                          return (
+                            <button
+                              key={u.id}
+                              type="button"
+                              onClick={() => handlePickedTagUser(uName)}
+                              className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-blue-50 rounded-lg transition"
+                            >
+                              <UserAvatar name={uName} avatarUrl={u.avatar_url} size="w-5 h-5" textSize="text-[9px]" />
+                              <span className="font-semibold text-slate-700 truncate">{uName}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <textarea ref={pickedTextareaRef} value={noteText} onChange={e => setNoteText(e.target.value)} placeholder={pickedMode === "risky" ? "Comment why risky..." : pickedMode === "weak" ? "Comment why weak..." : pickedMode === "clear" ? "Comment why clearing mark..." : "Write tracking message or @tag someone..."} className={`min-h-[115px] flex-1 resize-none rounded-lg border px-3 py-2 text-sm outline-none transition ${pickedMode === "risky" ? "border-red-400 bg-red-50/40 focus:border-red-600" : pickedMode === "weak" ? "border-teal-400 bg-teal-50/40 focus:border-teal-600" : pickedMode === "clear" ? "border-blue-500 bg-blue-50/60 focus:border-blue-700" : "border-slate-300 bg-white focus:border-blue-500"}`} />
                     <div className="mt-2 flex items-center justify-between gap-2">
                       <span className="text-[11px] text-slate-500">By <b className="text-slate-700">{currentUserName}</b></span>
                       <button onClick={handleSavePicked} disabled={saving || !noteText.trim()} className={`flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-xs font-bold text-white disabled:opacity-50 ${pickedMode === "risky" ? "bg-red-600 hover:bg-red-700" : pickedMode === "weak" ? "bg-teal-600 hover:bg-teal-700" : "bg-blue-600 hover:bg-blue-700"}`}><Send size={12} /> {saving ? "Saving..." : pickedMode === "risky" ? "Save Risky & Notify" : pickedMode === "weak" ? "Save Weak & Notify" : pickedMode === "clear" ? "Clear Mark" : "Save Tracking"}</button>
@@ -985,7 +1117,20 @@ function TrackingContent({ role }: { role: any }) {
             {loading ? <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-xs text-slate-400">Loading tracking messages...</div> : logGroups.length === 0 ? <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-xs text-slate-400">{statusTab === "risky" ? "No Risky Agents found." : statusTab === "weak" ? "No 'Weak to Nourish' agents found." : hasLogFilter ? "No tracking messages match your filters." : "No tracking messages yet. Tap 'Track an Agent' above to add one."}</div> : (
               <div className="space-y-2.5">
                 {logGroups.slice(0, visibleCount).map(({ agent, notes }: any) => (
-                  <AgentTrackingGroupCard key={agent.id} agent={agent} notes={notes} currentUserId={currentUserId} currentUserName={currentUserName} isFullAccess={isFullAccess} onRetrack={() => setModal({ agent, tab: "track" })} onDetails={() => setModal({ agent, tab: "details" })} onViewMap={() => openMap(agent)} onEditNote={updateNote} />
+                  <AgentTrackingGroupCard
+                    key={agent.id}
+                    agent={agent}
+                    notes={notes}
+                    currentUserId={currentUserId}
+                    currentUserName={currentUserName}
+                    isFullAccess={isFullAccess}
+                    getUserAvatar={getUserAvatar}
+                    onTagFromNote={handleTagFromGroupCard}
+                    onRetrack={() => setModal({ agent, tab: "track" })}
+                    onDetails={() => setModal({ agent, tab: "details" })}
+                    onViewMap={() => openMap(agent)}
+                    onEditNote={updateNote}
+                  />
                 ))}
                 {logGroups.length > visibleCount && <div className="pt-1 text-center"><button type="button" onClick={() => setVisibleCount((c) => c + 20)} className="rounded-xl border border-slate-300 bg-white hover:bg-slate-50 px-5 py-2 text-xs font-bold text-slate-700 shadow-2xs">Load more agents ({logGroups.length - visibleCount} remaining)</button></div>}
               </div>
@@ -995,7 +1140,24 @@ function TrackingContent({ role }: { role: any }) {
       </div>
 
       {showPicker && <MapPickerModal agents={agents} initDistrict={selDistrict} initUpazila={selUpazila} onPick={pickAgent} onClose={() => setShowPicker(false)} />}
-      {modal && <AgentModal key={`${modal.agent.id}-${modal.tab}`} agent={modal.agent} notes={notesByAgent.get(String(modal.agent.id)) || []} initialTab={modal.tab} userId={currentUserId} userName={currentUserName} isFullAccess={isFullAccess} onSave={saveNote} onEditNote={updateNote} onViewMap={openMap} onClose={() => setModal(null)} />}
+      {modal && (
+        <AgentModal
+          key={`${modal.agent.id}-${modal.tab}-${modal.tagUser || ""}`}
+          agent={modal.agent}
+          notes={notesByAgent.get(String(modal.agent.id)) || []}
+          initialTab={modal.tab}
+          initialTagUser={modal.tagUser}
+          userId={currentUserId}
+          userName={currentUserName}
+          isFullAccess={isFullAccess}
+          allUsers={allUsers}
+          getUserAvatar={getUserAvatar}
+          onSave={saveNote}
+          onEditNote={updateNote}
+          onViewMap={openMap}
+          onClose={() => setModal(null)}
+        />
+      )}
       {mapAgent && <AgentMapModal agent={mapAgent} onClose={() => setMapAgent(null)} onDetails={() => { setModal({ agent: mapAgent, tab: "details" }); setMapAgent(null); }} />}
       {toast && <div className="fixed bottom-4 right-4 z-[3000] flex items-center gap-2 rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white shadow-lg"><CheckCircle2 size={14} className="text-emerald-400" /> {toast}</div>}
     </div>

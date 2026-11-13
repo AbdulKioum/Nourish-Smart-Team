@@ -10,7 +10,6 @@ import {
   FaClipboardList,
   FaChartBar,
   FaUserShield,
-  FaUserCheck,
   FaTimes,
   FaSignOutAlt,
   FaUserCircle,
@@ -18,7 +17,10 @@ import {
   FaStethoscope,
 } from "react-icons/fa";
 import { supabase } from "../../lib/supabase";
-
+import {
+  compressImageToTinyBase64,
+  UserAvatar,
+} from "../../utils/avatarHelper";
 
 function parseList(val: any): string[] {
   if (!val) return [];
@@ -62,6 +64,7 @@ export default function Sidebar({
     role: role || "officer",
     designation: "Customer Service Officer",
     region: "Mymensingh Zone",
+    avatar_url: "",
     districts: [] as string[],
     upazilas: [] as string[],
   });
@@ -76,7 +79,7 @@ export default function Sidebar({
       const { data } = await supabase
         .from("users")
         .select(
-          "full_name, email, role, designation, region, districts, upazilas"
+          "full_name, email, role, designation, region, avatar_url, districts, upazilas"
         )
         .eq("id", user.id)
         .single();
@@ -92,6 +95,7 @@ export default function Sidebar({
         role: data?.role || role || "officer",
         designation: data?.designation || "CSO",
         region: data?.region || "Mymensingh Region",
+        avatar_url: data?.avatar_url || "",
         districts: parseList(data?.districts),
         upazilas: parseList(data?.upazilas),
       });
@@ -99,6 +103,19 @@ export default function Sidebar({
 
     loadUserProfile();
   }, [userName, role]);
+
+  async function handleProfilePhotoChange(
+    e: React.ChangeEvent<HTMLInputElement>
+  ) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const tinyBase64 = await compressImageToTinyBase64(file, 80);
+      setProfileDetails((prev) => ({ ...prev, avatar_url: tinyBase64 }));
+    } catch (err) {
+      console.error("Image compress error:", err);
+    }
+  }
 
   async function handleSaveProfileMeta() {
     if (!profileDetails.id) return;
@@ -108,6 +125,7 @@ export default function Sidebar({
       .update({
         designation: profileDetails.designation,
         region: profileDetails.region,
+        avatar_url: profileDetails.avatar_url || null,
       })
       .eq("id", profileDetails.id);
     setSavingMeta(false);
@@ -135,12 +153,12 @@ export default function Sidebar({
       {sidebarOpen && (
         <div
           onClick={() => setSidebarOpen(false)}
-          className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px] transition-opacity"
+          className="fixed inset-0 z-[9998] bg-black/40 backdrop-blur-[1px] transition-opacity"
         />
       )}
 
       <aside
-        className={`fixed top-0 left-0 z-50 h-full w-64 max-w-[80vw] bg-white border-r border-slate-200 shadow-2xl flex flex-col transform transition-transform duration-300 ease-in-out ${
+        className={`fixed top-0 left-0 z-[9999] h-full w-64 max-w-[80vw] bg-white border-r border-slate-200 shadow-2xl flex flex-col transform transition-transform duration-300 ease-in-out ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -172,16 +190,80 @@ export default function Sidebar({
           </Link>
 
           <div className="mt-3 mb-1 px-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+            Visit
+          </div>
+
+          {/*
+          <Link
+            to="/farmer-status"
+            onClick={handleMenuClick}
+            className={menuClass("/farmer-status")}
+          >
+            <FaUserCheck className="text-base shrink-0" />
+            <span>Farmer Status</span>
+          </Link> 
+          */}
+
+          <Link
+            to="/visits"
+            onClick={handleMenuClick}
+            className={menuClass("/visits")}
+          >
+            <FaStethoscope className="text-base shrink-0" />
+            <span>Vet Visits</span>
+          </Link>
+
+          <Link
+            to="/reports"
+            onClick={handleMenuClick}
+            className={menuClass("/reports")}
+          >
+            <FaChartBar className="text-base shrink-0" />
+            <span>Reports</span>
+          </Link>
+
+          <div className="mt-3 mb-1 px-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+            Tracking
+          </div>
+
+          <Link
+            to="/doc-tracking"
+            onClick={handleMenuClick}
+            className={menuClass("/doc-tracking")}
+          >
+            <FaClipboardList className="text-base shrink-0" />
+            <span>DOC Tracking</span>
+          </Link>
+
+          <Link
+            to="/farmer-tracking"
+            onClick={handleMenuClick}
+            className={menuClass("/farmer-tracking")}
+          >
+            <FaMapMarkerAlt className="text-base shrink-0" />
+            <span>Farmer Tracking</span>
+          </Link>
+
+          <Link
+            to="/agent-tracking"
+            onClick={handleMenuClick}
+            className={menuClass("/agent-tracking")}
+          >
+            <FaClipboardList className="text-base shrink-0" />
+            <span>Agent Tracking</span>
+          </Link>
+
+          <div className="mt-3 mb-1 px-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">
             Management
           </div>
 
           <Link
-            to="/companies"
+            to="/farmers"
             onClick={handleMenuClick}
-            className={menuClass("/companies")}
+            className={menuClass("/farmers")}
           >
-            <FaBuilding className="text-base shrink-0" />
-            <span>Companies</span>
+            <FaUserFriends className="text-base shrink-0" />
+            <span>Farmers</span>
           </Link>
 
           <Link
@@ -194,12 +276,12 @@ export default function Sidebar({
           </Link>
 
           <Link
-            to="/agent-tracking"
+            to="/doc-agents"
             onClick={handleMenuClick}
-            className={menuClass("/agent-tracking")}
+            className={menuClass("/doc-agents")}
           >
-            <FaClipboardList className="text-base shrink-0" />
-            <span>Agent Tracking</span>
+            <FaUsers className="text-base shrink-0" />
+            <span>DOC Agents</span>
           </Link>
 
           <Link
@@ -221,75 +303,12 @@ export default function Sidebar({
           </Link>
 
           <Link
-            to="/doc-agents"
+            to="/companies"
             onClick={handleMenuClick}
-            className={menuClass("/doc-agents")}
+            className={menuClass("/companies")}
           >
-            <FaUsers className="text-base shrink-0" />
-            <span>DOC Agents</span>
-          </Link>
-
-          <Link
-            to="/doc-tracking"
-            onClick={handleMenuClick}
-            className={menuClass("/doc-tracking")}
-          >
-            <FaClipboardList className="text-base shrink-0" />
-            <span>DOC Tracking</span>
-          </Link>
-
-          <div className="mt-3 mb-1 px-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-            Field Operations
-          </div>
-
-          <Link
-            to="/farmers"
-            onClick={handleMenuClick}
-            className={menuClass("/farmers")}
-          >
-            <FaUserFriends className="text-base shrink-0" />
-            <span>Farmers</span>
-          </Link>
-
-          <Link
-            to="/farmer-status"
-            onClick={handleMenuClick}
-            className={menuClass("/farmer-status")}
-          >
-            <FaUserCheck className="text-base shrink-0" />
-            <span>Farmer Status</span>
-          </Link>
-
-          <Link
-            to="/farmer-tracking"
-            onClick={handleMenuClick}
-            className={menuClass("/farmer-tracking")}
-          >
-            <FaMapMarkerAlt className="text-base shrink-0" />
-            <span>Farmer Tracking</span>
-          </Link>
-
-        
-          <Link
-            to="/visits"
-            onClick={handleMenuClick}
-            className={menuClass("/visits")}
-          >
-            <FaStethoscope className="text-base shrink-0" />
-            <span>Vet Visits</span>
-          </Link>
-
-          <div className="mt-3 mb-1 px-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-            Analytics
-          </div>
-
-          <Link
-            to="/reports"
-            onClick={handleMenuClick}
-            className={menuClass("/reports")}
-          >
-            <FaChartBar className="text-base shrink-0" />
-            <span>Reports</span>
+            <FaBuilding className="text-base shrink-0" />
+            <span>Companies</span>
           </Link>
 
           {role === "super_admin" && (
@@ -317,7 +336,12 @@ export default function Sidebar({
             title="Click to view profile & assigned area"
             className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-xl hover:bg-emerald-50/80 transition text-left"
           >
-            <FaUserCircle className="text-emerald-600 text-3xl shrink-0" />
+            <UserAvatar
+              name={profileDetails.fullName || userName || "User"}
+              avatarUrl={profileDetails.avatar_url}
+              size="w-8 h-8"
+              textSize="text-xs"
+            />
             <div className="min-w-0 flex-1">
               <div className="font-semibold text-sm text-slate-800 truncate">
                 {profileDetails.fullName || userName || "User"}
@@ -340,7 +364,7 @@ export default function Sidebar({
 
       {/* Profile Details Popup Modal */}
       {showProfileModal && (
-        <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[10000] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden border border-slate-200">
             <div className="flex items-center justify-between px-4 py-3 bg-slate-100 border-b border-slate-200">
               <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
@@ -357,10 +381,25 @@ export default function Sidebar({
 
             <div className="p-4 space-y-3 text-xs">
               <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
-                <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-lg shrink-0">
-                  {(profileDetails.fullName || "U").charAt(0).toUpperCase()}
+                <div className="flex flex-col items-center gap-1 shrink-0">
+                  <UserAvatar
+                    name={profileDetails.fullName || "U"}
+                    avatarUrl={profileDetails.avatar_url}
+                    size="w-12 h-12"
+                    textSize="text-base"
+                  />
+                  <label className="cursor-pointer text-[10px] font-bold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded transition">
+                    {profileDetails.avatar_url ? "Change" : "Add Photo"}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleProfilePhotoChange}
+                      className="hidden"
+                    />
+                  </label>
                 </div>
-                <div className="min-w-0">
+
+                <div className="min-w-0 flex-1">
                   <div className="font-bold text-sm text-slate-800 truncate">
                     {profileDetails.fullName}
                   </div>

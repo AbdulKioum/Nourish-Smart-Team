@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { getFarmers } from "../../services/farmerService";
 import { useAuth } from "../../context/AuthContext";
@@ -22,7 +22,6 @@ import {
   CheckCircle2,
   Plus,
   ChevronDown,
-  
   User,
   Crosshair,
   AlertTriangle,
@@ -30,10 +29,12 @@ import {
   UserCheck,
   Pencil,
   Check,
+  AtSign,
 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { Geolocation } from "@capacitor/geolocation";
 import { Capacitor } from "@capacitor/core";
+import { UserAvatar, renderNoteWithMentions } from "../../utils/avatarHelper";
 
 /* -------------------------------------------------------------------------- */
 /*  Helpers & Status Tag Parser                                               */
@@ -336,6 +337,8 @@ function NoteThread({
   currentUserName,
   isFullAccess,
   onEditNote,
+  getUserAvatar,
+  onTagUser,
 }: {
   notes: any[];
   initialLimit?: number;
@@ -343,6 +346,8 @@ function NoteThread({
   currentUserName?: string;
   isFullAccess?: boolean;
   onEditNote?: (noteObj: any, newCleanText: string) => Promise<boolean>;
+  getUserAvatar?: (userId?: string, userName?: string) => string | null;
+  onTagUser?: (userName: string) => void;
 }) {
   const [limit, setLimit] = useState(initialLimit);
   const [editingId, setEditingId] = useState<any>(null);
@@ -406,6 +411,10 @@ function NoteThread({
           ? "border-emerald-400 bg-emerald-50/80 shadow-2xs"
           : "border-slate-200 bg-white";
 
+        const avatarUrl = getUserAvatar
+          ? getUserAvatar(n.user_id, n.user_name)
+          : null;
+
         return (
           <div
             key={n.id}
@@ -414,21 +423,12 @@ function NoteThread({
           >
             <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px]">
               <span className="flex items-center gap-1.5 font-bold text-slate-800 flex-wrap">
-                <span
-                  className={`flex h-4.5 w-4.5 items-center justify-center rounded-full text-[9px] font-bold text-white ${
-                    isRisky
-                      ? "bg-red-600"
-                      : isWeak
-                      ? "bg-teal-600"
-                      : isResolved
-                      ? "bg-emerald-600"
-                      : i === 0
-                      ? "bg-emerald-600"
-                      : "bg-slate-700"
-                  }`}
-                >
-                  {(n.user_name || "?").charAt(0).toUpperCase()}
-                </span>
+                <UserAvatar
+                  name={n.user_name || "Officer"}
+                  avatarUrl={avatarUrl}
+                  size="w-5 h-5"
+                  textSize="text-[9px]"
+                />
                 <span>{n.user_name || "Officer"}</span>
 
                 {isRisky && (
@@ -453,7 +453,17 @@ function NoteThread({
                 )}
               </span>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
+                {onTagUser && (
+                  <button
+                    type="button"
+                    onClick={() => onTagUser(n.user_name || "Officer")}
+                    title={`Tag ${n.user_name || "Officer"}`}
+                    className="inline-flex items-center gap-0.5 rounded bg-blue-50 hover:bg-blue-100 border border-blue-200 px-1.5 py-0.5 text-[10px] font-bold text-blue-700 transition"
+                  >
+                    @ Tag
+                  </button>
+                )}
                 <span className="text-slate-500 font-medium">
                   {fmtDateTime(n.created_at)} ({timeAgo(n.created_at)})
                 </span>
@@ -506,7 +516,7 @@ function NoteThread({
               </div>
             ) : (
               <p className="mt-1 whitespace-pre-wrap break-words text-[13px] sm:text-sm font-medium leading-snug text-slate-900">
-                {meta.cleanText}
+                {renderNoteWithMentions(meta.cleanText)}
               </p>
             )}
           </div>
@@ -1039,9 +1049,12 @@ function FarmerModal({
   farmer,
   notes,
   initialTab,
+  initialTagUser,
   userId,
   userName,
   isFullAccess,
+  allUsers,
+  getUserAvatar,
   onSave,
   onEditNote,
   onViewMap,
@@ -1050,24 +1063,41 @@ function FarmerModal({
   farmer: any;
   notes: any[];
   initialTab: "track" | "details";
+  initialTagUser?: string;
   userId: string;
   userName: string;
   isFullAccess: boolean;
+  allUsers?: any[];
+  getUserAvatar?: (userId?: string, userName?: string) => string | null;
   onSave: (farmer: any, text: string) => Promise<boolean>;
   onEditNote: (noteObj: any, newCleanText: string) => Promise<boolean>;
   onViewMap: (farmer: any) => void;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<"track" | "details">(initialTab);
-  const [text, setText] = useState("");
+  const [text, setText] = useState(() =>
+    initialTagUser ? `@[${initialTagUser}] ` : ""
+  );
   const [postMode, setPostMode] = useState<
     "normal" | "risky" | "weak" | "clear"
   >("normal");
   const [saving, setSaving] = useState(false);
+  const [showMentionList, setShowMentionList] = useState(false);
+  const modalTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const badge = getFarmerBadgeInfo(farmer);
   const nourish = isNourishFarmer(farmer);
   const statusInfo = getFarmerSpecialStatus(notes, farmer);
+
+  function handleModalTagUser(targetName: string) {
+    if (!targetName) return;
+    const token = `@[${targetName.trim()}] `;
+    setText((prev) =>
+      prev.includes(token.trim()) ? prev : `${token}${prev}`
+    );
+    setShowMentionList(false);
+    setTimeout(() => modalTextareaRef.current?.focus(), 40);
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -1193,10 +1223,40 @@ function FarmerModal({
         <div className="overflow-y-auto p-4">
           {tab === "track" ? (
             <div className="space-y-3">
-              {/* Smart Toggle: If marked -> show ONLY Clear button; If not marked -> show Mark button */}
-              <div className="flex flex-wrap items-center gap-1.5">
-                {nourish ? (
-                  statusInfo.isRisky ? (
+              {/* Smart Toggle + Tag User */}
+              <div className="relative flex flex-wrap items-center justify-between gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {nourish ? (
+                    statusInfo.isRisky ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setPostMode(postMode === "clear" ? "normal" : "clear")
+                        }
+                        className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
+                          postMode === "clear"
+                            ? "border-emerald-600 bg-emerald-600 text-white"
+                            : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                        }`}
+                      >
+                        <UserCheck size={11} /> Clear Risky Mark
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setPostMode(postMode === "risky" ? "normal" : "risky")
+                        }
+                        className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
+                          postMode === "risky"
+                            ? "border-red-600 bg-red-600 text-white"
+                            : "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                        }`}
+                      >
+                        <AlertTriangle size={11} /> Mark as Risky
+                      </button>
+                    )
+                  ) : statusInfo.isWeak ? (
                     <button
                       type="button"
                       onClick={() =>
@@ -1208,56 +1268,64 @@ function FarmerModal({
                           : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
                       }`}
                     >
-                      <UserCheck size={11} /> Clear Risky Mark
+                      <UserCheck size={11} /> Clear Weak Mark
                     </button>
                   ) : (
                     <button
                       type="button"
                       onClick={() =>
-                        setPostMode(postMode === "risky" ? "normal" : "risky")
+                        setPostMode(postMode === "weak" ? "normal" : "weak")
                       }
                       className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
-                        postMode === "risky"
-                          ? "border-red-600 bg-red-600 text-white"
-                          : "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                        postMode === "weak"
+                          ? "border-teal-600 bg-teal-600 text-white"
+                          : "border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100"
                       }`}
                     >
-                      <AlertTriangle size={11} /> Mark as Risky
+                      <Sprout size={11} /> Weak to Nourish
                     </button>
-                  )
-                ) : statusInfo.isWeak ? (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setPostMode(postMode === "clear" ? "normal" : "clear")
-                    }
-                    className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
-                      postMode === "clear"
-                        ? "border-emerald-600 bg-emerald-600 text-white"
-                        : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
-                    }`}
-                  >
-                    <UserCheck size={11} /> Clear Weak Mark
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setPostMode(postMode === "weak" ? "normal" : "weak")
-                    }
-                    className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
-                      postMode === "weak"
-                        ? "border-teal-600 bg-teal-600 text-white"
-                        : "border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100"
-                    }`}
-                  >
-                    <Sprout size={11} /> Weak to Nourish
-                  </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowMentionList((v) => !v)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 text-[11px] font-bold text-blue-700 transition"
+                >
+                  <AtSign size={11} /> Tag User
+                </button>
+
+                {showMentionList && (
+                  <div className="absolute right-0 top-8 z-40 w-56 max-h-48 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl space-y-0.5">
+                    {(allUsers || []).map((u: any) => {
+                      const uName =
+                        u.full_name || u.email?.split("@")[0] || "Officer";
+                      return (
+                        <button
+                          key={u.id}
+                          type="button"
+                          onClick={() => handleModalTagUser(uName)}
+                          className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-blue-50 rounded-lg transition"
+                        >
+                          <UserAvatar
+                            name={uName}
+                            avatarUrl={u.avatar_url}
+                            size="w-5 h-5"
+                            textSize="text-[9px]"
+                          />
+                          <span className="font-semibold text-slate-700 truncate">
+                            {uName}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
 
               <form onSubmit={submit} className="space-y-1.5">
                 <textarea
+                  ref={modalTextareaRef}
                   autoFocus
                   rows={3}
                   value={text}
@@ -1271,7 +1339,7 @@ function FarmerModal({
                       ? statusInfo.isRisky
                         ? "Write comment why clearing Risky mark..."
                         : "Write comment why clearing Weak to Nourish mark..."
-                      : "Write a new tracking message or remark..."
+                      : "Write a new tracking message or @tag someone..."
                   }
                   className={`w-full resize-none rounded-lg border px-3 py-2 text-sm outline-none transition ${
                     postMode === "risky"
@@ -1322,6 +1390,8 @@ function FarmerModal({
                 currentUserName={userName}
                 isFullAccess={isFullAccess}
                 onEditNote={onEditNote}
+                getUserAvatar={getUserAvatar}
+                onTagUser={handleModalTagUser}
               />
             </div>
           ) : (
@@ -1354,6 +1424,8 @@ function FarmerTrackingGroupCard({
   currentUserId,
   currentUserName,
   isFullAccess,
+  getUserAvatar,
+  onTagFromNote,
   onRetrack,
   onDetails,
   onViewMap,
@@ -1364,6 +1436,8 @@ function FarmerTrackingGroupCard({
   currentUserId: string;
   currentUserName: string;
   isFullAccess: boolean;
+  getUserAvatar: (userId?: string, userName?: string) => string | null;
+  onTagFromNote: (farmer: any, targetUserName: string) => void;
   onRetrack: () => void;
   onDetails: () => void;
   onViewMap: () => void;
@@ -1384,7 +1458,7 @@ function FarmerTrackingGroupCard({
       }`}
     >
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
-        {/* Minimal Farmer Header (Icon + Farmer Name + Small Badge if marked + Small Agent Name) */}
+        {/* Minimal Farmer Header */}
         <div className="flex flex-col justify-between gap-2.5 border-b border-slate-100 pb-2.5 lg:col-span-4 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-3">
           <div className="flex items-start justify-between gap-2">
             <button
@@ -1425,7 +1499,6 @@ function FarmerTrackingGroupCard({
             </span>
           </div>
 
-          {/* Small buttons on left & right with gap in middle */}
           <div className="flex items-center justify-between gap-3 pt-1">
             <button
               type="button"
@@ -1455,6 +1528,10 @@ function FarmerTrackingGroupCard({
             currentUserName={currentUserName}
             isFullAccess={isFullAccess}
             onEditNote={onEditNote}
+            getUserAvatar={getUserAvatar}
+            onTagUser={(targetUserName: string) =>
+              onTagFromNote(farmer, targetUserName)
+            }
           />
         </div>
       </div>
@@ -1479,6 +1556,7 @@ function TrackingContent({ role }: { role: any }) {
 
   const [currentUserId, setCurrentUserId] = useState("");
   const [currentUserName, setCurrentUserName] = useState("User");
+  const [allUsers, setAllUsers] = useState<any[]>([]);
   const [farmers, setFarmers] = useState<any[]>([]);
   const [trackings, setTrackings] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1499,6 +1577,8 @@ function TrackingContent({ role }: { role: any }) {
   >("normal");
   const [saving, setSaving] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
+  const [showMentionList, setShowMentionList] = useState(false);
+  const pickedTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Category Tabs: All Tracked vs Risky Farmer vs Weak to Nourish
   const [statusTab, setStatusTab] = useState<"all" | "risky" | "weak">("all");
@@ -1517,6 +1597,7 @@ function TrackingContent({ role }: { role: any }) {
   const [modal, setModal] = useState<{
     farmer: any;
     tab: "track" | "details";
+    tagUser?: string;
   } | null>(null);
   const [mapFarmer, setMapFarmer] = useState<any>(null);
 
@@ -1565,10 +1646,17 @@ function TrackingContent({ role }: { role: any }) {
     }
     setCurrentUserName(uName);
 
-    const farmerData = (await getFarmers()) || [];
+    const [farmerData, { data: usersList }] = await Promise.all([
+      getFarmers(),
+      supabase.from("users").select("id, full_name, email, avatar_url"),
+    ]);
+
+    if (usersList) setAllUsers(usersList);
+
+    const rawFarmers = farmerData || [];
     const allowed = isFullAccess
-      ? farmerData
-      : farmerData.filter((f: any) => {
+      ? rawFarmers
+      : rawFarmers.filter((f: any) => {
           const matchUpa =
             uUpazilas.length === 0 || uUpazilas.includes(f.upazila);
           const matchDist =
@@ -1597,6 +1685,42 @@ function TrackingContent({ role }: { role: any }) {
     const t = setTimeout(() => setToast(""), 2500);
     return () => clearTimeout(t);
   }, [toast]);
+
+  function getUserAvatar(userId?: string, userName?: string): string | null {
+    const found = allUsers.find(
+      (u) =>
+        (userId && String(u.id) === String(userId)) ||
+        (userName &&
+          String(u.full_name || "")
+            .trim()
+            .toLowerCase() === String(userName).trim().toLowerCase())
+    );
+    return found?.avatar_url || null;
+  }
+
+  function handlePickedTagUser(targetName: string) {
+    if (!targetName) return;
+    const token = `@[${targetName.trim()}] `;
+    setNoteText((prev) =>
+      prev.includes(token.trim()) ? prev : `${token}${prev}`
+    );
+    setShowMentionList(false);
+    setTimeout(() => pickedTextareaRef.current?.focus(), 40);
+  }
+
+  function handleTagFromGroupCard(farmer: any, targetUserName: string) {
+    setPickedFarmer(farmer);
+    setFarmerQuery(farmer.farmer_name || "");
+    setComboOpen(false);
+    setPickedMode("normal");
+    setTrackOpen(true);
+    const token = `@[${targetUserName.trim()}] `;
+    setNoteText((prev) =>
+      prev.includes(token.trim()) ? prev : `${token}${prev}`
+    );
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    setTimeout(() => pickedTextareaRef.current?.focus(), 180);
+  }
 
   /* ------------------------------ derived data ---------------------------- */
 
@@ -2069,7 +2193,13 @@ function TrackingContent({ role }: { role: any }) {
               : "grid-rows-[0fr] opacity-0 pointer-events-none"
           }`}
         >
-          <div className={comboOpen ? "overflow-visible" : "overflow-hidden"}>
+          <div
+            className={
+              comboOpen || showMentionList
+                ? "overflow-visible"
+                : "overflow-hidden"
+            }
+          >
             <div className="border-t border-slate-100 bg-slate-50/40 p-3 sm:p-4 space-y-3 rounded-b-xl">
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-5">
                 <div>
@@ -2260,12 +2390,19 @@ function TrackingContent({ role }: { role: any }) {
                     )}
                   </div>
 
-                  <div className="flex flex-col md:col-span-2">
+                  <div className="flex flex-col md:col-span-2 relative">
                     <div className="mb-1.5 flex flex-wrap items-center justify-between gap-1.5">
                       <label className="text-[11px] font-semibold text-slate-500">
                         Tracking message *
                       </label>
-                      <div className="flex items-center gap-1">
+                      <div className="flex flex-wrap items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setShowMentionList((v) => !v)}
+                          className="inline-flex items-center gap-0.5 rounded border border-blue-200 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-blue-700 transition"
+                        >
+                          <AtSign size={10} /> Tag User
+                        </button>
                         {isNourishFarmer(pickedFarmer) ? (
                           pickedStatus.isRisky ? (
                             <button
@@ -2336,7 +2473,35 @@ function TrackingContent({ role }: { role: any }) {
                       </div>
                     </div>
 
+                    {showMentionList && (
+                      <div className="absolute right-0 top-7 z-40 w-56 max-h-48 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl space-y-0.5">
+                        {allUsers.map((u: any) => {
+                          const uName =
+                            u.full_name || u.email?.split("@")[0] || "Officer";
+                          return (
+                            <button
+                              key={u.id}
+                              type="button"
+                              onClick={() => handlePickedTagUser(uName)}
+                              className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-blue-50 rounded-lg transition"
+                            >
+                              <UserAvatar
+                                name={uName}
+                                avatarUrl={u.avatar_url}
+                                size="w-5 h-5"
+                                textSize="text-[9px]"
+                              />
+                              <span className="font-semibold text-slate-700 truncate">
+                                {uName}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+
                     <textarea
+                      ref={pickedTextareaRef}
                       value={noteText}
                       onChange={(e) => setNoteText(e.target.value)}
                       placeholder={
@@ -2348,7 +2513,7 @@ function TrackingContent({ role }: { role: any }) {
                           ? pickedStatus.isRisky
                             ? "Write comment why clearing Risky mark (e.g. dues cleared / issue resolved)..."
                             : "Write comment why clearing Weak to Nourish mark..."
-                          : "Write tracking message..."
+                          : "Write tracking message or @tag someone..."
                       }
                       className={`min-h-[115px] flex-1 resize-none rounded-lg border px-3 py-2 text-sm outline-none transition ${
                         pickedMode === "risky"
@@ -2399,7 +2564,7 @@ function TrackingContent({ role }: { role: any }) {
         </div>
       </section>
 
-      {/* Visual Pill Banner when Tracking Form is open so user knows where the list went */}
+      {/* Visual Pill Banner when Tracking Form is open */}
       <div
         className={`grid transition-all duration-300 ease-in-out ${
           trackOpen
@@ -2436,69 +2601,81 @@ function TrackingContent({ role }: { role: any }) {
             {/* Compact Filter Bar */}
             <div className="rounded-xl border border-slate-200 bg-white p-2.5 sm:p-3 shadow-2xs space-y-2.5">
               {/* Status Pill Tabs: All Tracked / Risky Farmer / Weak to Nourish */}
-            <div className="flex flex-nowrap gap-1.5 rounded-xl bg-slate-100 p-1 w-full overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setStatusTab("all")}
-                className={`flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-bold transition-all duration-300 ${
-                  statusTab === "all"
-                    ? "bg-white text-slate-900 shadow-2xs shrink-0"
-                    : "text-slate-600 hover:text-slate-900 flex-1 min-w-0"
-                }`}
-              >
-                <span className={`whitespace-nowrap ${statusTab === "all" ? "" : "truncate"}`}>
-                  All Tracked
-                </span>
-              </button>
+              <div className="flex flex-nowrap gap-1.5 rounded-xl bg-slate-100 p-1 w-full overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setStatusTab("all")}
+                  className={`flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-bold transition-all duration-300 ${
+                    statusTab === "all"
+                      ? "bg-white text-slate-900 shadow-2xs shrink-0"
+                      : "text-slate-600 hover:text-slate-900 flex-1 min-w-0"
+                  }`}
+                >
+                  <span
+                    className={`whitespace-nowrap ${
+                      statusTab === "all" ? "" : "truncate"
+                    }`}
+                  >
+                    All Tracked
+                  </span>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => setStatusTab("risky")}
-                className={`flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-bold transition-all duration-300 ${
-                  statusTab === "risky"
-                    ? "bg-red-600 text-white shadow-2xs shrink-0"
-                    : "text-red-700 hover:bg-red-50 flex-1 min-w-0"
-                }`}
-              >
-                <AlertTriangle size={12} className="shrink-0" />
-                <span className={`whitespace-nowrap ${statusTab === "risky" ? "" : "truncate"}`}>
-                  Risky Farmer
-                </span>
-                <span
-                  className={`rounded-full px-1.5 py-px text-[10px] shrink-0 ${
+                <button
+                  type="button"
+                  onClick={() => setStatusTab("risky")}
+                  className={`flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-bold transition-all duration-300 ${
                     statusTab === "risky"
-                      ? "bg-red-700 text-white"
-                      : "bg-red-100 text-red-700"
+                      ? "bg-red-600 text-white shadow-2xs shrink-0"
+                      : "text-red-700 hover:bg-red-50 flex-1 min-w-0"
                   }`}
                 >
-                  {riskyTotalCount}
-                </span>
-              </button>
+                  <AlertTriangle size={12} className="shrink-0" />
+                  <span
+                    className={`whitespace-nowrap ${
+                      statusTab === "risky" ? "" : "truncate"
+                    }`}
+                  >
+                    Risky Farmer
+                  </span>
+                  <span
+                    className={`rounded-full px-1.5 py-px text-[10px] shrink-0 ${
+                      statusTab === "risky"
+                        ? "bg-red-700 text-white"
+                        : "bg-red-100 text-red-700"
+                    }`}
+                  >
+                    {riskyTotalCount}
+                  </span>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => setStatusTab("weak")}
-                className={`flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-bold transition-all duration-300 ${
-                  statusTab === "weak"
-                    ? "bg-teal-600 text-white shadow-2xs shrink-0"
-                    : "text-teal-800 hover:bg-teal-50 flex-1 min-w-0"
-                }`}
-              >
-                <Sprout size={12} className="shrink-0" />
-                <span className={`whitespace-nowrap ${statusTab === "weak" ? "" : "truncate"}`}>
-                  Weak to Nourish
-                </span>
-                <span
-                  className={`rounded-full px-1.5 py-px text-[10px] shrink-0 ${
+                <button
+                  type="button"
+                  onClick={() => setStatusTab("weak")}
+                  className={`flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-bold transition-all duration-300 ${
                     statusTab === "weak"
-                      ? "bg-teal-700 text-white"
-                      : "bg-teal-100 text-teal-800"
+                      ? "bg-teal-600 text-white shadow-2xs shrink-0"
+                      : "text-teal-800 hover:bg-teal-50 flex-1 min-w-0"
                   }`}
                 >
-                  {weakTotalCount}
-                </span>
-              </button>
-            </div>
+                  <Sprout size={12} className="shrink-0" />
+                  <span
+                    className={`whitespace-nowrap ${
+                      statusTab === "weak" ? "" : "truncate"
+                    }`}
+                  >
+                    Weak to Nourish
+                  </span>
+                  <span
+                    className={`rounded-full px-1.5 py-px text-[10px] shrink-0 ${
+                      statusTab === "weak"
+                        ? "bg-teal-700 text-white"
+                        : "bg-teal-100 text-teal-800"
+                    }`}
+                  >
+                    {weakTotalCount}
+                  </span>
+                </button>
+              </div>
 
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-1.5">
@@ -2682,6 +2859,8 @@ function TrackingContent({ role }: { role: any }) {
                       currentUserId={currentUserId}
                       currentUserName={currentUserName}
                       isFullAccess={isFullAccess}
+                      getUserAvatar={getUserAvatar}
+                      onTagFromNote={handleTagFromGroupCard}
                       onRetrack={() => setModal({ farmer, tab: "track" })}
                       onDetails={() => setModal({ farmer, tab: "details" })}
                       onViewMap={() => openMap(farmer)}
@@ -2721,13 +2900,16 @@ function TrackingContent({ role }: { role: any }) {
 
       {modal && (
         <FarmerModal
-          key={`${modal.farmer.id}-${modal.tab}`}
+          key={`${modal.farmer.id}-${modal.tab}-${modal.tagUser || ""}`}
           farmer={modal.farmer}
           notes={modalNotes}
           initialTab={modal.tab}
+          initialTagUser={modal.tagUser}
           userId={currentUserId}
           userName={currentUserName}
           isFullAccess={isFullAccess}
+          allUsers={allUsers}
+          getUserAvatar={getUserAvatar}
           onSave={saveNote}
           onEditNote={updateNote}
           onViewMap={openMap}

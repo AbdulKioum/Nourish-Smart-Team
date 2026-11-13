@@ -17,6 +17,10 @@ import {
   FaUsers,
   FaMapMarkerAlt,
 } from "react-icons/fa";
+import {
+  compressImageToTinyBase64,
+  UserAvatar,
+} from "../../utils/avatarHelper";
 
 interface UserRecord {
   id: string;
@@ -26,6 +30,7 @@ interface UserRecord {
   status: string;
   designation?: string;
   region?: string;
+  avatar_url?: string | null;
   districts?: string[];
   upazilas?: string[];
   created_at?: string;
@@ -74,6 +79,7 @@ export default function UsersPage() {
     full_name: string;
     designation: string;
     region: string;
+    avatar_url: string;
     role: string;
     status: string;
     districts: string[];
@@ -84,6 +90,7 @@ export default function UsersPage() {
     full_name: "",
     designation: "Customer Service Officer",
     region: "Mymensingh Zone",
+    avatar_url: "",
     role: "officer",
     status: "active",
     districts: [],
@@ -138,11 +145,36 @@ export default function UsersPage() {
       setErrorMsg("");
 
       const data = await getUsers();
-      setUsers(data || []);
+      const { data: avatarsData } = await supabase
+        .from("users")
+        .select("id, avatar_url");
+
+      const avatarMap = new Map<string, string | null>();
+      (avatarsData || []).forEach((row: any) => {
+        avatarMap.set(String(row.id), row.avatar_url || null);
+      });
+
+      const merged = (data || []).map((u: any) => ({
+        ...u,
+        avatar_url: u.avatar_url ?? avatarMap.get(String(u.id)) ?? null,
+      }));
+
+      setUsers(merged);
     } catch (error: any) {
       setErrorMsg(error?.message || "Failed to load users.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handlePhotoSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const tinyBase64 = await compressImageToTinyBase64(file, 80);
+      setFormData((prev) => ({ ...prev, avatar_url: tinyBase64 }));
+    } catch (err) {
+      console.error("Failed to compress image:", err);
     }
   }
 
@@ -252,6 +284,7 @@ export default function UsersPage() {
       full_name: "",
       designation: "Customer Service Officer",
       region: "Mymensingh Zone",
+      avatar_url: "",
       role: "officer",
       status: "active",
       districts: [],
@@ -277,6 +310,7 @@ export default function UsersPage() {
       full_name: user.full_name || "",
       designation: user.designation || "Customer Service Officer",
       region: user.region || "Mymensingh Zone",
+      avatar_url: user.avatar_url || "",
       role: validRole,
       status: user.status || "active",
       districts: parseArrayField(user.districts),
@@ -311,13 +345,14 @@ export default function UsersPage() {
           upazilas: formData.upazilas,
         });
 
-        // Also directly update designation, region, full_name in `users` table
+        // Also directly update designation, region, full_name, avatar_url in `users` table
         await supabase
           .from("users")
           .update({
             full_name: formData.full_name.trim(),
             designation: formData.designation.trim(),
             region: formData.region.trim(),
+            avatar_url: formData.avatar_url || null,
             role: formData.role,
             status: formData.status,
             districts: formData.districts,
@@ -351,6 +386,7 @@ export default function UsersPage() {
             .update({
               designation: formData.designation.trim(),
               region: formData.region.trim(),
+              avatar_url: formData.avatar_url || null,
             })
             .eq("id", newId);
         } else {
@@ -359,6 +395,7 @@ export default function UsersPage() {
             .update({
               designation: formData.designation.trim(),
               region: formData.region.trim(),
+              avatar_url: formData.avatar_url || null,
             })
             .eq("email", formData.email.trim());
         }
@@ -596,11 +633,12 @@ export default function UsersPage() {
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-9 h-9 shrink-0 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm">
-                      {(user.full_name || user.email || "U")
-                        .charAt(0)
-                        .toUpperCase()}
-                    </div>
+                    <UserAvatar
+                      name={user.full_name || user.email || "U"}
+                      avatarUrl={user.avatar_url}
+                      size="w-9 h-9"
+                      textSize="text-sm"
+                    />
                     <div className="min-w-0">
                       <div className="font-semibold text-slate-800 text-sm truncate flex items-center gap-1.5">
                         <span className="truncate">
@@ -763,11 +801,12 @@ export default function UsersPage() {
                     <tr key={user.id} className="hover:bg-slate-50 transition">
                       <td className="px-5 py-4">
                         <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold">
-                            {(user.full_name || user.email || "U")
-                              .charAt(0)
-                              .toUpperCase()}
-                          </div>
+                          <UserAvatar
+                            name={user.full_name || user.email || "U"}
+                            avatarUrl={user.avatar_url}
+                            size="w-10 h-10"
+                            textSize="text-sm"
+                          />
 
                           <div>
                             <div className="font-semibold text-slate-800">
@@ -938,6 +977,44 @@ export default function UsersPage() {
               onSubmit={handleSave}
               className="p-4 sm:p-6 space-y-4 overflow-y-auto flex-1"
             >
+              {/* PROFILE PHOTO UPLOAD */}
+              <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200">
+                <UserAvatar
+                  name={formData.full_name || formData.email || "U"}
+                  avatarUrl={formData.avatar_url}
+                  size="w-11 h-11"
+                  textSize="text-base"
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-semibold text-slate-700">
+                    Profile Photo
+                  </div>
+                  
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <label className="cursor-pointer px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition">
+                    {formData.avatar_url ? "Change" : "Upload"}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handlePhotoSelect}
+                      className="hidden"
+                    />
+                  </label>
+                  {formData.avatar_url && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFormData((prev) => ({ ...prev, avatar_url: "" }))
+                      }
+                      className="px-2 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-600 text-xs font-semibold"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              </div>
+
               <div>
                 <label className="block text-xs sm:text-sm font-medium text-slate-700 mb-1">
                   Full Name *

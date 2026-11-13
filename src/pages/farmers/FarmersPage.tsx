@@ -39,6 +39,7 @@ import { Share } from "@capacitor/share";
 import { Capacitor } from "@capacitor/core";
 import { Geolocation } from "@capacitor/geolocation";
 import SearchableSelect from "../../components/common/SearchableSelect";
+import { UserAvatar, renderNoteWithMentions } from "../../utils/avatarHelper";
 
 
 
@@ -286,6 +287,28 @@ export default function FarmersPage() {
   const [myPosition, setMyPosition] = useState<[number, number] | null>(null);
   const farmerMarkerRefs = useRef<Record<number, L.Marker | null>>({});
   const myLocationMarkerRef = useRef<L.Marker | null>(null);
+
+  const [allUsers, setAllUsers] = useState<any[]>([]);
+
+useEffect(() => {
+  supabase
+    .from("users")
+    .select("id, full_name, avatar_url")
+    .then(({ data }) => {
+      if (data) setAllUsers(data);
+    });
+}, []);
+
+function getUserAvatar(userId?: string, userName?: string): string | null {
+  const found = allUsers.find(
+    (u) =>
+      (userId && String(u.id) === String(userId)) ||
+      (userName &&
+        String(u.full_name || "").trim().toLowerCase() ===
+          String(userName).trim().toLowerCase())
+  );
+  return found?.avatar_url || null;
+}
 
   
 
@@ -1005,7 +1028,7 @@ export default function FarmersPage() {
   await saveBufferOrBlob(buffer, fileName);
 }
 
-// XLSX বা Blob বাইনারি সেভ করার কমন ফাংশন (DOC Tracking স্টাইল)
+
 async function saveBufferOrBlob(bufferOrBlob: ArrayBuffer | Blob, fileName: string) {
   try {
     const arrayBuffer =
@@ -2137,19 +2160,33 @@ searchable={false}
                                 {loadingNotes && activeTrackingFarmerId === farmer.id ? (
                                   <div className="text-[11px] text-slate-400">Loading...</div>
                                 ) : activeTrackingFarmerId === farmer.id && farmerNotes.length > 0 ? (
-                                  // .slice().reverse() ব্যবহার করে অ্যারেকে উল্টে দেওয়া হলো যাতে নতুন মেসেজ ওপরে থাকে
                                   farmerNotes
                                     .slice()
                                     .reverse()
                                     .map((n) => (
                                       <div
                                         key={n.id}
-                                        className="bg-white border border-emerald-100 rounded px-2 py-1 text-[11px]"
+                                        className="bg-white border border-emerald-100 rounded px-2 py-1 text-[11px] flex items-start gap-1.5"
                                       >
-                                        <span className="font-bold text-emerald-800">
-                                          {n.user_name}:
-                                        </span>{" "}
-                                        <span className="text-slate-700">{n.note}</span>
+                                        <div className="mt-0.5 shrink-0">
+                                          <UserAvatar
+                                            name={n.user_name || "Officer"}
+                                            avatarUrl={getUserAvatar(
+                                              n.user_id,
+                                              n.user_name
+                                            )}
+                                            size="w-4 h-4"
+                                            textSize="text-[8px]"
+                                          />
+                                        </div>
+                                        <div className="min-w-0 flex-1 break-words">
+                                          <span className="font-bold text-emerald-800">
+                                            {n.user_name}:
+                                          </span>{" "}
+                                          <span className="text-slate-700">
+                                            {renderNoteWithMentions(n.note)}
+                                          </span>
+                                        </div>
                                       </div>
                                     ))
                                 ) : (
@@ -2178,7 +2215,7 @@ searchable={false}
                                   disabled={savingNote}
                                   className="bg-emerald-600 text-white px-2 py-1 rounded text-[11px] font-semibold"
                                 >
-                                  Save
+                                  Track
                                 </button>
                               </form>
                             </div>
@@ -2425,8 +2462,15 @@ searchable={false}
                   <span className="font-bold text-emerald-900">
                     📝 Farmer Tracking
                   </span>
-                  <span className="text-emerald-700">
-                    User: <b>{currentUserName}</b>
+                  <span className="text-emerald-700 flex items-center gap-1.5">
+                    <span>User:</span>
+                    <UserAvatar
+                      name={currentUserName}
+                      avatarUrl={getUserAvatar(undefined, currentUserName)}
+                      size="w-4 h-4"
+                      textSize="text-[8px]"
+                    />
+                    <b>{currentUserName}</b>
                   </span>
                 </div>
 
@@ -2438,20 +2482,34 @@ searchable={false}
                       No tracking notes yet.
                     </div>
                   ) : (
-                    
                     farmerNotes
                       .slice()
                       .reverse()
                       .map((item) => (
                         <div
                           key={item.id}
-                          className="bg-white border border-emerald-200 rounded px-2.5 py-1.5 text-xs flex justify-between gap-2"
+                          className="bg-white border border-emerald-200 rounded px-2.5 py-1.5 text-xs flex justify-between items-start gap-2"
                         >
-                          <div>
-                            <span className="font-bold text-emerald-800">
-                              {item.user_name}:
-                            </span>{" "}
-                            <span className="text-slate-800">{item.note}</span>
+                          <div className="flex items-start gap-1.5 min-w-0 flex-1">
+                            <div className="mt-0.5 shrink-0">
+                              <UserAvatar
+                                name={item.user_name || "Officer"}
+                                avatarUrl={getUserAvatar(
+                                  item.user_id,
+                                  item.user_name
+                                )}
+                                size="w-4 h-4"
+                                textSize="text-[8px]"
+                              />
+                            </div>
+                            <div className="min-w-0 flex-1 break-words">
+                              <span className="font-bold text-emerald-800">
+                                {item.user_name}:
+                              </span>{" "}
+                              <span className="text-slate-800">
+                                {renderNoteWithMentions(item.note)}
+                              </span>
+                            </div>
                           </div>
                           <span className="text-[10px] text-slate-400 shrink-0">
                             {new Date(item.created_at).toLocaleDateString("en-GB")}
@@ -2477,7 +2535,7 @@ searchable={false}
                     disabled={savingNote || !newNoteText.trim()}
                     className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded text-xs font-semibold flex items-center gap-1"
                   >
-                    <Send size={12} /> Post
+                    <Send size={12} /> Track
                   </button>
                 </form>
               </div>

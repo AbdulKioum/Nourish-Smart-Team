@@ -40,6 +40,7 @@ import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
 import { Capacitor } from "@capacitor/core";
 import { Geolocation } from "@capacitor/geolocation";
+import { UserAvatar, renderNoteWithMentions } from "../../utils/avatarHelper";
 
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 
@@ -208,6 +209,28 @@ export default function AgentsPage() {
   const isFormCompanyNourish = isNourishName(
     selectedFormCompanyObj?.company_name
   );
+
+  const [allUsers, setAllUsers] = useState<any[]>([]);
+
+useEffect(() => {
+  supabase
+    .from("users")
+    .select("id, full_name, avatar_url")
+    .then(({ data }) => {
+      if (data) setAllUsers(data);
+    });
+}, []);
+
+function getUserAvatar(userId?: string, userName?: string): string | null {
+  const found = allUsers.find(
+    (u) =>
+      (userId && String(u.id) === String(userId)) ||
+      (userName &&
+        String(u.full_name || "").trim().toLowerCase() ===
+          String(userName).trim().toLowerCase())
+  );
+  return found?.avatar_url || null;
+}
 
   // ==================================================
   // INITIALIZE USER & DATA
@@ -1361,14 +1384,27 @@ export default function AgentsPage() {
                                 agentNotes.map((n) => (
                                   <div
                                     key={n.id}
-                                    className="bg-white border border-emerald-100 rounded px-2 py-1 text-[11px]"
+                                    className="bg-white border border-emerald-100 rounded px-2 py-1 text-[11px] flex items-start gap-1.5"
                                   >
-                                    <span className="font-bold text-emerald-800">
-                                      {n.user_name}:
-                                    </span>{" "}
-                                    <span className="text-slate-700">
-                                      {n.note}
-                                    </span>
+                                    <div className="mt-0.5 shrink-0">
+                                      <UserAvatar
+                                        name={n.user_name || "Officer"}
+                                        avatarUrl={getUserAvatar(
+                                          n.user_id,
+                                          n.user_name
+                                        )}
+                                        size="w-4 h-4"
+                                        textSize="text-[8px]"
+                                      />
+                                    </div>
+                                    <div className="min-w-0 flex-1 break-words">
+                                      <span className="font-bold text-emerald-800">
+                                        {n.user_name}:
+                                      </span>{" "}
+                                      <span className="text-slate-700">
+                                        {renderNoteWithMentions(n.note)}
+                                      </span>
+                                    </div>
                                   </div>
                                 ))
                               ) : (
@@ -1401,7 +1437,7 @@ export default function AgentsPage() {
                                 disabled={savingNote}
                                 className="bg-emerald-600 text-white px-2 py-1 rounded text-[11px] font-semibold"
                               >
-                                Save
+                                Track
                               </button>
                             </form>
                           </div>
@@ -1659,8 +1695,15 @@ export default function AgentsPage() {
                   <span className="font-bold text-emerald-900">
                     📝 Agent Tracking
                   </span>
-                  <span className="text-emerald-700">
-                    User: <b>{currentUserName}</b>
+                  <span className="text-emerald-700 flex items-center gap-1.5">
+                    <span>User:</span>
+                    <UserAvatar
+                      name={currentUserName}
+                      avatarUrl={getUserAvatar(undefined, currentUserName)}
+                      size="w-4 h-4"
+                      textSize="text-[8px]"
+                    />
+                    <b>{currentUserName}</b>
                   </span>
                 </div>
 
@@ -1675,13 +1718,28 @@ export default function AgentsPage() {
                     agentNotes.map((item) => (
                       <div
                         key={item.id}
-                        className="bg-white border border-emerald-200 rounded px-2.5 py-1.5 text-xs flex justify-between gap-2"
+                        className="bg-white border border-emerald-200 rounded px-2.5 py-1.5 text-xs flex justify-between items-start gap-2"
                       >
-                        <div>
-                          <span className="font-bold text-emerald-800">
-                            {item.user_name}:
-                          </span>{" "}
-                          <span className="text-slate-800">{item.note}</span>
+                        <div className="flex items-start gap-1.5 min-w-0 flex-1">
+                          <div className="mt-0.5 shrink-0">
+                            <UserAvatar
+                              name={item.user_name || "Officer"}
+                              avatarUrl={getUserAvatar(
+                                item.user_id,
+                                item.user_name
+                              )}
+                              size="w-4 h-4"
+                              textSize="text-[8px]"
+                            />
+                          </div>
+                          <div className="min-w-0 flex-1 break-words">
+                            <span className="font-bold text-emerald-800">
+                              {item.user_name}:
+                            </span>{" "}
+                            <span className="text-slate-800">
+                              {renderNoteWithMentions(item.note)}
+                            </span>
+                          </div>
                         </div>
                         <span className="text-[10px] text-slate-400 shrink-0">
                           {new Date(item.created_at).toLocaleDateString("en-GB")}
@@ -1707,7 +1765,7 @@ export default function AgentsPage() {
                     disabled={savingNote || !newNoteText.trim()}
                     className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded text-xs font-semibold flex items-center gap-1"
                   >
-                    <Send size={12} /> Post
+                    <Send size={12} /> Track
                   </button>
                 </form>
               </div>

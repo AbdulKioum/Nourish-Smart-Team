@@ -1643,9 +1643,10 @@ function getUserAvatar(userId?: string, userName?: string): string | null {
                             </button>
                             <button
                               onClick={() => handleViewAgentOnMap(agent)}
-                              className="bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded text-[11px]"
+                              className="inline-flex items-center gap-1 bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded text-[11px]"
                             >
-                              View on Map
+                              <MapPin size={10} className="shrink-0" />
+                              <span>Map</span>
                             </button>
                             <button
                               onClick={() => openEditForm(agent)}

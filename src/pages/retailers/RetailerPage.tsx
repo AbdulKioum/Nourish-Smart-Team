@@ -1487,9 +1487,10 @@ export default function RetailerPage() {
                             </button>
                             <button
                               onClick={() => handleViewRetailerOnMap(r)}
-                              className="bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded text-[11px]"
-                            >
-                              View on Map
+                              className="inline-flex items-center gap-1 bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded text-[11px]"
+                              >
+                                <MapPin size={10} className="shrink-0" />
+                                <span>Map</span>
                             </button>
                             <button
                               onClick={() => openEditForm(r)}

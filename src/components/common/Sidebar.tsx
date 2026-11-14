@@ -15,6 +15,8 @@ import {
   FaUserCircle,
   FaMapMarkerAlt,
   FaStethoscope,
+  FaFish,
+  FaPaw,
   FaDownload,
 } from "react-icons/fa";
 import { Capacitor } from "@capacitor/core";
@@ -208,7 +210,25 @@ export default function Sidebar({
             className={menuClass("/visits")}
           >
             <FaStethoscope className="text-base shrink-0" />
-            <span>Vet Visits</span>
+            <span>Poultry Visit</span>
+          </Link>
+
+          <Link
+            to="/aqua-visits"
+            onClick={handleMenuClick}
+            className={menuClass("/aqua-visits")}
+          >
+            <FaFish className="text-base shrink-0" />
+            <span>Aqua Visit</span>
+          </Link>
+
+          <Link
+            to="/cattle-visits"
+            onClick={handleMenuClick}
+            className={menuClass("/cattle-visits")}
+          >
+            <FaPaw className="text-base shrink-0" />
+            <span>Cattle Visit</span>
           </Link>
 
           <Link

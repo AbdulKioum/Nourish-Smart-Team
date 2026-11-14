@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { getFarmers } from "../../services/farmerService";
 import { useAuth } from "../../context/AuthContext";
+import { canEditRecord } from "../../utils/accessControl";
 import {
   MapContainer,
   Marker,
@@ -22,6 +23,7 @@ import {
   CheckCircle2,
   Plus,
   ChevronDown,
+  Filter,
   User,
   Crosshair,
   AlertTriangle,
@@ -368,6 +370,10 @@ function NoteThread({
   function canEdit(n: any) {
     if (!onEditNote) return false;
     if (isFullAccess) return true;
+    // Old data (rule 2): a note with no user_id has no creator, so
+    // any officer of the assigned area may edit it — the save stamps
+    // user_id = current user, so the next edit is creator-only.
+    if (!n.user_id) return true;
     if (
       n.user_id &&
       currentUserId &&
@@ -1553,9 +1559,14 @@ export default function FarmerTrackingPage() {
 
 function TrackingContent({ role }: { role: any }) {
   const isFullAccess = role === "super_admin" || role === "manager";
+  // Permissions (src/utils/accessControl.ts): tracking notes cover ALL
+  // categories, so there is NO category gate here — only ownership
+  // (canEditRecord on user_id). View stays open to everyone.
+ 
 
   const [currentUserId, setCurrentUserId] = useState("");
   const [currentUserName, setCurrentUserName] = useState("User");
+  const [_assignedCategories, setAssignedCategories] = useState<string[]>([]);
   const [allUsers, setAllUsers] = useState<any[]>([]);
   const [farmers, setFarmers] = useState<any[]>([]);
   const [trackings, setTrackings] = useState<any[]>([]);
@@ -1583,10 +1594,11 @@ function TrackingContent({ role }: { role: any }) {
   // Category Tabs: All Tracked vs Risky Farmer vs Weak to Nourish
   const [statusTab, setStatusTab] = useState<"all" | "risky" | "weak">("all");
 
-  // Tracking Log Filters (Default: All Messages)
-  const [dateMode, setDateMode] = useState<"all" | "single" | "range">("all");
+  // Tracking Log Filters (Default: no date selected)
+  const [isMultiDate, setIsMultiDate] = useState(false);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [filterOpen, setFilterOpen] = useState(false);
   const [logSearch, setLogSearch] = useState("");
   const [logUser, setLogUser] = useState("");
   const [logDistrict, setLogDistrict] = useState("");
@@ -1633,15 +1645,31 @@ function TrackingContent({ role }: { role: any }) {
 
     if (user) {
       setCurrentUserId(user.id);
-      const { data: profile } = await supabase
-        .from("users")
-        .select("full_name, email, role, districts, upazilas")
-        .eq("id", user.id)
-        .single();
+      // assigned_categories comes from the permissions migration;
+      // fall back gracefully if the column is not there yet.
+      let profile: any = null;
+      {
+        const { data, error } = await supabase
+          .from("users")
+          .select("full_name, email, role, districts, upazilas, assigned_categories")
+          .eq("id", user.id)
+          .single();
+        if (!error && data) {
+          profile = data;
+        } else {
+          const retry = await supabase
+            .from("users")
+            .select("full_name, email, role, districts, upazilas")
+            .eq("id", user.id)
+            .single();
+          profile = retry.data || null;
+        }
+      }
       if (profile) {
         uName = profile.full_name || profile.email || uName;
         uDistricts = parseList(profile.districts);
         uUpazilas = parseList(profile.upazilas);
+        setAssignedCategories(parseList(profile.assigned_categories));
       }
     }
     setCurrentUserName(uName);
@@ -1864,12 +1892,12 @@ function TrackingContent({ role }: { role: any }) {
       if (statusTab === "risky" && !st?.isRisky) continue;
       if (statusTab === "weak" && !st?.isWeak) continue;
 
-      if (dateMode === "single" && dateFrom) {
-        if (toYmd(t.created_at) !== dateFrom) continue;
-      } else if (dateMode === "range") {
+      if (isMultiDate) {
         const ymd = toYmd(t.created_at);
         if (dateFrom && ymd < dateFrom) continue;
         if (dateTo && ymd > dateTo) continue;
+      } else if (dateFrom) {
+        if (toYmd(t.created_at) !== dateFrom) continue;
       }
 
       if (logUser && t.user_name !== logUser) continue;
@@ -1902,7 +1930,7 @@ function TrackingContent({ role }: { role: any }) {
     farmerMap,
     statusByFarmer,
     statusTab,
-    dateMode,
+    isMultiDate,
     dateFrom,
     dateTo,
     logSearch,
@@ -1915,7 +1943,7 @@ function TrackingContent({ role }: { role: any }) {
     setVisibleFarmersCount(20);
   }, [
     statusTab,
-    dateMode,
+    isMultiDate,
     dateFrom,
     dateTo,
     logSearch,
@@ -1957,6 +1985,18 @@ function TrackingContent({ role }: { role: any }) {
   ): Promise<boolean> {
     const clean = newCleanText.trim();
     if (!clean) return false;
+    // Ownership guard (no category gate — tracking covers all
+    // categories). Old notes with no user_id are editable by area
+    // officers; the save stamps user_id = current user (rule 2).
+    const ownsNote =
+      canEditRecord(role, noteObj.user_id, currentUserId) ||
+      (noteObj.user_name &&
+        currentUserName &&
+        noteObj.user_name === currentUserName);
+    if (!ownsNote) {
+      alert("You can only edit messages you added.");
+      return false;
+    }
 
     const meta = parseNoteMeta(noteObj.note);
     const prefix =
@@ -1969,9 +2009,13 @@ function TrackingContent({ role }: { role: any }) {
         : "";
     const finalNote = `${prefix}${clean}`;
 
+    // Ownership (rule 2): stamp user_id on first edit of an old note
+    // that has none, so the next edit is creator-only.
+    const noteUpdate: Record<string, any> = { note: finalNote };
+    if (!noteObj.user_id && currentUserId) noteUpdate.user_id = currentUserId;
     const { error } = await supabase
       .from("farmer_trackings")
-      .update({ note: finalNote })
+      .update(noteUpdate)
       .eq("id", noteObj.id);
 
     if (error) {
@@ -1981,7 +2025,13 @@ function TrackingContent({ role }: { role: any }) {
 
     setTrackings((prev) =>
       prev.map((item) =>
-        item.id === noteObj.id ? { ...item, note: finalNote } : item
+        item.id === noteObj.id
+          ? {
+              ...item,
+              note: finalNote,
+              user_id: item.user_id || currentUserId,
+            }
+          : item
       )
     );
     setToast("Message updated");
@@ -2029,7 +2079,7 @@ function TrackingContent({ role }: { role: any }) {
 
   function resetLogFilters() {
     setStatusTab("all");
-    setDateMode("all");
+    setIsMultiDate(false);
     setDateFrom("");
     setDateTo("");
     setLogSearch("");
@@ -2059,7 +2109,7 @@ function TrackingContent({ role }: { role: any }) {
   const pickedBadge = pickedFarmer ? getFarmerBadgeInfo(pickedFarmer) : null;
   const hasLogFilter =
     statusTab !== "all" ||
-    dateMode !== "all" ||
+    isMultiDate ||
     dateFrom ||
     dateTo ||
     logSearch ||
@@ -2598,6 +2648,43 @@ function TrackingContent({ role }: { role: any }) {
       >
         <div className="overflow-hidden">
           <section className="space-y-3 pt-0.5">
+            {/* Filter Toggle Button — mobile only; PC te filter ager motoi khola thakbe */}
+            <div className="flex items-center justify-between gap-2 md:justify-end">
+              <button
+                type="button"
+                onClick={() => setFilterOpen((o) => !o)}
+                className={`relative inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold shadow-xs transition-all duration-300 md:hidden ${
+                  filterOpen
+                    ? "bg-slate-800 text-white"
+                    : "bg-emerald-600 hover:bg-emerald-700 text-white"
+                }`}
+              >
+                <Filter size={13} />
+                <span>Filter</span>
+                <ChevronDown
+                  size={14}
+                  className={`transition-transform duration-300 ${
+                    filterOpen ? "rotate-180" : "rotate-0"
+                  }`}
+                />
+                {hasLogFilter && (
+                  <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-white" />
+                )}
+              </button>
+              <span className="text-[11px] font-semibold text-slate-500">
+                {logGroups.length} farmer{logGroups.length === 1 ? "" : "s"}
+              </span>
+            </div>
+
+            {/* Animated Filter Panel — mobile e collapse hoy, PC te (md+) sobsomoy khola */}
+            <div
+              className={`grid transition-all duration-300 ease-in-out md:grid-rows-[1fr] md:opacity-100 md:translate-y-0 md:pointer-events-auto ${
+                filterOpen
+                  ? "grid-rows-[1fr] opacity-100 translate-y-0"
+                  : "grid-rows-[0fr] opacity-0 -translate-y-1 pointer-events-none"
+              }`}
+            >
+              <div className="overflow-hidden">
             {/* Compact Filter Bar */}
             <div className="rounded-xl border border-slate-200 bg-white p-2.5 sm:p-3 shadow-2xs space-y-2.5">
               {/* Status Pill Tabs: All Tracked / Risky Farmer / Weak to Nourish */}
@@ -2679,82 +2766,76 @@ function TrackingContent({ role }: { role: any }) {
 
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <div className="inline-flex rounded-lg bg-slate-100 p-0.5 text-[11px] font-semibold">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDateMode("all");
-                        setDateFrom("");
-                        setDateTo("");
-                      }}
-                      className={`rounded-md px-2.5 py-1 transition ${
-                        dateMode === "all"
-                          ? "bg-emerald-600 text-white shadow-2xs"
-                          : "text-slate-600 hover:text-slate-900"
-                      }`}
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    {!isMultiDate ? (
+                      <div className="flex items-center border border-slate-300 rounded-lg px-2 py-1 bg-white overflow-hidden">
+                        <span className="text-[10px] font-semibold text-slate-400 mr-1.5 shrink-0">
+                          Date:
+                        </span>
+                        <input
+                          type="date"
+                          value={dateFrom}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setDateFrom(val);
+                            setDateTo(val);
+                          }}
+                          className="min-w-0 text-xs outline-none bg-transparent text-slate-700"
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1">
+                        <div className="flex items-center border border-slate-300 rounded-lg px-2 py-1 bg-white overflow-hidden">
+                          <span className="text-[10px] font-semibold text-slate-400 mr-1.5 shrink-0">
+                            From:
+                          </span>
+                          <input
+                            type="date"
+                            value={dateFrom}
+                            onChange={(e) => setDateFrom(e.target.value)}
+                            className="min-w-0 text-xs outline-none bg-transparent text-slate-700"
+                          />
+                        </div>
+                        <span className="text-xs text-slate-400">to</span>
+                        <div className="flex items-center border border-slate-300 rounded-lg px-2 py-1 bg-white overflow-hidden">
+                          <span className="text-[10px] font-semibold text-slate-400 mr-1.5 shrink-0">
+                            To:
+                          </span>
+                          <input
+                            type="date"
+                            value={dateTo}
+                            min={dateFrom || undefined}
+                            onChange={(e) => setDateTo(e.target.value)}
+                            className="min-w-0 text-xs outline-none bg-transparent text-slate-700"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    <label
+                      title="Select multiple dates (From - To)"
+                      className="shrink-0 inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 text-[10px] sm:text-[11px] font-semibold text-slate-700 cursor-pointer select-none"
                     >
-                      All Messages
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDateMode("single");
-                        setDateTo("");
-                      }}
-                      className={`rounded-md px-2.5 py-1 transition ${
-                        dateMode === "single"
-                          ? "bg-white text-slate-900 shadow-2xs"
-                          : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      Single Date
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDateMode("range")}
-                      className={`rounded-md px-2.5 py-1 transition ${
-                        dateMode === "range"
-                          ? "bg-white text-slate-900 shadow-2xs"
-                          : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      Multi Date
-                    </button>
+                      <input
+                        type="checkbox"
+                        checked={isMultiDate}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setIsMultiDate(checked);
+                          if (!checked) {
+                            const single = dateFrom || dateTo || "";
+                            setDateFrom(single);
+                            setDateTo(single);
+                          }
+                        }}
+                        className="w-3.5 h-3.5 accent-emerald-600"
+                      />
+                      <span>Multi</span>
+                    </label>
                   </div>
-
-                  {dateMode === "single" && (
-                    <input
-                      type="date"
-                      value={dateFrom}
-                      onChange={(e) => setDateFrom(e.target.value)}
-                      className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs outline-none focus:border-emerald-500"
-                    />
-                  )}
-
-                  {dateMode === "range" && (
-                    <div className="flex items-center gap-1">
-                      <input
-                        type="date"
-                        value={dateFrom}
-                        onChange={(e) => setDateFrom(e.target.value)}
-                        className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-emerald-500"
-                      />
-                      <span className="text-xs text-slate-400">to</span>
-                      <input
-                        type="date"
-                        value={dateTo}
-                        min={dateFrom || undefined}
-                        onChange={(e) => setDateTo(e.target.value)}
-                        className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-emerald-500"
-                      />
-                    </div>
-                  )}
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-semibold text-slate-500">
-                    {logGroups.length} farmer{logGroups.length === 1 ? "" : "s"}
-                  </span>
                   {hasLogFilter && (
                     <button
                       type="button"
@@ -2829,6 +2910,8 @@ function TrackingContent({ role }: { role: any }) {
                     </option>
                   ))}
                 </select>
+              </div>
+            </div>
               </div>
             </div>
 

@@ -9,6 +9,10 @@ import {
 } from "../../services/agentService";
 import { useAuth } from "../../context/AuthContext";
 import {
+  canEditRecord,
+  canAddFarmer,
+} from "../../utils/accessControl";
+import {
   MapContainer,
   Marker,
   Popup,
@@ -20,8 +24,8 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { saveAs } from "file-saver";
 import { getBazars } from "../../services/bazarService";
-import { createAgentMarker } from "../../utils/mapMarkers";
 import MapLayers from "../../components/maps/MapLayers";
+import { createAgentMarker } from "../../utils/mapMarkers";
 import ExcelJS from "exceljs";
 import {
   MapPin,
@@ -124,6 +128,134 @@ function getSaleBreakdown(agent: any) {
   return items.filter((i) => i.val > 0);
 }
 
+
+const SALE_KEYS = ["broiler_sale", "sonali_sale", "layer_sale", "cattle_sale", "fish_sale"] as const;
+const SALE_LABELS: Record<string, string> = {
+  broiler_sale: "Broiler",
+  sonali_sale: "Sonali",
+  layer_sale: "Layer",
+  cattle_sale: "Cattle",
+  fish_sale: "Fish",
+};
+function linkSaleTotal(link: any): number {
+  return SALE_KEYS.reduce((sum, k) => sum + Number(link?.[k] || 0), 0);
+}
+
+function emptyCompanyLink(companyId: any = ""): any {
+  return {
+    id: undefined,
+    company_id: companyId ? String(companyId) : "",
+    company_name: "",
+    logo_url: "",
+    broiler_sale: "0",
+    sonali_sale: "0",
+    layer_sale: "0",
+    cattle_sale: "0",
+    fish_sale: "0",
+    monthly_sale: "0",
+  };
+}
+
+// Linked companies for an agent. Exclusivity is DERIVED: 2+ links =
+// non-exclusive. Falls back to the agent's single company_id + sale
+// fields when agent_companies does not exist yet.
+function getAgentCompanies(agent: any): any[] {
+  const list = agent?.agent_companies || agent?.companies_list || [];
+  if (Array.isArray(list) && list.length > 0) {
+    return list.map((c: any) => ({
+      ...c,
+      company_id: String(c.company_id),
+      monthly_sale: Number((c.monthly_sale ?? linkSaleTotal(c)) || 0),
+    }));
+  }
+  if (!agent?.company_id) return [];
+  return [
+    {
+      id: `legacy-${agent.id}`,
+      agent_id: agent.id,
+      company_id: String(agent.company_id),
+      company_name: agent.companies?.company_name || "",
+      logo_url: agent.companies?.logo_url || "",
+      broiler_sale: agent.broiler_sale || 0,
+      sonali_sale: agent.sonali_sale || 0,
+      layer_sale: agent.layer_sale || 0,
+      cattle_sale: agent.cattle_sale || 0,
+      fish_sale: agent.fish_sale || 0,
+      monthly_sale: agent.monthly_sale || 0,
+    },
+  ];
+}
+
+
+function isNonExclusive(agent: any): boolean {
+  return getAgentCompanies(agent).length >= 2;
+}
+
+function getAgentTotalSale(agent: any): number {
+  const links = getAgentCompanies(agent);
+  if (links.length === 0) return Number(agent?.monthly_sale || 0);
+  return links.reduce(
+    (sum, l) => sum + Number((l.monthly_sale ?? linkSaleTotal(l)) || 0),
+    0
+  );
+}
+
+// Agent marker.
+// EXCLUSIVE agents: exactly the original marker — createAgentMarker from
+// ../../utils/mapMarkers with the agent's single (primary) company logo.
+// (The MapMarker source file was not available in this workspace, so the
+// original sizing comes from that import, not from code here.)
+// NON-EXCLUSIVE agents only: multiple logos together, same name chip and
+// same overall height as the original marker — no pin/emoji overlay, and
+// logos are NOT shrunk (22px, the size a single logo uses).
+function getAgentMarkerIcon(agent: any) {
+  if (!isNonExclusive(agent)) {
+    const links = getAgentCompanies(agent);
+    const logoUrl = links[0]?.logo_url || agent.companies?.logo_url || "";
+    return createAgentMarker(logoUrl, agent.agent_name || "");
+  }
+  return buildNonExclusiveAgentMarker(agent);
+}
+
+function buildNonExclusiveAgentMarker(agent: any) {
+  const links = getAgentCompanies(agent);
+  const logos = links.map((l: any) => l.logo_url || "").filter(Boolean);
+  const shown = logos.slice(0, 3);
+  const extra = logos.length - shown.length;
+  const safeName = (agent.agent_name || "Agent")
+    .replace(/</g, "&lt;")
+    .slice(0, 18);
+  const logosHtml =
+    shown.length > 0
+      ? `<div style="display:flex;align-items:center;justify-content:center;gap:2px;background:rgba(255,255,255,0.92);padding:2px 3px;border-radius:3px;box-shadow:0 1px 2px rgba(0,0,0,0.2);">${shown
+          .map(
+            (u) =>
+              `<img src="${u}" style="width:22px;height:22px;object-fit:contain;" />`
+          )
+          .join("")}${
+          extra > 0
+            ? `<span style="font-size:10px;font-weight:700;color:#334155;">+${extra}</span>`
+            : ""
+        }</div>`
+      : "";
+  const html = `
+    <div style="display:flex;flex-direction:column;align-items:center;transform:translateY(-14px);">
+      ${logosHtml}
+      <div style="margin-top:2px;background:rgba(252,244,236,0.95);border:1.5px solid #475569;color:#314158;font-size:10px;font-weight:700;padding:0px 5px;border-radius:4px;white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,0.15);">
+        ${safeName}
+      </div>
+    </div>
+  `;
+  const width = shown.length >= 3 ? 84 : 64;
+  return L.divIcon({
+    className: "custom-agent-div-icon",
+    html,
+    iconSize: [width, 56],
+    iconAnchor: [width / 2, 46],
+    popupAnchor: [0, -40],
+  });
+}
+
 function isNourishName(name?: string) {
   return Boolean(name && name.toLowerCase().includes("nourish"));
 }
@@ -185,10 +317,15 @@ export default function AgentsPage() {
 
   const isFullAccess = role === "super_admin" || role === "manager";
 
+  const canAddAgentHere = canAddFarmer(role);
+  const canEditAgent = (agent: any) =>
+    canEditRecord(role, agent?.created_by, currentUserId);
+
   // User Profile & Assigned Areas
   const [currentUserId, setCurrentUserId] = useState("");
   const [currentUserName, setCurrentUserName] = useState("User");
   const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>([]);
+  const [_assignedCategories, setAssignedCategories] = useState<string[]>([]);
 
   // Master Data
   const [agents, setAgents] = useState<any[]>([]);
@@ -206,6 +343,26 @@ export default function AgentsPage() {
   const [selectedAgent, setSelectedAgent] = useState<any>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState({ ...EMPTY_FORM });
+  const [formCompanies, setFormCompanies] = useState<any[]>([]);
+  const [formType, setFormType] = useState<"exclusive" | "nonexclusive">("exclusive");
+  const [companyPickerId, setCompanyPickerId] = useState("");
+  const [nonExPopupAgentId, setNonExPopupAgentId] = useState<number | null>(null);
+  const [nonExPopupPos, setNonExPopupPos] = useState<{ top: number; left: number } | null>(null);
+  const [showFilters, setShowFilters] = useState(false);
+  const [selectedMapAgentId, setSelectedMapAgentId] = useState<number | null>(null);
+
+  // Close the non-ex. popover with Escape.
+  useEffect(() => {
+    if (nonExPopupAgentId === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setNonExPopupAgentId(null);
+        setNonExPopupPos(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [nonExPopupAgentId]);
 
   // Location Picker Live Location State
   const [pickerCenterOverride, setPickerCenterOverride] = useState<
@@ -229,6 +386,7 @@ export default function AgentsPage() {
   const [upazilaFilter, setUpazilaFilter] = useState("");
   const [unionFilter, setUnionFilter] = useState("");
   const [bazarFilter, setBazarFilter] = useState("");
+  const [exclusivityFilter, setExclusivityFilter] = useState("");
 
   const [filterUpazilas, setFilterUpazilas] = useState<any[]>([]);
   const [filterUnions, setFilterUnions] = useState<any[]>([]);
@@ -289,16 +447,32 @@ export default function AgentsPage() {
 
     if (user) {
       setCurrentUserId(user.id);
-      const { data: profile } = await supabase
-        .from("users")
-        .select("full_name, email, role, districts, upazilas")
-        .eq("id", user.id)
-        .single();
+      // assigned_categories comes from the permissions migration;
+      // fall back gracefully if the column is not there yet.
+      let profile: any = null;
+      {
+        const { data, error } = await supabase
+          .from("users")
+          .select("full_name, email, role, districts, upazilas, assigned_categories")
+          .eq("id", user.id)
+          .single();
+        if (!error && data) {
+          profile = data;
+        } else {
+          const retry = await supabase
+            .from("users")
+            .select("full_name, email, role, districts, upazilas")
+            .eq("id", user.id)
+            .single();
+          profile = retry.data || null;
+        }
+      }
 
       if (profile) {
         uName = profile.full_name || profile.email || uName;
         uDistricts = parseList(profile.districts);
         uUpazilas = parseList(profile.upazilas);
+        setAssignedCategories(parseList(profile.assigned_categories));
       }
     }
 
@@ -318,6 +492,26 @@ export default function AgentsPage() {
     ]);
 
     const allAgents = agentData || [];
+    // Ownership: attach created_by when the column exists (the agent
+    // service may not select it). A missing column must not break the
+    // list — rows without a creator stay editable (rule 2, old data).
+    try {
+      const { data: creatorData, error: creatorErr } = await supabase
+        .from("agents")
+        .select("id, created_by");
+      if (!creatorErr && creatorData) {
+        const creatorById: Record<string, any> = {};
+        (creatorData as any[]).forEach((r: any) => {
+          creatorById[String(r.id)] = r.created_by;
+        });
+        allAgents.forEach((a: any) => {
+          if (a.created_by == null && creatorById[String(a.id)] !== undefined)
+            a.created_by = creatorById[String(a.id)];
+        });
+      }
+    } catch {
+      // created_by column not added yet — old rows stay editable.
+    }
     const allowedAgents = isFullAccess
       ? allAgents
       : allAgents.filter((a: any) => {
@@ -328,7 +522,45 @@ export default function AgentsPage() {
           return matchUpa && matchDist;
         });
 
-    setAgents(allowedAgents);
+    // Linked companies (agent_companies) — falls back to the single
+    // company_id when the table does not exist yet.
+    let agentCompaniesByAgent: Record<string, any[]> = {};
+    try {
+      const { data: acData, error: acErr } = await supabase
+        .from("agent_companies")
+        .select("*, companies(company_name, logo_url)")
+        .order("created_at");
+      if (!acErr && acData) {
+        (acData as any[]).forEach((row: any) => {
+          const key = String(row.agent_id);
+          if (!agentCompaniesByAgent[key]) agentCompaniesByAgent[key] = [];
+          agentCompaniesByAgent[key].push({
+            ...row,
+            company_id: String(row.company_id),
+            company_name:
+              row.companies?.company_name ||
+              companyData?.find(
+                (c: any) => String(c.id) === String(row.company_id)
+              )?.company_name ||
+              "",
+            logo_url:
+              row.companies?.logo_url ||
+              companyData?.find(
+                (c: any) => String(c.id) === String(row.company_id)
+              )?.logo_url ||
+              "",
+          });
+        });
+      }
+    } catch {
+      // agent_companies table not created yet — legacy fallback applies.
+    }
+    const agentsWithLinks = allowedAgents.map((a: any) => ({
+      ...a,
+      agent_companies: agentCompaniesByAgent[String(a.id)] || [],
+    }));
+
+    setAgents(agentsWithLinks);
     setBazars(bazarData || []);
     setCompanies(companyData || []);
 
@@ -385,6 +617,7 @@ export default function AgentsPage() {
     );
     setUnionFilter("");
     setBazarFilter("");
+    setExclusivityFilter("");
     setSearch("");
   }
 
@@ -462,6 +695,7 @@ export default function AgentsPage() {
     setShowMap(true);
     setMyLocationMode(false);
     setSelectedLocation([lat, lng]);
+    setSelectedMapAgentId(agent.id);
     loadAgentNotes(agent.id);
 
     // আগে খোলা থাকা যেকোনো পপআপ বন্ধ করে দেওয়া হচ্ছে যাতে ম্যাপ পরিষ্কার দেখা যায়
@@ -616,13 +850,121 @@ export default function AgentsPage() {
     loadFilterBazars();
   }, [unionFilter, filterUnions]);
 
+  // ---------- Linked companies in the form (exclusive / non-exclusive) ----------
+  function syncFormFromCompanies(list: any[]) {
+    const total = list.reduce((s: number, c: any) => s + linkSaleTotal(c), 0);
+    const sums: Record<string, string> = {};
+    SALE_KEYS.forEach((k) => {
+      sums[k] = String(
+        list.reduce((s: number, c: any) => s + Number(c[k] || 0), 0)
+      );
+    });
+    setForm((prev) => ({
+      ...prev,
+      company_id: list[0]?.company_id ? String(list[0].company_id) : "",
+      ...sums,
+      monthly_sale: String(total),
+    }));
+  }
+
+  function updateFormCompany(idx: number, patch: any) {
+    const next = formCompanies.map((c: any, i: number) =>
+      i === idx ? { ...c, ...patch } : c
+    );
+    if (next[idx]) {
+      next[idx] = { ...next[idx], monthly_sale: String(linkSaleTotal(next[idx])) };
+    }
+    setFormCompanies(next);
+    syncFormFromCompanies(next);
+  }
+
+  function addFormCompany(companyId: string) {
+    if (!companyId) return;
+    if (
+      formCompanies.some(
+        (c: any) => String(c.company_id) === String(companyId)
+      )
+    ) {
+      alert("Company already added.");
+      return;
+    }
+    const picked = companies.find((c) => String(c.id) === String(companyId));
+    const next = [
+      ...formCompanies,
+      {
+        ...emptyCompanyLink(companyId),
+        company_name: picked?.company_name || "",
+        logo_url: picked?.logo_url || "",
+      },
+    ];
+    setFormCompanies(next);
+    syncFormFromCompanies(next);
+  }
+
+  function removeFormCompany(idx: number) {
+    if (formCompanies.length <= 1) return;
+    const next = formCompanies.filter((_: any, i: number) => i !== idx);
+    setFormCompanies(next);
+    syncFormFromCompanies(next);
+  }
+
+  function handlePrimaryCompanyChange(companyId: string) {
+    if (formCompanies.length === 0) {
+      const next = [{ ...emptyCompanyLink(companyId) }];
+      setFormCompanies(next);
+      syncFormFromCompanies(next);
+    } else {
+      updateFormCompany(0, { company_id: companyId });
+    }
+  }
+
+  function handleTypeChange(t: "exclusive" | "nonexclusive") {
+    setFormType(t);
+    if (t === "exclusive" && formCompanies.length > 1) {
+      const next = [formCompanies[0]];
+      setFormCompanies(next);
+      syncFormFromCompanies(next);
+    }
+  }
+
   // ==================================================
   // SAVE, DELETE & LOCATE ME (INCLUDING NOURISH AGENT ID)
   // ==================================================
   async function handleSave() {
     try {
+      // Permission guard (buttons are hidden too — this is the
+      // backstop for the save itself). Agent add is NOT
+      // category-gated (rule 5, like farmers).
+      if (editingId) {
+        const editingAgent = agents.find(
+          (a: any) => Number(a.id) === Number(editingId)
+        );
+        if (!canEditAgent(editingAgent || {})) {
+          alert("You can only edit agents you added.");
+          return;
+        }
+      } else if (!canAddAgentHere) {
+        alert("You do not have permission to add agents.");
+        return;
+      }
+      const links =
+        formCompanies.length > 0
+          ? formCompanies.filter((c: any) => c.company_id)
+          : form.company_id
+          ? [
+              {
+                ...emptyCompanyLink(form.company_id),
+                broiler_sale: form.broiler_sale,
+                sonali_sale: form.sonali_sale,
+                layer_sale: form.layer_sale,
+                cattle_sale: form.cattle_sale,
+                fish_sale: form.fish_sale,
+                monthly_sale: form.monthly_sale,
+              },
+            ]
+          : [];
       if (
-        !form.company_id ||
+        links.length === 0 ||
         !form.agent_name.trim() ||
         !form.district ||
         !form.upazila
@@ -631,52 +973,150 @@ export default function AgentsPage() {
         return;
       }
 
-      const cleanAgentCode = isFormCompanyNourish
+      const sums: Record<string, number> = {};
+      SALE_KEYS.forEach((k) => {
+        sums[k] = links.reduce((s: number, c: any) => s + Number(c[k] || 0), 0);
+      });
+      const totalSale = links.reduce(
+        (s: number, c: any) => s + linkSaleTotal(c),
+        0
+      );
+      const primaryCompanyId = String(links[0].company_id);
+      const primaryCompanyObj = companies.find(
+        (c) => String(c.id) === primaryCompanyId
+      );
+      const cleanAgentCode = isNourishName(primaryCompanyObj?.company_name)
         ? form.agent_code.trim()
         : "";
 
       const payload: any = {
         ...form,
         agent_code: cleanAgentCode,
-        company_id: Number(form.company_id),
-        broiler_sale: Number(form.broiler_sale || 0),
-        layer_sale: Number(form.layer_sale || 0),
-        sonali_sale: Number(form.sonali_sale || 0),
-        cattle_sale: Number(form.cattle_sale || 0),
-        fish_sale: Number(form.fish_sale || 0),
-        monthly_sale: form.monthly_sale === "" ? 0 : Number(form.monthly_sale),
+        company_id: Number(primaryCompanyId),
+        broiler_sale: sums.broiler_sale,
+        layer_sale: sums.layer_sale,
+        sonali_sale: sums.sonali_sale,
+        cattle_sale: sums.cattle_sale,
+        fish_sale: sums.fish_sale,
+        monthly_sale: totalSale,
         latitude: form.latitude === "" ? null : Number(form.latitude),
         longitude: form.longitude === "" ? null : Number(form.longitude),
       };
 
+      let agentId: number | null = editingId;
       if (editingId) {
         await updateAgent(editingId, payload);
+        // Ownership (rule 2): stamp created_by on first edit of an
+        // old row; never overwrite an existing creator. Best-effort:
+        // a missing created_by column must not break the save.
+        let stampCreatedBy: Record<string, any> = {};
+        try {
+          const { data: existing } = await supabase
+            .from("agents")
+            .select("created_by")
+            .eq("id", editingId)
+            .maybeSingle();
+          if (existing && !existing.created_by && currentUserId) {
+            stampCreatedBy = { created_by: currentUserId };
+          }
+        } catch {
+          // created_by column not added yet.
+        }
         await supabase
           .from("agents")
-          .update({ agent_code: cleanAgentCode })
+          .update({ agent_code: cleanAgentCode, ...stampCreatedBy })
           .eq("id", editingId);
-        alert("Agent Updated");
       } else {
         const created: any = await createAgent(payload);
-        const createdId = created?.id || created?.[0]?.id;
+        const createdId =
+          created?.id || created?.data?.id || created?.[0]?.id;
         if (createdId) {
+          agentId = Number(createdId);
           await supabase
             .from("agents")
             .update({ agent_code: cleanAgentCode })
             .eq("id", createdId);
-        } else if (cleanAgentCode) {
-          await supabase
+        } else {
+          const { data: found } = await supabase
             .from("agents")
-            .update({ agent_code: cleanAgentCode })
+            .select("id")
             .eq("agent_name", form.agent_name.trim())
-            .eq("company_id", Number(form.company_id));
+            .order("created_at", { ascending: false })
+            .limit(1);
+          if (found && found.length > 0) agentId = Number(found[0].id);
+          if (cleanAgentCode && agentId) {
+            await supabase
+              .from("agents")
+              .update({ agent_code: cleanAgentCode })
+              .eq("id", agentId);
+          }
         }
-        alert("Agent Saved");
       }
 
+      // Ownership: new agents are stamped with their creator.
+      if (!editingId && agentId && currentUserId) {
+        try {
+          await supabase
+            .from("agents")
+            .update({ created_by: currentUserId })
+            .eq("id", agentId);
+        } catch {
+          // created_by column not added yet.
+        }
+      }
+
+      // Save per-company links (agent_companies). The agent row above
+      // already holds the summed sales, so the agent is safe even if
+      // this table does not exist yet.
+      // Company links inherit the agent's creator (no separate gate).
+      const agentCreatorId = editingId
+        ? agents.find((a: any) => Number(a.id) === Number(editingId))
+            ?.created_by || currentUserId
+        : currentUserId;
+      if (agentId) {
+        try {
+          await supabase
+            .from("agent_companies")
+            .delete()
+            .eq("agent_id", agentId);
+          const rows = links.map((c: any) => ({
+            agent_id: agentId,
+            company_id: Number(c.company_id),
+            broiler_sale: Number(c.broiler_sale || 0),
+            sonali_sale: Number(c.sonali_sale || 0),
+            layer_sale: Number(c.layer_sale || 0),
+            cattle_sale: Number(c.cattle_sale || 0),
+            fish_sale: Number(c.fish_sale || 0),
+            monthly_sale: linkSaleTotal(c),
+            created_by: agentCreatorId || null,
+          }));
+          let { error: linkErr } = await supabase
+            .from("agent_companies")
+            .insert(rows);
+          if (linkErr && /created_by/i.test(linkErr.message || "")) {
+            const rowsWithoutCreator = rows.map((r: any) => {
+              const { created_by, ...rest } = r;
+              return rest;
+            });
+            const retry = await supabase
+              .from("agent_companies")
+              .insert(rowsWithoutCreator);
+            linkErr = retry.error;
+          }
+          if (linkErr) throw linkErr;
+        } catch (linkErr: any) {
+          alert(
+            "Agent saved, but company links could not be saved. Please run agent_companies-migration.sql in Supabase first, then edit the agent again to add companies."
+          );
+        }
+      }
+
+      alert(editingId ? "Agent Updated" : "Agent Saved");
       setShowForm(false);
       setEditingId(null);
       setForm({ ...EMPTY_FORM });
+      setFormCompanies([]);
+      setFormType("exclusive");
       loadData();
     } catch (error: any) {
       alert(error?.message || "Save Failed");
@@ -684,6 +1124,11 @@ export default function AgentsPage() {
   }
 
   async function handleDelete(id: number) {
+    const target = agents.find((a: any) => Number(a.id) === Number(id));
+    if (!canEditAgent(target || {})) {
+      alert("You can only delete agents you added.");
+      return;
+    }
     if (!confirm("Delete Agent?")) return;
     await deleteAgent(id);
     loadData();
@@ -763,7 +1208,13 @@ export default function AgentsPage() {
       setUserLocation(coords);
       setMyLocationMode(true);
 
-      const nearest = filteredAgents
+      const baseAgents =
+        selectedMapAgentId != null
+          ? filteredAgents.filter(
+              (a) => String(a.id) === String(selectedMapAgentId)
+            )
+          : filteredAgents;
+      const nearest = baseAgents
         .filter((a) => a.latitude && a.longitude)
         .map((a) => {
           const km = calcDistanceKm(
@@ -792,16 +1243,26 @@ export default function AgentsPage() {
   // ==================================================
   const filteredAgents = agents.filter((agent) => {
     const q = search.toLowerCase();
+    const agentLinks = getAgentCompanies(agent);
     const matchSearch =
       !q ||
       agent.agent_name?.toLowerCase().includes(q) ||
       agent.agent_code?.toLowerCase().includes(q) ||
       agent.proprietor?.toLowerCase().includes(q) ||
       agent.mobile?.toLowerCase().includes(q) ||
-      agent.bazar?.toLowerCase().includes(q);
+      agent.bazar?.toLowerCase().includes(q) ||
+      agentLinks.some((c: any) =>
+        (c.company_name || "").toLowerCase().includes(q)
+      );
 
     const matchCompany =
-      companyFilter === "" || String(agent.company_id) === companyFilter;
+      companyFilter === "" ||
+      agentLinks.some((c: any) => String(c.company_id) === companyFilter);
+    const matchExclusivity =
+      exclusivityFilter === "" ||
+      (exclusivityFilter === "nonexclusive"
+        ? agentLinks.length >= 2
+        : agentLinks.length < 2);
     const matchDistrict =
       districtFilter === "" || agent.district === districtFilter;
     const matchUpazila =
@@ -813,6 +1274,7 @@ export default function AgentsPage() {
     return (
       matchSearch &&
       matchCompany &&
+      matchExclusivity &&
       matchDistrict &&
       matchUpazila &&
       matchUnion &&
@@ -832,6 +1294,20 @@ export default function AgentsPage() {
         )
       : null;
 
+  // Locate Me + a selected agent: show ONLY that agent on the map
+  // (all other agent markers hidden) until the selection is cleared.
+  const isolateSelectedAgent = Boolean(
+    myLocationMode &&
+      userLocation &&
+      selectedLocation &&
+      selectedMapAgentId != null
+  );
+  const mapAgents = isolateSelectedAgent
+    ? filteredAgents.filter(
+        (a: any) => String(a.id) === String(selectedMapAgentId)
+      )
+    : filteredAgents;
+
   const sortedAgents = [...filteredAgents].sort((a: any, b: any) => {
     const companyCompare = (
       a.companies?.company_name || ""
@@ -840,23 +1316,28 @@ export default function AgentsPage() {
     return (a.agent_name || "").localeCompare(b.agent_name || "");
   });
 
+  // Grouped per agent-company LINK, so a non-exclusive agent appears
+  // under every company it is linked to (not only its primary one).
   const companyGroupedAgents = Object.values(
     sortedAgents.reduce((acc: Record<string, any>, agent: any) => {
-      const key = String(agent.company_id || "unassigned");
-      if (!acc[key]) {
-        const compName =
-          agent.companies?.company_name || "Unassigned Company";
-        acc[key] = {
-          companyId: key,
-          companyName: compName,
-          isNourish: isNourishName(compName),
-          logoUrl: agent.companies?.logo_url || "",
-          totalSale: 0,
-          agents: [],
-        };
-      }
-      acc[key].agents.push(agent);
-      acc[key].totalSale += Number(agent.monthly_sale || 0);
+      getAgentCompanies(agent).forEach((link: any) => {
+        const key = String(link.company_id || "unassigned");
+        if (!acc[key]) {
+          const compName = link.company_name || "Unassigned Company";
+          acc[key] = {
+            companyId: key,
+            companyName: compName,
+            isNourish: isNourishName(compName),
+            logoUrl: link.logo_url || "",
+            totalSale: 0,
+            agents: [],
+          };
+        }
+        acc[key].agents.push({ agent, link });
+        acc[key].totalSale += Number(
+          (link.monthly_sale ?? linkSaleTotal(link)) || 0
+        );
+      });
       return acc;
     }, {})
   );
@@ -865,33 +1346,49 @@ export default function AgentsPage() {
     companies.find((c) => String(c.id) === companyFilter)?.company_name ||
     "All Companies";
 
+  const nonExclusiveCount = filteredAgents.filter((a: any) =>
+    isNonExclusive(a)
+  ).length;
+
+  const nonExPopupAgent =
+    agents.find((a: any) => a.id === nonExPopupAgentId) || null;
+
   const totalMonthlySale = filteredAgents.reduce(
     (sum, agent) => sum + Number(agent.monthly_sale || 0),
     0
   );
 
+  // Summary per agent-company LINK (no double-counting: each link's
+  // own sales count once under its company; agents counted once per
+  // company via a Set of distinct agent ids).
   const companySummary = Object.values(
     filteredAgents.reduce((acc: any, agent) => {
-      const company = agent.companies?.company_name || "Unknown";
-      if (!acc[company]) {
-        acc[company] = {
-          name: company,
-          agents: 0,
-          broiler: 0,
-          layer: 0,
-          sonali: 0,
-          cattle: 0,
-          fish: 0,
-          sale: 0,
-        };
-      }
-      acc[company].agents += 1;
-      acc[company].broiler += Number(agent.broiler_sale || 0);
-      acc[company].layer += Number(agent.layer_sale || 0);
-      acc[company].sonali += Number(agent.sonali_sale || 0);
-      acc[company].cattle += Number(agent.cattle_sale || 0);
-      acc[company].fish += Number(agent.fish_sale || 0);
-      acc[company].sale += Number(agent.monthly_sale || 0);
+      getAgentCompanies(agent).forEach((link: any) => {
+        const company = link.company_name || "Unknown";
+        if (!acc[company]) {
+          acc[company] = {
+            name: company,
+            agentIds: new Set(),
+            agents: 0,
+            broiler: 0,
+            layer: 0,
+            sonali: 0,
+            cattle: 0,
+            fish: 0,
+            sale: 0,
+          };
+        }
+        acc[company].agentIds.add(String(agent.id));
+        acc[company].agents = acc[company].agentIds.size;
+        acc[company].broiler += Number(link.broiler_sale || 0);
+        acc[company].layer += Number(link.layer_sale || 0);
+        acc[company].sonali += Number(link.sonali_sale || 0);
+        acc[company].cattle += Number(link.cattle_sale || 0);
+        acc[company].fish += Number(link.fish_sale || 0);
+        acc[company].sale += Number(
+          (link.monthly_sale ?? linkSaleTotal(link)) || 0
+        );
+      });
       return acc;
     }, {})
   );
@@ -922,6 +1419,8 @@ export default function AgentsPage() {
         "Total Monthly Sale",
         "Focus Item",
         "Status",
+        "Companies",
+        "Type",
       ];
 
       sortedAgents.forEach((agent: any) => {
@@ -943,10 +1442,15 @@ export default function AgentsPage() {
           Number(agent.monthly_sale || 0),
           agent.focus_item || "",
           agent.status || "",
+          getAgentCompanies(agent)
+            .map((c: any) => c.company_name)
+            .filter(Boolean)
+            .join(", "),
+          isNonExclusive(agent) ? "Non-exclusive" : "Exclusive",
         ]);
       });
 
-      for (let col = 1; col <= 17; col++) {
+      for (let col = 1; col <= 19; col++) {
         const cell = worksheet.getCell(1, col);
         cell.fill = {
           type: "pattern",
@@ -990,11 +1494,53 @@ export default function AgentsPage() {
 
       const widths = [
         24, 14, 22, 20, 16, 20, 18, 18, 18, 15, 15, 15, 15, 15, 20, 20, 14,
+        26, 14,
       ];
       widths.forEach((w, idx) => (worksheet.getColumn(idx + 1).width = w));
       worksheet.getRow(1).height = 30;
       worksheet.views = [{ state: "frozen", ySplit: 1 }];
-      worksheet.autoFilter = { from: "A1", to: "Q1" };
+      worksheet.autoFilter = { from: "A1", to: "S1" };
+
+      // Second sheet: one row per agent-company link.
+      const linkSheet = workbook.addWorksheet("Agent Companies");
+      linkSheet.getRow(1).values = [
+        "Agent",
+        "Company",
+        "B",
+        "S",
+        "L",
+        "C",
+        "F",
+        "Total",
+      ];
+      sortedAgents.forEach((agent: any) => {
+        getAgentCompanies(agent).forEach((link: any) => {
+          linkSheet.addRow([
+            agent.agent_name || "",
+            link.company_name || "",
+            Number(link.broiler_sale || 0),
+            Number(link.sonali_sale || 0),
+            Number(link.layer_sale || 0),
+            Number(link.cattle_sale || 0),
+            Number(link.fish_sale || 0),
+            Number((link.monthly_sale ?? linkSaleTotal(link)) || 0),
+          ]);
+        });
+      });
+      linkSheet.getRow(1).eachCell((cell) => {
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "1E3A8A" },
+        };
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.alignment = { horizontal: "center", vertical: "middle" };
+      });
+      [22, 24, 10, 10, 10, 10, 10, 14].forEach((w, idx) =>
+        linkSheet.getColumn(idx + 1).width = w
+      );
+      linkSheet.views = [{ state: "frozen", ySplit: 1 }];
+      linkSheet.autoFilter = { from: "A1", to: "H1" };
 
       const today = new Date().toISOString().split("T")[0];
       const safeCompanyName = (selectedCompanyName || "Report").replace(
@@ -1048,7 +1594,26 @@ export default function AgentsPage() {
   }
 
   function openEditForm(agent: any) {
+    if (!canEditAgent(agent)) {
+      alert("You can only edit agents you added.");
+      return;
+    }
+    const links = getAgentCompanies(agent);
+    const formLinks = links.map((c: any) => ({
+      id: String(c.id || "").startsWith("legacy-") ? undefined : c.id,
+      company_id: String(c.company_id),
+      company_name: c.company_name || "",
+      logo_url: c.logo_url || "",
+      broiler_sale: String(c.broiler_sale ?? 0),
+      sonali_sale: String(c.sonali_sale ?? 0),
+      layer_sale: String(c.layer_sale ?? 0),
+      cattle_sale: String(c.cattle_sale ?? 0),
+      fish_sale: String(c.fish_sale ?? 0),
+      monthly_sale: String(c.monthly_sale ?? linkSaleTotal(c)),
+    }));
     setEditingId(agent.id);
+    setFormType(formLinks.length >= 2 ? "nonexclusive" : "exclusive");
+    setFormCompanies(formLinks);
     setForm({
       company_id: String(agent.company_id),
       agent_code: agent.agent_code || "",
@@ -1078,8 +1643,17 @@ export default function AgentsPage() {
       {/* ==================================================
           1. COMPACT FILTER BAR AT THE TOP
       ================================================== */}
-      <div className="bg-white border border-slate-300 rounded-xl p-2.5 shadow-sm">
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 items-center">
+      <div className="bg-white border border-slate-300 rounded-xl p-2 shadow-sm">
+        <button
+          type="button"
+          onClick={() => setShowFilters(!showFilters)}
+          className="sm:hidden inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700"
+        >
+          <Search size={12} /> Filters {showFilters ? "▲" : "▼"}
+        </button>
+        <div
+          className={`${showFilters ? "grid" : "hidden"} sm:grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-1.5 items-center mt-2 sm:mt-0`}
+        >
           <div className="col-span-2 sm:col-span-2 lg:col-span-2 relative">
             <Search
               size={13}
@@ -1090,7 +1664,7 @@ export default function AgentsPage() {
               placeholder="Search agent name, ID, proprietor, mobile..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 pl-8 pr-2.5 py-1.5 text-xs outline-none focus:border-blue-500"
+              className="w-full rounded-lg border border-slate-300 pl-8 pr-2.5 py-1 text-xs outline-none focus:border-blue-500"
             />
           </div>
 
@@ -1102,7 +1676,7 @@ export default function AgentsPage() {
               setUnionFilter("");
               setBazarFilter("");
             }}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
+            className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-blue-500"
           >
             <option value="">All Districts</option>
             {districts.map((d) => (
@@ -1119,7 +1693,7 @@ export default function AgentsPage() {
               setUnionFilter("");
               setBazarFilter("");
             }}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
+            className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-blue-500"
           >
             <option value="">All Upazilas</option>
             {filterUpazilas.map((u: any) => (
@@ -1135,7 +1709,7 @@ export default function AgentsPage() {
               setUnionFilter(e.target.value);
               setBazarFilter("");
             }}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
+            className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-blue-500"
           >
             <option value="">All Unions</option>
             {filterUnions.map((u: any) => (
@@ -1148,7 +1722,7 @@ export default function AgentsPage() {
           <select
             value={bazarFilter}
             onChange={(e) => setBazarFilter(e.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
+            className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-blue-500"
           >
             <option value="">All Bazars</option>
             {filterBazars.map((b: any) => (
@@ -1158,11 +1732,22 @@ export default function AgentsPage() {
             ))}
           </select>
 
+          <select
+            value={exclusivityFilter}
+            onChange={(e) => setExclusivityFilter(e.target.value)}
+            className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-blue-500"
+            title="Exclusive / Non-exclusive"
+          >
+            <option value="">All Agents</option>
+            <option value="exclusive">Exclusive only</option>
+            <option value="nonexclusive">Non-exclusive only</option>
+          </select>
+
           <div className="col-span-2 sm:col-span-1 flex items-center gap-1.5">
             <select
               value={companyFilter}
               onChange={(e) => setCompanyFilter(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
+              className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-blue-500"
             >
               <option value="">All Companies</option>
               {companies.map((c) => (
@@ -1175,7 +1760,7 @@ export default function AgentsPage() {
             <button
               onClick={clearFilters}
               title="Reset Filters"
-              className="shrink-0 inline-flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition"
+              className="shrink-0 inline-flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 transition"
             >
               <RotateCcw size={13} />
             </button>
@@ -1186,8 +1771,9 @@ export default function AgentsPage() {
       {/* ==================================================
           2. ADD AGENT, SUMMARY, EXPORT, VIEW MAP BAR
       ================================================== */}
-      <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-slate-300 rounded-xl px-3.5 py-2 shadow-sm">
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-1.5 bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 shadow-sm">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {canAddAgentHere && (
           <button
             onClick={() => {
               setEditingId(null);
@@ -1206,26 +1792,30 @@ export default function AgentsPage() {
                 district: defDist,
                 upazila: defUpa,
               });
+              setFormCompanies([{ ...emptyCompanyLink("") }]);
+              setFormType("exclusive");
+              setCompanyPickerId("");
               setShowForm(true);
             }}
-            className="inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition"
+            className="inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white px-2.5 py-1 rounded-lg text-[11px] font-semibold shadow-sm transition"
           >
             <Plus size={14} /> Add Agent
           </button>
+          )}
 
           <button
             onClick={() => {
               setShowMap(false);
               setShowSummary(true);
             }}
-            className="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition"
+            className="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded-lg text-[11px] font-semibold shadow-sm transition"
           >
             <BarChart3 size={14} /> Summary
           </button>
 
           <button
             onClick={exportAgentsExcel}
-            className="inline-flex items-center gap-1.5 bg-emerald-700 hover:bg-emerald-800 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition"
+            className="inline-flex items-center gap-1.5 bg-emerald-700 hover:bg-emerald-800 text-white px-2.5 py-1 rounded-lg text-[11px] font-semibold shadow-sm transition"
           >
             <FileSpreadsheet size={14} /> Export Excel
           </button>
@@ -1236,11 +1826,12 @@ export default function AgentsPage() {
                 setMyLocationMode(false);
                 setUserLocation(null);
                 setSelectedLocation(null);
+                setSelectedMapAgentId(null);
               }
               setShowSummary(false);
               setShowMap(!showMap);
             }}
-            className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition ${
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold shadow-sm transition ${
               showMap
                 ? "bg-red-600 hover:bg-red-700 text-white"
                 : "bg-blue-600 hover:bg-blue-700 text-white"
@@ -1255,6 +1846,10 @@ export default function AgentsPage() {
           <span>
             Total Agents:{" "}
             <strong className="text-slate-900">{filteredAgents.length}</strong>
+          </span>
+          <span>
+            Non-exclusive:{" "}
+            <strong className="text-violet-700">{nonExclusiveCount}</strong>
           </span>
           <span>
             Total Sale:{" "}
@@ -1272,21 +1867,21 @@ export default function AgentsPage() {
         <div
           ref={mapSectionRef}
           id="agent-map-section"
-          className="bg-white rounded-xl shadow border border-slate-300 p-3 relative z-10"
+          className="bg-white rounded-xl shadow border border-slate-300 p-2 relative z-10"
         >
-          <h3 className="text-sm font-bold text-slate-800 mb-2">
+          <h3 className="text-sm font-bold text-slate-800 mb-1">
             Agent Locations
           </h3>
 
-          <div className="w-full overflow-hidden rounded-xl border border-slate-300 relative">
+          <div className="w-full h-[320px] sm:h-[420px] lg:h-[480px] overflow-hidden rounded-xl border border-slate-300 relative">
             <MapContainer
               center={mapCenter}
               zoom={8}
-              style={{ height: "480px", width: "100%", zIndex: 1 }}
+              style={{ height: "100%", width: "100%", zIndex: 1 }}
             >
               <FitBounds
                 skip={Boolean(selectedLocation || userLocation)}
-                locations={filteredAgents
+                locations={mapAgents
                   .filter((agent) => agent.latitude && agent.longitude)
                   .map((agent) => ({
                     lat: Number(agent.latitude),
@@ -1343,6 +1938,7 @@ export default function AgentsPage() {
                                 ];
                                 setMyLocationMode(false);
                                 setSelectedLocation(targetPos);
+                                setSelectedMapAgentId(a.id);
                                 setNewNoteText("");
                                 loadAgentNotes(a.id);
                                 myLocationMarkerRef.current?.closePopup();
@@ -1374,10 +1970,10 @@ export default function AgentsPage() {
                 />
               )}
 
-              {filteredAgents
+              {mapAgents
                 .filter((a) => a.latitude && a.longitude)
                 .map((agent) => {
-                  const breakdown = getSaleBreakdown(agent);
+                  
                   const aLat = Number(agent.latitude);
                   const aLng = Number(agent.longitude);
 
@@ -1388,13 +1984,11 @@ export default function AgentsPage() {
                         agentMarkerRefs.current[agent.id] = ref;
                       }}
                       position={[aLat, aLng]}
-                      icon={createAgentMarker(
-                        agent.companies?.logo_url || "",
-                        agent.agent_name || ""
-                      )}
+                      icon={getAgentMarkerIcon(agent)}
                       eventHandlers={{
                         click: () => {
                           setSelectedLocation([aLat, aLng]);
+                          setSelectedMapAgentId(agent.id);
                           setNewNoteText("");
                           loadAgentNotes(agent.id);
                         },
@@ -1418,7 +2012,15 @@ export default function AgentsPage() {
                                   : ""}
                               </h3>
                               <p className="text-[11px] text-slate-500">
-                                {agent.companies?.company_name}
+                                {getAgentCompanies(agent)
+                                  .map((c: any) => c.company_name)
+                                  .filter(Boolean)
+                                  .join(", ")}
+                                {isNonExclusive(agent) && (
+                                  <span className="ml-1 rounded bg-violet-100 px-1 py-0.5 text-[9px] font-bold italic text-violet-700">
+                                    non-ex.
+                                  </span>
+                                )}
                                 {agent.proprietor
                                   ? ` • Prop: ${agent.proprietor}`
                                   : ""}
@@ -1527,24 +2129,50 @@ export default function AgentsPage() {
                               </tr>
                               <tr>
                                 <td className="border px-2 py-1 font-semibold bg-slate-50">
-                                  Sale Breakdown
+                                  Companies
                                 </td>
-                                <td className="border px-2 py-1 font-semibold text-blue-700">
-                                  {breakdown.length === 0
-                                    ? "-"
-                                    : breakdown
-                                        .map((b) => `${b.label}: ${b.val}`)
-                                        .join(", ")}
-                                </td>
-                              </tr>
-                              <tr>
-                                <td className="border px-2 py-1 font-semibold bg-slate-50">
-                                  Monthly Sale
-                                </td>
-                                <td className="border px-2 py-1 font-bold text-emerald-700">
-                                  {Number(
-                                    agent.monthly_sale || 0
-                                  ).toLocaleString()}
+                                <td className="border px-2 py-1">
+                                  <table className="w-full border-collapse text-[11px]">
+                                    <thead>
+                                      <tr className="text-slate-500">
+                                        <th className="text-left font-semibold pr-1">Company</th>
+                                        <th className="text-right font-semibold">Broiler</th>
+                                        <th className="text-right font-semibold">Layer</th>
+                                        <th className="text-right font-semibold">Sonali</th>
+                                        <th className="text-right font-semibold">Cattle</th>
+                                        <th className="text-right font-semibold">Fish</th>
+                                        <th className="text-right font-semibold">Total</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {getAgentCompanies(agent).map(
+                                        (link: any) => (
+                                          <tr key={String(link.company_id)}>
+                                            <td className="pr-1 truncate max-w-[90px]">
+                                              {link.company_name || "-"}
+                                            </td>
+                                            <td className="text-right">{Number(link.broiler_sale || 0)}</td>
+                                            <td className="text-right">{Number(link.layer_sale || 0)}</td>
+                                            <td className="text-right">{Number(link.sonali_sale || 0)}</td>
+                                            <td className="text-right">{Number(link.cattle_sale || 0)}</td>
+                                            <td className="text-right">{Number(link.fish_sale || 0)}</td>
+                                            <td className="text-right font-bold text-emerald-700">
+                                              {Number(
+                                                (link.monthly_sale ?? linkSaleTotal(link)) || 0
+                                              ).toLocaleString()}
+                                            </td>
+                                          </tr>
+                                        )
+                                      )}
+                                      <tr className="font-bold border-t">
+                                        <td className="pr-1">Total</td>
+                                        <td colSpan={5}></td>
+                                        <td className="text-right text-emerald-700">
+                                          {getAgentTotalSale(agent).toLocaleString()}
+                                        </td>
+                                      </tr>
+                                    </tbody>
+                                  </table>
                                 </td>
                               </tr>
                             </tbody>
@@ -1569,7 +2197,11 @@ export default function AgentsPage() {
 
                 <button
                   type="button"
-                  onClick={() => setShowMap(false)}
+                  onClick={() => {
+                    setShowMap(false);
+                    setSelectedMapAgentId(null);
+                    setSelectedLocation(null);
+                  }}
                   title="Close Map"
                   className="flex items-center gap-1 bg-purple-500 hover:bg-red-700 text-white rounded-full shadow-lg px-3 py-1.5 text-xs font-bold whitespace-nowrap transition"
                 >
@@ -1670,8 +2302,11 @@ export default function AgentsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {group.agents.map((agent: any, idx: number) => {
-                      const breakdown = getSaleBreakdown(agent);
+                    {group.agents.map((entry: any, idx: number) => {
+                      const agent = entry.agent;
+                      const link = entry.link;
+                      const breakdown = getSaleBreakdown(link);
+                      const agentNonEx = isNonExclusive(agent);
                       return (
                         <tr key={agent.id} className="hover:bg-slate-50">
                           <td className="border border-slate-300 px-2 py-1">
@@ -1683,7 +2318,48 @@ export default function AgentsPage() {
                             </td>
                           )}
                           <td className="border border-slate-300 px-2 py-1 font-semibold text-slate-800">
-                            {agent.agent_name}
+                            <span className="truncate">{agent.agent_name}</span>
+                            {agentNonEx && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (nonExPopupAgentId === agent.id) {
+                                      setNonExPopupAgentId(null);
+                                      setNonExPopupPos(null);
+                                      return;
+                                    }
+                                    // Fixed position ABOVE the badge, clamped
+                                    // to the viewport — never clipped by the
+                                    // table's overflow container. Falls
+                                    // below the badge when there is no room.
+                                    const rect =
+                                      e.currentTarget.getBoundingClientRect();
+                                    const links = getAgentCompanies(agent);
+                                    const estHeight = 48 + links.length * 26;
+                                    const width = 224;
+                                    const left = Math.max(
+                                      8,
+                                      Math.min(
+                                        rect.left,
+                                        window.innerWidth - width - 8
+                                      )
+                                    );
+                                    const top =
+                                      rect.top - 8 - estHeight < 8
+                                        ? rect.bottom + 8
+                                        : Math.max(8, rect.top - 8 - estHeight);
+                                    setNonExPopupAgentId(agent.id);
+                                    setNonExPopupPos({ top, left });
+                                  }}
+                                  title="Non-exclusive — also works with other companies"
+                                  className="ml-1 align-middle text-[10px] font-semibold italic text-violet-600 underline decoration-dotted underline-offset-2 hover:text-violet-800"
+                                >
+                                  non-ex.
+                                </button>
+                                                              </>
+                            )}
                           </td>
                           <td className="border border-slate-300 px-2 py-1">
                             {agent.proprietor || "-"}
@@ -1700,15 +2376,26 @@ export default function AgentsPage() {
                           <td className="border border-slate-300 px-2 py-1">
                             {agent.upazila || "-"}
                           </td>
-                          <td className="border border-slate-300 px-2 py-1">
-                            {breakdown.length === 0
-                              ? "-"
-                              : breakdown
-                                  .map((b) => `${b.label}: ${b.val}`)
-                                  .join(", ")}
+                          <td
+                            className="border border-slate-300 px-2 py-1 whitespace-nowrap"
+                            title={`Broiler ${Number(link.broiler_sale || 0)} • Layer ${Number(link.layer_sale || 0)} • Sonali ${Number(link.sonali_sale || 0)} • Cattle ${Number(link.cattle_sale || 0)} • Fish ${Number(link.fish_sale || 0)}`}
+                          >
+                            {breakdown.length === 0 ? (
+                              "-"
+                            ) : (
+                              <span className="font-medium text-slate-700">
+                                <span title="Broiler">B:{Number(link.broiler_sale || 0)}</span>{" "}
+                                <span title="Layer">L:{Number(link.layer_sale || 0)}</span>{" "}
+                                <span title="Sonali">S:{Number(link.sonali_sale || 0)}</span>{" "}
+                                <span title="Cattle">C:{Number(link.cattle_sale || 0)}</span>{" "}
+                                <span title="Fish">F:{Number(link.fish_sale || 0)}</span>
+                              </span>
+                            )}
                           </td>
                           <td className="border border-slate-300 px-2 py-1 text-right font-bold text-slate-800">
-                            {Number(agent.monthly_sale || 0).toLocaleString()}
+                            {Number(
+                              (link.monthly_sale ?? linkSaleTotal(link)) || 0
+                            ).toLocaleString()}
                           </td>
                           <td className="border border-slate-300 px-2 py-1">
                             {agent.status}
@@ -1727,6 +2414,8 @@ export default function AgentsPage() {
                               <MapPin size={10} className="shrink-0" />
                               <span>Map</span>
                             </button>
+                            {canEditAgent(agent) && (
+                              <>
                             <button
                               onClick={() => openEditForm(agent)}
                               className="bg-yellow-500 hover:bg-yellow-600 text-white px-2 py-0.5 rounded text-[11px]"
@@ -1739,6 +2428,8 @@ export default function AgentsPage() {
                             >
                               Delete
                             </button>
+                              </>
+                            )}
                           </td>
                         </tr>
                       );
@@ -1751,13 +2442,74 @@ export default function AgentsPage() {
         </div>
       )}
 
+      {/* Non-exclusive companies popover — fixed positioned ABOVE the
+          clicked badge so the table's overflow container can never clip
+          it. Rendered at the root (outside the scrolling table div),
+          with a backdrop click + Escape to close. */}
+      {nonExPopupAgent !== null && nonExPopupPos !== null && (
+        <>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={() => {
+              setNonExPopupAgentId(null);
+              setNonExPopupPos(null);
+            }}
+            className="fixed inset-0 z-[2999] cursor-default bg-transparent"
+          />
+          <div
+            className="fixed z-[3000] w-56 rounded-lg border border-slate-200 bg-white p-2 shadow-xl text-left"
+            style={{ top: nonExPopupPos.top, left: nonExPopupPos.left }}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] font-bold text-slate-700">
+                Also with
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setNonExPopupAgentId(null);
+                  setNonExPopupPos(null);
+                }}
+                className="text-slate-400 hover:text-slate-700"
+                title="Close"
+              >
+                <X size={12} />
+              </button>
+            </div>
+            {getAgentCompanies(nonExPopupAgent).map((c: any) => (
+              <div
+                key={String(c.company_id)}
+                className="flex items-center gap-1.5 py-0.5"
+              >
+                {c.logo_url ? (
+                  <img
+                    src={c.logo_url}
+                    alt=""
+                    className="w-4 h-4 object-contain rounded bg-white border border-slate-200 shrink-0"
+                  />
+                ) : null}
+                <span className="truncate text-[11px] text-slate-700">
+                  {c.company_name || "-"}
+                </span>
+                <span className="ml-auto text-[11px] font-bold text-emerald-700 whitespace-nowrap">
+                  {Number(
+                    (c.monthly_sale ?? linkSaleTotal(c)) || 0
+                  ).toLocaleString()}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
       {/* ==================================================
           5. VIEW AGENT MODAL
       ================================================== */}
       {selectedAgent && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[2000] p-2 sm:p-4">
-          <div className="bg-white rounded-xl w-full max-w-xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl border border-slate-300">
-            <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-300 bg-slate-100">
+          <div className="bg-white rounded-xl w-full max-w-xl max-h-[92vh] flex flex-col overflow-hidden shadow-2xl border border-slate-300">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-slate-300 bg-slate-100">
               <h2 className="text-sm sm:text-base font-bold text-slate-800">
                 Agent: {selectedAgent.agent_name}
               </h2>
@@ -1769,7 +2521,7 @@ export default function AgentsPage() {
               </button>
             </div>
 
-            <div className="p-4 space-y-3 overflow-y-auto">
+            <div className="p-3 sm:p-4 space-y-2.5 overflow-y-auto">
               <div className="bg-emerald-50 border border-emerald-300 rounded-lg p-3 space-y-2">
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-bold text-emerald-900">
@@ -1859,7 +2611,15 @@ export default function AgentsPage() {
                       Company
                     </td>
                     <td className="border border-slate-300 px-3 py-1.5">
-                      {selectedAgent.companies?.company_name || "-"}
+                      {getAgentCompanies(selectedAgent)
+                        .map((c: any) => c.company_name)
+                        .filter(Boolean)
+                        .join(", ") || "-"}
+                      {isNonExclusive(selectedAgent) && (
+                        <span className="ml-2 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold italic text-violet-700">
+                          non-exclusive
+                        </span>
+                      )}
                     </td>
                   </tr>
                   {isNourishName(selectedAgent.companies?.company_name) && (
@@ -1916,11 +2676,11 @@ export default function AgentsPage() {
                       Sale Breakdown
                     </td>
                     <td className="border border-slate-300 px-3 py-1.5 font-semibold text-blue-700">
-                      Broiler: {selectedAgent.broiler_sale || 0} | Layer:{" "}
-                      {selectedAgent.layer_sale || 0} | Sonali:{" "}
-                      {selectedAgent.sonali_sale || 0} | Cattle:{" "}
-                      {selectedAgent.cattle_sale || 0} | Fish:{" "}
-                      {selectedAgent.fish_sale || 0}
+                      <span>Broiler: {selectedAgent.broiler_sale || 0}</span> •{" "}
+                      <span>Layer: {selectedAgent.layer_sale || 0}</span> •{" "}
+                      <span>Sonali: {selectedAgent.sonali_sale || 0}</span> •{" "}
+                      <span>Cattle: {selectedAgent.cattle_sale || 0}</span> •{" "}
+                      <span>Fish: {selectedAgent.fish_sale || 0}</span>
                     </td>
                   </tr>
                   <tr>
@@ -1949,6 +2709,60 @@ export default function AgentsPage() {
                   </tr>
                 </tbody>
               </table>
+
+              {/* Companies & sales — one row per linked company */}
+              <div className="mt-1">
+                <div className="text-xs font-bold text-slate-700 mb-1">
+                  Companies & Sales
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse border border-slate-300 text-xs">
+                    <thead className="bg-slate-50">
+                      <tr>
+                        <th className="border px-2 py-1 text-left">Company</th>
+                        <th className="border px-2 py-1 text-right">Broiler</th>
+                        <th className="border px-2 py-1 text-right">Layer</th>
+                        <th className="border px-2 py-1 text-right">Sonali</th>
+                        <th className="border px-2 py-1 text-right">Cattle</th>
+                        <th className="border px-2 py-1 text-right">Fish</th>
+                        <th className="border px-2 py-1 text-right">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {getAgentCompanies(selectedAgent).map((c: any) => (
+                        <tr key={String(c.company_id)}>
+                          <td className="border px-2 py-1 font-medium truncate max-w-[140px]">
+                            {c.logo_url ? (
+                              <img src={c.logo_url} alt="" className="inline w-4 h-4 object-contain mr-1 align-middle" />
+                            ) : null}
+                            {c.company_name || "-"}
+                          </td>
+                          <td className="border px-2 py-1 text-right">{Number(c.broiler_sale || 0)}</td>
+                          <td className="border px-2 py-1 text-right">{Number(c.layer_sale || 0)}</td>
+                          <td className="border px-2 py-1 text-right">{Number(c.sonali_sale || 0)}</td>
+                          <td className="border px-2 py-1 text-right">{Number(c.cattle_sale || 0)}</td>
+                          <td className="border px-2 py-1 text-right">{Number(c.fish_sale || 0)}</td>
+                          <td className="border px-2 py-1 text-right font-bold text-emerald-700">
+                            {Number((c.monthly_sale ?? linkSaleTotal(c)) || 0).toLocaleString()}
+                          </td>
+                        </tr>
+                      ))}
+                      <tr className="bg-slate-50 font-bold">
+                        <td className="border px-2 py-1">Total</td>
+                        <td className="border px-2 py-1 text-right">{getAgentCompanies(selectedAgent).reduce((s: number, c: any) => s + Number(c.broiler_sale || 0), 0)}</td>
+                        <td className="border px-2 py-1 text-right">{getAgentCompanies(selectedAgent).reduce((s: number, c: any) => s + Number(c.layer_sale || 0), 0)}</td>
+                        <td className="border px-2 py-1 text-right">{getAgentCompanies(selectedAgent).reduce((s: number, c: any) => s + Number(c.sonali_sale || 0), 0)}</td>
+                        <td className="border px-2 py-1 text-right">{getAgentCompanies(selectedAgent).reduce((s: number, c: any) => s + Number(c.cattle_sale || 0), 0)}</td>
+                        <td className="border px-2 py-1 text-right">{getAgentCompanies(selectedAgent).reduce((s: number, c: any) => s + Number(c.fish_sale || 0), 0)}</td>
+                        <td className="border px-2 py-1 text-right text-emerald-700">
+                          {getAgentTotalSale(selectedAgent).toLocaleString()}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
             </div>
           </div>
         </div>
@@ -1959,7 +2773,7 @@ export default function AgentsPage() {
       ================================================== */}
       {showForm && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[2000] p-2 sm:p-4">
-          <div className="bg-white rounded-xl p-4 sm:p-5 w-full max-w-2xl max-h-[92vh] overflow-y-auto shadow-2xl">
+          <div className="bg-white rounded-xl p-3 sm:p-4 w-full max-w-2xl max-h-[92vh] overflow-y-auto shadow-2xl">
             <div className="flex justify-between items-center pb-2.5 mb-3 border-b">
               <h2 className="text-base font-bold text-slate-800">
                 {editingId ? "Edit Agent" : "Add Agent"}
@@ -1968,6 +2782,8 @@ export default function AgentsPage() {
                 onClick={() => {
                   setShowForm(false);
                   setEditingId(null);
+                  setFormCompanies([]);
+                  setFormType("exclusive");
                 }}
               >
                 <X size={18} />
@@ -1975,15 +2791,40 @@ export default function AgentsPage() {
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+              <div className="sm:col-span-2 flex flex-wrap items-center gap-3 bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5">
+                <span className="text-xs font-bold text-slate-600">Type:</span>
+                <label className="flex items-center gap-1 text-xs font-semibold text-slate-700 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="agent-type"
+                    checked={formType === "exclusive"}
+                    onChange={() => handleTypeChange("exclusive")}
+                  />
+                  Exclusive
+                </label>
+                <label className="flex items-center gap-1 text-xs font-semibold text-slate-700 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="agent-type"
+                    checked={formType === "nonexclusive"}
+                    onChange={() => handleTypeChange("nonexclusive")}
+                  />
+                  Non-exclusive
+                </label>
+                <span className="ml-auto text-[11px] font-bold text-emerald-700">
+                  Agent Total:{" "}
+                  {formCompanies
+                    .reduce((s: number, c: any) => s + linkSaleTotal(c), 0)
+                    .toLocaleString()}
+                </span>
+              </div>
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">
-                  Company *
+                  Primary Company *
                 </label>
                 <select
                   value={form.company_id}
-                  onChange={(e) =>
-                    setForm({ ...form, company_id: e.target.value })
-                  }
+                  onChange={(e) => handlePrimaryCompanyChange(e.target.value)}
                   className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
                 >
                   <option value="">Select Company</option>
@@ -2171,89 +3012,134 @@ export default function AgentsPage() {
               )}
             </div>
 
-            {/* Sales Inputs */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 mb-3 bg-slate-50 border border-slate-200 rounded p-2.5">
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                  Broiler Sale
-                </label>
-                <input
-                  type="number"
-                  value={form.broiler_sale}
-                  onChange={(e) =>
-                    setForm({ ...form, broiler_sale: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                  Layer Sale
-                </label>
-                <input
-                  type="number"
-                  value={form.layer_sale}
-                  onChange={(e) =>
-                    setForm({ ...form, layer_sale: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                  Sonali Sale
-                </label>
-                <input
-                  type="number"
-                  value={form.sonali_sale}
-                  onChange={(e) =>
-                    setForm({ ...form, sonali_sale: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                  Cattle Sale
-                </label>
-                <input
-                  type="number"
-                  value={form.cattle_sale}
-                  onChange={(e) =>
-                    setForm({ ...form, cattle_sale: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                  Fish Sale
-                </label>
-                <input
-                  type="number"
-                  value={form.fish_sale}
-                  onChange={(e) =>
-                    setForm({ ...form, fish_sale: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-emerald-800 mb-1">
-                  Total Monthly Sale
-                </label>
-                <input
-                  type="number"
-                  value={form.monthly_sale}
-                  readOnly
-                  className="w-full rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-900"
-                />
-              </div>
+            {/* Companies & per-company sales (B/S/L/C/F, auto total) */}
+            <div className="space-y-2 mb-3">
+              {formCompanies.map((comp: any, idx: number) => {
+                const compObj = companies.find(
+                  (c) => String(c.id) === String(comp.company_id)
+                );
+                return (
+                  <div
+                    key={idx}
+                    className="bg-slate-50 border border-slate-200 rounded p-2.5"
+                  >
+                    <div className="flex flex-wrap items-center gap-2 mb-2">
+                      {comp.logo_url || compObj?.logo_url ? (
+                        <img
+                          src={comp.logo_url || compObj?.logo_url}
+                          alt=""
+                          className="w-5 h-5 object-contain rounded bg-white border border-slate-200"
+                        />
+                      ) : null}
+                      <select
+                        value={comp.company_id}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (
+                            formCompanies.some(
+                              (c: any, i: number) =>
+                                i !== idx &&
+                                String(c.company_id) === String(v)
+                            )
+                          ) {
+                            alert("Company already added.");
+                            return;
+                          }
+                          const picked = companies.find(
+                            (c) => String(c.id) === String(v)
+                          );
+                          updateFormCompany(idx, {
+                            company_id: v,
+                            company_name: picked?.company_name || "",
+                            logo_url: picked?.logo_url || "",
+                          });
+                        }}
+                        className="flex-1 min-w-[140px] rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold"
+                      >
+                        <option value="">Select Company</option>
+                        {companies.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.company_name}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="text-[11px] font-bold text-emerald-800 whitespace-nowrap">
+                        Total: {linkSaleTotal(comp).toLocaleString()}
+                      </span>
+                      {formCompanies.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => removeFormCompany(idx)}
+                          className="text-red-600 hover:text-red-800 text-[11px] font-semibold"
+                          title="Remove this company"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-5 gap-1.5">
+                      {(
+                        [
+                          "broiler_sale",
+                          "layer_sale",
+                          "sonali_sale",
+                          "cattle_sale",
+                          "fish_sale",
+                        ] as const
+                      ).map((k) => (
+                        <div key={k}>
+                          <label className="block text-[10px] font-semibold text-slate-600 mb-0.5 text-center truncate">
+                            {SALE_LABELS[k]}
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            value={(comp as any)[k] ?? ""}
+                            onChange={(e) =>
+                              updateFormCompany(idx, { [k]: e.target.value })
+                            }
+                            className="w-full rounded border border-slate-300 bg-white px-1 py-1 text-xs text-center"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+              {formType === "nonexclusive" && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={companyPickerId}
+                    onChange={(e) => setCompanyPickerId(e.target.value)}
+                    className="flex-1 min-w-[160px] rounded border border-slate-300 bg-white px-2 py-1.5 text-xs"
+                  >
+                    <option value="">Select company to add…</option>
+                    {companies
+                      .filter(
+                        (c) =>
+                          !formCompanies.some(
+                            (fc: any) => String(fc.company_id) === String(c.id)
+                          )
+                      )
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.company_name}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      addFormCompany(companyPickerId);
+                      setCompanyPickerId("");
+                    }}
+                    disabled={!companyPickerId}
+                    className="inline-flex items-center gap-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-3 py-1.5 rounded text-xs font-semibold"
+                  >
+                    <Plus size={13} /> Add Company
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
@@ -2302,6 +3188,8 @@ export default function AgentsPage() {
                 onClick={() => {
                   setShowForm(false);
                   setEditingId(null);
+                  setFormCompanies([]);
+                  setFormType("exclusive");
                 }}
                 className="px-4 py-1.5 rounded border border-slate-300 text-xs font-semibold"
               >
@@ -2406,10 +3294,7 @@ export default function AgentsPage() {
                           Number(agent.latitude),
                           Number(agent.longitude),
                         ]}
-                        icon={createAgentMarker(
-                          agent.companies?.logo_url,
-                          agent.agent_name
-                        )}
+                        icon={getAgentMarkerIcon(agent)}
                       />
                     ))}
                 </>
@@ -2424,8 +3309,8 @@ export default function AgentsPage() {
       ================================================== */}
       {showSummary && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[2000] p-2 sm:p-4">
-          <div className="bg-white rounded-xl p-4 sm:p-6 w-full max-w-3xl max-h-[85vh] overflow-auto">
-            <div className="flex justify-between items-center pb-3 mb-4 border-b">
+          <div className="bg-white rounded-xl p-3 sm:p-4 w-full max-w-3xl max-h-[92vh] overflow-auto">
+            <div className="flex justify-between items-center pb-2 mb-3 border-b">
               <div>
                 <h2 className="text-base sm:text-lg font-bold">
                   Agent Summary — {selectedCompanyName}
@@ -2442,6 +3327,9 @@ export default function AgentsPage() {
 
             <div className="mb-3 flex items-center gap-4 text-xs sm:text-sm font-semibold">
               <span>Total Agents: {filteredAgents.length}</span>
+              <span className="text-violet-700">
+                Non-exclusive: {nonExclusiveCount}
+              </span>
               <span className="text-emerald-700">
                 Total Monthly Sale: {totalMonthlySale.toLocaleString()}
               </span>
@@ -2453,11 +3341,11 @@ export default function AgentsPage() {
                   <tr>
                     <th className="border px-2.5 py-1.5 text-left">Company</th>
                     <th className="border px-2 py-1.5 text-center">Agents</th>
-                    <th className="border px-2 py-1.5 text-right">Broiler</th>
-                    <th className="border px-2 py-1.5 text-right">Layer</th>
-                    <th className="border px-2 py-1.5 text-right">Sonali</th>
-                    <th className="border px-2 py-1.5 text-right">Cattle</th>
-                    <th className="border px-2 py-1.5 text-right">Fish</th>
+                    <th className="border px-2 py-1 text-right">Broiler</th>
+                    <th className="border px-2 py-1 text-right">Layer</th>
+                    <th className="border px-2 py-1 text-right">Sonali</th>
+                    <th className="border px-2 py-1 text-right">Cattle</th>
+                    <th className="border px-2 py-1 text-right">Fish</th>
                     <th className="border px-2.5 py-1.5 text-right bg-emerald-50">
                       Total Sale
                     </th>

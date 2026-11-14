@@ -8,6 +8,10 @@ import {
   deleteFarmer,
 } from "../../services/farmerService";
 import { useAuth } from "../../context/AuthContext";
+import {
+  canEditRecord,
+  canAddFarmer,
+} from "../../utils/accessControl";
 import * as XLSX from "xlsx";
 import {
   MapContainer,
@@ -322,8 +326,8 @@ function getShedsForFarmer(farmer: any): any[] {
   const list = farmer?.farmer_sheds || farmer?.sheds || [];
   if (Array.isArray(list) && list.length > 0) return list;
   // Legacy fallback: synthesise ONE shed from the farmer's own fields.
-  // shed_name stays EMPTY so the display logic shows just the farmer name
-  // (single shed = farmer name only, never a bare "Shed 1").
+  // shed_name stays EMPTY — a single shed has no name, so the shared
+  // short-name logic returns "" and the full name is just the farmer name.
   const shed: any = {
     id: `legacy-${farmer?.id}`,
     farmer_id: farmer?.id,
@@ -338,16 +342,20 @@ function getShedsForFarmer(farmer: any): any[] {
   return [shed];
 }
 
-// Shed naming rule (single source of truth for every shed label):
-// - Stored shed_name is exactly what the user typed (or "" when left blank).
-// - Raw already starting with the farmer name (e.g. "Raju Ahmed - Shed 2",
-//   "Raju Ahmed - Bridge par", "Raju Shed 1") or containing " - " with a
-//   name part before it is shown as-is.
-// - A bare label (e.g. "Bridge par", "Shed 2") is shown as
-//   "Farmer Name - <label>" so the map/table never show a bare "Shed 2".
-// - Empty raw: single shed -> just the farmer name; 2nd+ shed ->
-//   "Farmer Name - Shed N".
-function getShedDisplayName(
+// Shed naming — single source of truth, identical in Farmers/Visits/Doc:
+// - Stored shed_name is the SHORT label only ("Shed 1", "Shed 2", "Bridge par").
+// - A farmer with a single shed (no shed explicitly added) has NO shed name:
+//   the Shed column is blank and the full name is just the farmer name.
+// - getShedShortName() normalises any legacy stored value: empty, or exactly
+//   the farmer name, or an auto "Shed N" label, is blank for a single shed
+//   and "Shed N" once a 2nd shed exists; a value starting with the farmer
+//   name (full name or first name, e.g. "Raju Ahmed - Shed 1" or "Raju Shed 1")
+//   has that prefix stripped; "Shed-1" normalises to "Shed 1"; a bare custom
+//   label ("Bridge par") is kept as-is.
+// - getShedDisplayName() is just the farmer name for a single unnamed shed,
+//   otherwise "Farmer Name - Short Name". The ONLY place showing the short
+//   name alone is the farmer table Shed column (and the form Shed Name input).
+function getShedShortName(
   farmer: any,
   shed: any,
   index: number = 0,
@@ -355,24 +363,115 @@ function getShedDisplayName(
 ): string {
   const farmerName = String(farmer?.farmer_name || "").trim() || "Farmer";
   const raw = String(shed?.shed_name || "").trim();
-  if (raw) {
-    const lowerRaw = raw.toLowerCase();
-    const lowerFarmer = farmerName.toLowerCase();
-    const firstName = lowerFarmer.split(/\s+/)[0] || "";
-    const startsWithFarmer =
-      lowerRaw.startsWith(lowerFarmer) ||
-      (firstName.length > 0 && lowerRaw.startsWith(firstName));
-    const dashIdx = raw.indexOf(" - ");
-    const namePart =
-      dashIdx > 0 ? raw.slice(0, dashIdx).trim() : "";
-    // A "name part" is a real label before the dash, not a bare "Shed N".
-    const hasNamePart =
-      namePart.length > 0 && !/^shed\s*\d+$/i.test(namePart);
-    if (startsWithFarmer || hasNamePart) return raw;
-    return `${farmerName} - ${raw}`;
+  const lowerRaw = raw.toLowerCase();
+  const lowerFarmer = farmerName.toLowerCase();
+  const firstName = lowerFarmer.split(/\s+/)[0] || "";
+  let rest = raw;
+  const stripPrefix = (prefix: string): boolean => {
+    if (prefix && lowerRaw.startsWith(prefix)) {
+      const next = raw.charAt(prefix.length);
+      if (next === " " || next === "-") {
+        rest = raw.slice(prefix.length).replace(/^[\s-]+/, "").trim();
+        return true;
+      }
+    }
+    return false;
+  };
+  if (rest && rest.toLowerCase() !== lowerFarmer) {
+    if (!stripPrefix(lowerFarmer) && firstName) stripPrefix(firstName);
+  } else {
+    rest = "";
   }
-  if ((totalSheds ?? 1) <= 1) return farmerName;
-  return `${farmerName} - Shed ${index + 1}`;
+  // Auto-generated labels ("Shed 1", "Shed-1") carry no real name.
+  const autoMatch = rest.match(/^shed\s*-?\s*(\d+)$/i);
+  if ((totalSheds ?? 1) <= 1) {
+    if (!rest || autoMatch) return "";
+    return rest;
+  }
+  if (!rest) return `Shed ${index + 1}`;
+  if (autoMatch) return `Shed ${autoMatch[1]}`;
+  return rest;
+}
+
+function getShedDisplayName(
+  farmer: any,
+  shed: any,
+  index: number = 0,
+  totalSheds: number = 1
+): string {
+  const farmerName = String(farmer?.farmer_name || "").trim() || "Farmer";
+  const short = getShedShortName(farmer, shed, index, totalSheds);
+  return short ? `${farmerName} - ${short}` : farmerName;
+}
+
+// Days since a date (identical helper in VisitsPage).
+function getDaysSince(dateStr?: string | null): number | null {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return null;
+  return Math.floor((new Date().getTime() - d.getTime()) / 86400000);
+}
+
+// Per-shed status — the same rule as the farmer-level computedStatus in
+// VisitsPage, but keyed by shed (identical helper in VisitsPage): a shed
+// with a Running/Activated visit is Running; otherwise the status comes
+// from that shed's own last sale (<=60 days => Active, older =>
+// Inactive); a shed with no visit history falls back to its stored
+// status (default Active). A visit without a shed_id counts only when
+// the farmer has a single shed.
+function getShedVisitStatus(
+  farmer: any,
+  shed: any,
+  farmerVisits: any[]
+): {
+  status: "Running" | "Active" | "Inactive";
+  statusDate: string;
+  daysSinceSale: number | null;
+  closedType: string;
+} {
+  const sheds = getShedsForFarmer(farmer);
+  const shedId =
+    shed?.id != null && !String(shed.id).startsWith("legacy-")
+      ? String(shed.id)
+      : null;
+  const shedVisits = (farmerVisits || []).filter((v: any) => {
+    const sid = v?.shed_id;
+    if (sid !== null && sid !== undefined && String(sid) !== "") {
+      return shedId !== null && String(sid) === shedId;
+    }
+    return sheds.length === 1;
+  });
+  const running = shedVisits.filter(
+    (v: any) => v.status === "Activated" || v.status === "Running"
+  );
+  const closed = shedVisits
+    .filter((v: any) => v.status === "Sold" || v.status === "Culled")
+    .sort((a: any, b: any) =>
+      String(b.closed_date || b.created_at || "").localeCompare(
+        String(a.closed_date || a.created_at || "")
+      )
+    );
+  const lastSale =
+    closed[0]?.closed_date ||
+    (closed[0]?.created_at ? String(closed[0].created_at).slice(0, 10) : null);
+  const days = getDaysSince(lastSale);
+  let status: "Running" | "Active" | "Inactive";
+  if (running.length > 0) status = "Running";
+  else if (days !== null && days <= 60) status = "Active";
+  else if (days !== null) status = "Inactive";
+  else
+    status =
+      shed?.status === "Running" ||
+      shed?.status === "Active" ||
+      shed?.status === "Inactive"
+        ? shed.status
+        : "Active";
+  return {
+    status,
+    statusDate: lastSale || "",
+    daysSinceSale: days,
+    closedType: closed[0]?.status || "",
+  };
 }
 
 function getFarmerCategories(farmer: any): string[] {
@@ -403,12 +502,32 @@ function getTotalSheds(list: any[]): number {
   return (list || []).reduce((sum, f) => sum + getFarmerShedsCount(f), 0);
 }
 
+// Multi-company agents (agent_companies table): an agent matches a company
+// if ANY linked company equals it. Falls back to the single company_id.
+function getAgentCompanyIds(agent: any): string[] {
+  const linked = agent?.linked_company_ids || agent?.agent_companies || [];
+  if (Array.isArray(linked) && linked.length > 0) {
+    return linked
+      .map((c: any) =>
+        String(typeof c === "object" ? c.company_id ?? c.id : c)
+      )
+      .filter(Boolean);
+  }
+  return agent?.company_id != null && agent.company_id !== ""
+    ? [String(agent.company_id)]
+    : [];
+}
+
+function isAgentNonExclusive(agent: any): boolean {
+  return getAgentCompanyIds(agent).length > 1;
+}
 
 
-function shedFormToDb(shed: any, farmerId: number, _farmerName: string, _index: number): any {
+
+function shedFormToDb(shed: any, farmerId: number, farmerName: string, index: number, totalSheds: number = 1): any {
   const db: any = {
     farmer_id: farmerId,
-    shed_name: String(shed?.shed_name || "").trim(),
+    shed_name: getShedShortName({ farmer_name: farmerName }, shed, index, totalSheds),
     farm_category: shed?.farm_category || "",
     latitude: shed?.latitude === "" || shed?.latitude == null ? null : Number(shed.latitude),
     longitude: shed?.longitude === "" || shed?.longitude == null ? null : Number(shed.longitude),
@@ -428,12 +547,25 @@ export default function FarmersPage() {
   }
 
   const isFullAccess = role === "super_admin" || role === "manager";
+  // Permissions (src/utils/accessControl.ts): manager / super admin can do
+  // everything; officers edit/delete only their own rows (old rows with
+  // created_by null are editable by area officers — the save stamps the
+  // creator). Farmer add is NOT category-gated (rule 5). View / Map
+  // stay open to everyone.
+  
+  const canAddFarmerHere = canAddFarmer(role);
+  const canEditFarmer = (farmer: any) =>
+    canEditRecord(role, farmer?.created_by, currentUserId);
 
   const [currentUserId, setCurrentUserId] = useState("");
   const [currentUserName, setCurrentUserName] = useState("User");
   const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>([]);
+  const [_assignedCategories, setAssignedCategories] = useState<string[]>([]);
 
   const [farmers, setFarmers] = useState<any[]>([]);
+  // vet_visits rows (for per-shed status: a shed with a Running visit
+  // is Running; otherwise its status comes from its own last sale).
+  const [visitRows, setVisitRows] = useState<any[]>([]);
   const [companies, setCompanies] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
 
@@ -517,16 +649,32 @@ export default function FarmersPage() {
 
     if (user) {
       setCurrentUserId(user.id);
-      const { data: profile } = await supabase
-        .from("users")
-        .select("full_name, email, role, districts, upazilas")
-        .eq("id", user.id)
-        .single();
+      // assigned_categories comes from the permissions migration;
+      // fall back gracefully if the column is not there yet.
+      let profile: any = null;
+      {
+        const { data, error } = await supabase
+          .from("users")
+          .select("full_name, email, role, districts, upazilas, assigned_categories")
+          .eq("id", user.id)
+          .single();
+        if (!error && data) {
+          profile = data;
+        } else {
+          const retry = await supabase
+            .from("users")
+            .select("full_name, email, role, districts, upazilas")
+            .eq("id", user.id)
+            .single();
+          profile = retry.data || null;
+        }
+      }
 
       if (profile) {
         uName = profile.full_name || profile.email || uName;
         uDistricts = parseList(profile.districts);
         uUpazilas = parseList(profile.upazilas);
+        setAssignedCategories(parseList(profile.assigned_categories));
       }
     }
 
@@ -566,6 +714,27 @@ export default function FarmersPage() {
     } catch {
       // farmer_sheds table not created yet — legacy fallback applies.
     }
+    // Ownership: attach created_by when the column exists (the farmer
+    // service may not select it). A missing column must not break the
+    // list — rows without a creator stay editable (rule 2, old data).
+    try {
+      const { data: creatorData, error: creatorErr } = await supabase
+        .from("farmers")
+        .select("id, created_by");
+      if (!creatorErr && creatorData) {
+        const creatorById: Record<string, any> = {};
+        (creatorData as any[]).forEach((r: any) => {
+          creatorById[String(r.id)] = r.created_by;
+        });
+        allFarmers.forEach((f: any) => {
+          if (f.created_by == null && creatorById[String(f.id)] !== undefined)
+            f.created_by = creatorById[String(f.id)];
+        });
+      }
+    } catch {
+      // created_by column not added yet — old rows stay editable.
+    }
+
     const allowedFarmers = isFullAccess
       ? allFarmers
       : allFarmers.filter((f: any) => {
@@ -577,9 +746,44 @@ export default function FarmersPage() {
         });
 
     setFarmers(allowedFarmers);
+
+    // Per-shed status: load vet visits so each shed row can show its
+    // own Running/Active/Inactive status (same rule as VisitsPage).
+    // Best effort — if the query fails, shed rows fall back to the
+    // stored shed.status.
+    try {
+      const { data: visitData, error: visitErr } = await supabase
+        .from("vet_visits")
+        .select("id, farmer_id, shed_id, status, closed_date, created_at");
+      if (!visitErr && visitData) setVisitRows(visitData as any[]);
+    } catch {
+      // vet_visits not readable — stored shed status applies.
+    }
     setCompanies(companyData || []);
 
     const allAgents = agentData || [];
+    // Multi-company agents: attach linked company ids (agent_companies).
+    // If the table is missing, the single company_id fallback applies.
+    try {
+      const { data: linkData, error: linkError } = await supabase
+        .from("agent_companies")
+        .select("agent_id, company_id");
+      if (!linkError && linkData) {
+        const byAgent: Record<string, string[]> = {};
+        (linkData as any[]).forEach((l: any) => {
+          const k = String(l.agent_id);
+          if (!byAgent[k]) byAgent[k] = [];
+          if (!byAgent[k].includes(String(l.company_id)))
+            byAgent[k].push(String(l.company_id));
+        });
+        (allAgents as any[]).forEach((a: any) => {
+          if (byAgent[String(a.id)]) a.linked_company_ids = byAgent[String(a.id)];
+        });
+      }
+    } catch {
+      // agent_companies table not created yet — single company_id fallback applies.
+    }
+
     const allowedAgents = isFullAccess
       ? allAgents
       : allAgents.filter((a: any) => {
@@ -760,6 +964,16 @@ export default function FarmersPage() {
 
   const selectedUpazila = upazilas.find((u) => u.name === form.upazila);
 
+  // Map picker centre: the farmer's agent first (farmers cluster around
+  // their agent); falls back to upazila/district when the agent has no lat/lon.
+  const formAgent = form.agent_id
+    ? agents.find((a: any) => String(a.id) === String(form.agent_id))
+    : null;
+  const formAgentCenter: [number, number] | null =
+    formAgent?.latitude && formAgent?.longitude
+      ? [Number(formAgent.latitude), Number(formAgent.longitude)]
+      : null;
+
   useEffect(() => {
     async function loadUnions() {
       if (!selectedUpazila) {
@@ -776,8 +990,20 @@ export default function FarmersPage() {
     loadUnions();
   }, [selectedUpazila]);
 
+  function getAgentLinkedCompanyNames(agent: any): string[] {
+    return getAgentCompanyIds(agent)
+      .map(
+        (id: string) =>
+          companies.find((c: any) => String(c.id) === id)?.company_name
+      )
+      .filter(Boolean);
+  }
+
   const formAvailableAgents = agents.filter((a: any) => {
-    if (form.company_id && String(a.company_id) !== String(form.company_id)) {
+    if (
+      form.company_id &&
+      !getAgentCompanyIds(a).includes(String(form.company_id))
+    ) {
       return false;
     }
     const aUpa = a.upazila || a.upazila_name || "";
@@ -850,7 +1076,10 @@ export default function FarmersPage() {
   }, [upazilaFilter, districtFilter, filterUpazilas]);
 
   const availableFilterAgents = agents.filter((a: any) => {
-    if (companyFilter && String(a.company_id) !== String(companyFilter)) {
+    if (
+      companyFilter &&
+      !getAgentCompanyIds(a).includes(String(companyFilter))
+    ) {
       return false;
     }
     const aDist = a.district || a.district_name || "";
@@ -888,18 +1117,44 @@ export default function FarmersPage() {
   }
 
   function addShed() {
-    // Prefill the new (2nd+) shed as "Farmer Name - Shed N" when the farmer
-    // name is known; leave empty when it is not. Never prefill "Shed 1".
-    const farmerName = String(form.farmer_name || "").trim();
-    setFormSheds((prev) => {
-      const newCount = prev.length + 1;
-      return [
-        ...prev,
-        {
-          ...EMPTY_SHED_FORM,
-          shed_name: farmerName ? `${farmerName} - Shed ${newCount}` : "",
-        },
-      ];
+    // Adding a 2nd shed: if the only existing shed has no name yet, ask for
+    // its name first. Empty/cancel => it becomes "Shed 1" automatically.
+    // The previous shed's name is saved to the DB right away (when it is an
+    // existing shed row), not just in the form state.
+    const prev = formSheds && formSheds.length > 0 ? formSheds[0] : null;
+    const prevNeedsName =
+      formSheds.length === 1 &&
+      prev &&
+      getShedShortName({ farmer_name: form.farmer_name }, prev, 0, 1) === "";
+    let prevName = "";
+    if (prevNeedsName) {
+      const answer = window.prompt(
+        "Enter name for the shed or will be shed 1:",
+        ""
+      );
+      prevName =
+        answer && answer.trim()
+          ? getShedShortName({ farmer_name: form.farmer_name }, { shed_name: answer.trim() }, 0, 2)
+          : "Shed 1";
+      if (prev && prev.id != null && !String(prev.id).startsWith("legacy-")) {
+        const prevId = Number(prev.id);
+        supabase
+          .from("farmer_sheds")
+          .update({ shed_name: prevName })
+          .eq("id", prevId)
+          .then(({ error }: any) => {
+            if (error) console.error("Could not save previous shed name:", error);
+          });
+      }
+    }
+    // Prefill the SHORT label only ("Shed 2"); the full name
+    // ("Farmer Name - Shed 2") is composed at display time.
+    setFormSheds((prevSheds) => {
+      const newCount = prevSheds.length + 1;
+      const updated = prevNeedsName
+        ? prevSheds.map((s, i) => (i === 0 ? { ...s, shed_name: prevName } : s))
+        : prevSheds;
+      return [...updated, { ...EMPTY_SHED_FORM, shed_name: `Shed ${newCount}` }];
     });
   }
 
@@ -925,6 +1180,20 @@ export default function FarmersPage() {
   }
 
   async function handleSave() {
+    // Permission guard (buttons are hidden too — this is the backstop
+    // for the save itself). Farmer add is NOT category-gated (rule 5).
+    if (editingId) {
+      const editingFarmer = farmers.find(
+        (f: any) => Number(f.id) === Number(editingId)
+      );
+      if (!canEditFarmer(editingFarmer || {})) {
+        alert("You can only edit farmers you added.");
+        return;
+      }
+    } else if (!canAddFarmerHere) {
+      alert("You do not have permission to add farmers.");
+      return;
+    }
     if (
       !form.company_id ||
       !form.agent_id ||
@@ -940,9 +1209,9 @@ export default function FarmersPage() {
       alert("Every shed must have a Farm Category.");
       return;
     }
-    // Empty shed names stay empty in storage — the display logic computes
-    // the shown name (farmer name only for a single shed, otherwise
-    // "Farmer Name - Shed N"). Never auto-fill "Shed N" here.
+    // Shed names are stored as SHORT labels only — shedFormToDb strips any
+    // farmer-name prefix. A single shed stays blank (no "Shed 1"); with 2+
+    // sheds a blank label becomes "Shed N".
     const shedsWithNames = sheds;
     const firstShed = shedsWithNames[0];
     // Legacy farmer payload: first shed's category/location, stock SUMMED across sheds.
@@ -1002,6 +1271,35 @@ export default function FarmersPage() {
       }
     }
 
+    // Ownership (rule 2): stamp created_by on a new farmer, and on the
+    // first edit of an old row that has none. Never overwrites an
+    // existing creator. Best-effort: a missing created_by column must
+    // not break the save.
+    if (farmerId && currentUserId) {
+      try {
+        if (editingId) {
+          const { data: existing } = await supabase
+            .from("farmers")
+            .select("created_by")
+            .eq("id", farmerId)
+            .maybeSingle();
+          if (existing && !existing.created_by) {
+            await supabase
+              .from("farmers")
+              .update({ created_by: currentUserId })
+              .eq("id", farmerId);
+          }
+        } else {
+          await supabase
+            .from("farmers")
+            .update({ created_by: currentUserId })
+            .eq("id", farmerId);
+        }
+      } catch {
+        // created_by column not added yet.
+      }
+    }
+
     // Save sheds (child table). Farmer save is NOT lost if this fails.
     if (farmerId) {
       try {
@@ -1024,7 +1322,7 @@ export default function FarmersPage() {
         }
         for (let i = 0; i < shedsWithNames.length; i++) {
           const s = shedsWithNames[i];
-          const db = shedFormToDb(s, farmerId, form.farmer_name, i);
+          const db = shedFormToDb(s, farmerId, form.farmer_name, i, shedsWithNames.length);
           const numericId =
             s.id != null && !String(s.id).startsWith("legacy-") ? Number(s.id) : null;
           if (numericId) {
@@ -1037,6 +1335,26 @@ export default function FarmersPage() {
             const { error } = await supabase.from("farmer_sheds").insert([db]);
             if (error) throw error;
           }
+        }
+        // Ownership: stamp sheds that still have no creator with the
+        // farmer's creator (new farmer: current user; edit: the
+        // farmer's existing creator, else current user). Never
+        // overwrites a non-null created_by (rule 2).
+        try {
+          const farmerCreator =
+            (editingId
+              ? farmers.find((f: any) => Number(f.id) === Number(editingId))
+                  ?.created_by
+              : null) || currentUserId || null;
+          if (farmerCreator) {
+            await supabase
+              .from("farmer_sheds")
+              .update({ created_by: farmerCreator })
+              .eq("farmer_id", farmerId)
+              .is("created_by", null);
+          }
+        } catch {
+          // created_by column not added yet on farmer_sheds.
         }
       } catch (shedErr: any) {
         alert(
@@ -1055,76 +1373,18 @@ export default function FarmersPage() {
   }
 
   async function handleDelete(id: number) {
+    const target = farmers.find((f: any) => Number(f.id) === Number(id));
+    if (!canEditFarmer(target || {})) {
+      alert("You can only delete farmers you added.");
+      return;
+    }
     if (!confirm("Delete Farmer? This will delete the farmer and all of their sheds.")) return;
     await deleteFarmer(id);
     setSelectedFarmer(null);
     loadData();
   }
 
-  // Per-shed delete from a table row: deletes ONLY that shed, unless it is
-  // the farmer's last (or only) shed — then the farmer goes too.
-  async function handleDeleteShed(farmer: any, shed: any) {
-    const sheds = getShedsForFarmer(farmer);
-    const shedIndex = Math.max(
-      0,
-      sheds.findIndex((s: any) => String(s.id) === String(shed?.id))
-    );
-    const displayName = getShedDisplayName(
-      farmer,
-      shed,
-      shedIndex,
-      sheds.length
-    );
-    const isLegacy = String(shed?.id || "").startsWith("legacy-");
-    if (isLegacy) {
-      // No real farmer_sheds row exists — the only thing to delete is the farmer.
-      if (
-        !confirm(
-          `This farmer has no separate shed record — delete the whole farmer "${farmer?.farmer_name}"?`
-        )
-      )
-        return;
-      await deleteFarmer(farmer.id);
-      loadData();
-      return;
-    }
-    const realSheds = sheds.filter(
-      (s: any) => !String(s?.id || "").startsWith("legacy-")
-    );
-    const isLastRealShed = realSheds.length <= 1;
-    if (isLastRealShed) {
-      if (
-        !confirm(
-          `Deleting the last shed "${displayName}" will also delete farmer "${farmer?.farmer_name}". Continue?`
-        )
-      )
-        return;
-      // Delete the shed, then the farmer (CASCADE would remove the shed
-      // anyway if the farmer were deleted first).
-      const { error: shedErr } = await supabase
-        .from("farmer_sheds")
-        .delete()
-        .eq("id", shed.id);
-      if (shedErr) {
-        alert(shedErr.message || "Failed to delete shed.");
-        return;
-      }
-      await deleteFarmer(farmer.id);
-      loadData();
-      return;
-    }
-    if (!confirm(`Delete shed "${displayName}"? Other sheds will stay.`))
-      return;
-    const { error } = await supabase
-      .from("farmer_sheds")
-      .delete()
-      .eq("id", shed.id);
-    if (error) {
-      alert(error.message || "Failed to delete shed.");
-      return;
-    }
-    loadData();
-  }
+ 
 
   // Universal Location Helper (Works on both Android Native App & Browser)
   async function getDeviceCoordinates(): Promise<{ lat: number; lng: number }> {
@@ -1220,7 +1480,8 @@ export default function FarmersPage() {
         getShedsForFarmer(f).some((s: any, si: number) =>
           getShedDisplayName(f, s, si, getShedsForFarmer(f).length)
             .toLowerCase()
-            .includes(q)
+            .includes(q) ||
+          getShedShortName(f, s, si, getShedsForFarmer(f).length).toLowerCase().includes(q)
         );
       const matchCompany =
         companyFilter === "" || String(f.company_id) === companyFilter;
@@ -2181,6 +2442,10 @@ export default function FarmersPage() {
   };
 
   function openEditForm(farmer: any) {
+    if (!canEditFarmer(farmer)) {
+      alert("You can only edit farmers you added.");
+      return;
+    }
     setEditingId(farmer.id);
     setForm({
       company_id: String(farmer.company_id),
@@ -2219,10 +2484,10 @@ export default function FarmersPage() {
       remarks: farmer.remarks || "",
     });
     setFormSheds(
-      getShedsForFarmer(farmer).map((shed: any) => {
+      getShedsForFarmer(farmer).map((shed: any, sIdx: number) => {
         const row: any = {
           id: String(shed.id).startsWith("legacy-") ? undefined : shed.id,
-          shed_name: shed.shed_name || "",
+          shed_name: getShedShortName(farmer, shed, sIdx, getShedsForFarmer(farmer).length),
           farm_category: shed.farm_category || "",
           feed_type: shed.feed_type || "",
           latitude: shed.latitude != null ? String(shed.latitude) : "",
@@ -2326,7 +2591,9 @@ export default function FarmersPage() {
               placeholder="All Agents"
               options={availableFilterAgents.map((a) => ({
                 value: String(a.id),
-                label: a.agent_name,
+                label:
+                  a.agent_name +
+                  (isAgentNonExclusive(a) ? " (non-ex.)" : ""),
               }))}
             />
 
@@ -2344,6 +2611,7 @@ export default function FarmersPage() {
       {/* 2. ACTION BAR */}
       <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-slate-300 rounded-xl px-3.5 py-2 shadow-sm">
         <div className="flex flex-wrap items-center gap-2">
+          {canAddFarmerHere && (
           <button
             onClick={() => {
               setEditingId(null);
@@ -2376,6 +2644,7 @@ export default function FarmersPage() {
           >
             <Plus size={14} /> Add Farmer
           </button>
+          )}
 
           <button
             onClick={() => {
@@ -2889,11 +3158,8 @@ export default function FarmersPage() {
                       <th className="border border-slate-300 px-2 py-1.5 text-left">
                         SL
                       </th>
-                      <th className="border border-slate-300 px-2 py-1.5 text-left">
+                      <th className="border border-slate-300 px-2 py-1.5 text-left min-w-[180px] md:min-w-[200px] whitespace-nowrap">
                         Farmer
-                      </th>
-                      <th className="border border-slate-300 px-2 py-1.5 text-left">
-                        Shed
                       </th>
                       <th className="border border-slate-300 px-2 py-1.5 text-left">
                         Mobile
@@ -2908,6 +3174,9 @@ export default function FarmersPage() {
                         Upazila
                       </th>
                       <th className="border border-slate-300 px-2 py-1.5 text-left">
+                        Shed
+                      </th>
+                      <th className="border border-slate-300 px-2 py-1.5 text-left">
                         Category
                       </th>
                       <th className="border border-slate-300 px-2 py-1.5 text-left">
@@ -2917,7 +3186,7 @@ export default function FarmersPage() {
                         Status
                       </th>
                       <th className="border border-slate-300 px-2 py-1.5 text-center">
-                        Actions
+                        Action
                       </th>
                     </tr>
                   </thead>
@@ -2925,14 +3194,21 @@ export default function FarmersPage() {
                     {group.farmers.flatMap((farmer: any, idx: number) => {
                       const sheds = getShedsForFarmer(farmer);
                       const rowSpan = sheds.length;
+                      const farmerVisits = (visitRows || []).filter(
+                        (v: any) => String(v.farmer_id) === String(farmer.id)
+                      );
                       return sheds.map((shed: any, sIdx: number) => {
                         const breakdown = getShedStockBreakdown(shed);
-                        const shedDisplayName = getShedDisplayName(
+                        const shedShortName = getShedShortName(farmer, shed, sIdx, rowSpan);
+                        // Status is PER SHED: a shed with a Running visit
+                        // is Running; otherwise its own last sale decides
+                        // (<=60 days Active, older Inactive); no history
+                        // falls back to the stored shed.status.
+                        const shedStatus = getShedVisitStatus(
                           farmer,
                           shed,
-                          sIdx,
-                          rowSpan
-                        );
+                          farmerVisits
+                        ).status;
                         const shedKey = shed.id
                           ? `shed-${shed.id}`
                           : `${farmer.id}-${sIdx}`;
@@ -2949,7 +3225,8 @@ export default function FarmersPage() {
                             {sIdx === 0 && (
                               <td
                                 rowSpan={rowSpan}
-                                className="border border-slate-300 px-2 py-1 font-semibold text-slate-800 align-top"
+                                className="border border-slate-300 px-2 py-1 font-semibold text-slate-800 align-top min-w-[180px] md:min-w-[200px] whitespace-nowrap"
+                                title={farmer.farmer_name}
                               >
                                 {farmer.farmer_name}
                                 {rowSpan > 1 && (
@@ -2959,10 +3236,6 @@ export default function FarmersPage() {
                                 )}
                               </td>
                             )}
-                            <td className="border border-slate-300 px-2 py-1 font-medium">
-                              {shedDisplayName}
-                              
-                            </td>
                             {sIdx === 0 && (
                               <td
                                 rowSpan={rowSpan}
@@ -2995,6 +3268,12 @@ export default function FarmersPage() {
                                 {farmer.upazila || "-"}
                               </td>
                             )}
+                            <td
+                              className="border border-slate-300 px-2 py-1 font-medium whitespace-nowrap truncate max-w-[110px]"
+                              title={getShedDisplayName(farmer, shed, sIdx, rowSpan)}
+                            >
+                              {shedShortName}
+                            </td>
                             <td className="border border-slate-300 px-2 py-1 font-medium">
                               {shed.farm_category || "-"}
                             </td>
@@ -3005,44 +3284,33 @@ export default function FarmersPage() {
                                     .map((b) => `${b.label}: ${b.qty}`)
                                     .join(", ")}
                             </td>
-                            {sIdx === 0 && (
-                              <td
-                                rowSpan={rowSpan}
-                                className="border border-slate-300 px-2 py-1 align-top"
+                            <td className="border border-slate-300 px-2 py-1 whitespace-nowrap">
+                              <span
+                                className={`inline-block px-1.5 py-0 rounded-full text-[10px] font-bold ${
+                                  shedStatus === "Running"
+                                    ? "bg-emerald-100 text-emerald-800"
+                                    : shedStatus === "Active"
+                                    ? "bg-blue-100 text-blue-800"
+                                    : "bg-amber-100 text-amber-800"
+                                }`}
                               >
-                                {farmer.status}
-                              </td>
-                            )}
+                                {shedStatus}
+                              </span>
+                            </td>
                             {/* Actions: NO rowSpan — every shed row has its own
-                                View / Map / Edit / Delete for that shed only. */}
-                            <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap space-x-1 align-top">
+                                View + Map buttons for that shed only. */}
+                            <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap align-top">
                               <button
                                 onClick={() => setSelectedFarmer(farmer)}
-                                className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-0.5 rounded text-[11px]"
+                                className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-0.5 rounded text-[11px] font-semibold mr-1"
                               >
                                 View
                               </button>
                               <button
-                                onClick={() =>
-                                  handleViewFarmerOnMap(farmer, shed)
-                                }
-                                className="bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded text-[11px]"
+                                onClick={() => handleViewFarmerOnMap(farmer, shed)}
+                                className="bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded text-[11px] font-semibold inline-flex items-center gap-0.5"
                               >
-                                Map
-                              </button>
-                              <button
-                                onClick={() => openEditForm(farmer)}
-                                className="bg-yellow-500 hover:bg-yellow-600 text-white px-2 py-0.5 rounded text-[11px]"
-                              >
-                                Edit
-                              </button>
-                              <button
-                                onClick={() =>
-                                  handleDeleteShed(farmer, shed)
-                                }
-                                className="bg-red-600 hover:bg-red-700 text-white px-2 py-0.5 rounded text-[11px]"
-                              >
-                                Delete
+                                <MapPin size={11} /> Map
                               </button>
                             </td>
                           </tr>
@@ -3175,6 +3443,20 @@ export default function FarmersPage() {
                     </td>
                     <td className="border border-slate-300 px-3 py-1.5">
                       {selectedFarmer.agents?.agent_name || "-"}
+                      {(() => {
+                        const ag = agents.find(
+                          (a: any) =>
+                            String(a.id) === String(selectedFarmer.agent_id)
+                        );
+                        const names = ag
+                          ? getAgentLinkedCompanyNames(ag)
+                          : [];
+                        return names.length > 1 ? (
+                          <span className="block text-[11px] font-normal text-slate-500">
+                            Also: {names.join(", ")}
+                          </span>
+                        ) : null;
+                      })()}
                     </td>
                   </tr>
                   <tr>
@@ -3275,6 +3557,7 @@ export default function FarmersPage() {
                     <tr>
                       <th className="border border-slate-300 px-2 py-1 text-left">Shed</th>
                       <th className="border border-slate-300 px-2 py-1 text-left">Category</th>
+                      <th className="border border-slate-300 px-2 py-1 text-left">Status</th>
                       <th className="border border-slate-300 px-2 py-1 text-left">Location</th>
                       <th className="border border-slate-300 px-2 py-1 text-left">Stock</th>
                     </tr>
@@ -3282,6 +3565,14 @@ export default function FarmersPage() {
                   <tbody>
                     {getShedsForFarmer(selectedFarmer).map((shed: any, sIdx: number) => {
                       const b = getShedStockBreakdown(shed);
+                      const modalShedStatus = getShedVisitStatus(
+                        selectedFarmer,
+                        shed,
+                        (visitRows || []).filter(
+                          (v: any) =>
+                            String(v.farmer_id) === String(selectedFarmer.id)
+                        )
+                      ).status;
                       return (
                         <tr key={shed.id || sIdx}>
                           <td className="border border-slate-300 px-2 py-1 font-semibold">
@@ -3294,6 +3585,19 @@ export default function FarmersPage() {
                           </td>
                           <td className="border border-slate-300 px-2 py-1">
                             {shed.farm_category || "-"}
+                          </td>
+                          <td className="border border-slate-300 px-2 py-1 whitespace-nowrap">
+                            <span
+                              className={`inline-block px-1.5 py-0 rounded-full text-[10px] font-bold ${
+                                modalShedStatus === "Running"
+                                  ? "bg-emerald-100 text-emerald-800"
+                                  : modalShedStatus === "Active"
+                                  ? "bg-blue-100 text-blue-800"
+                                  : "bg-amber-100 text-amber-800"
+                              }`}
+                            >
+                              {modalShedStatus}
+                            </span>
                           </td>
                           <td className="border border-slate-300 px-2 py-1">
                             {shed.latitude && shed.longitude
@@ -3311,13 +3615,26 @@ export default function FarmersPage() {
               </div>
 
               {/* Whole-farmer delete lives ONLY here in the View modal. */}
-              <div className="flex justify-end pt-1">
+              <div className="flex justify-end gap-2 pt-1">
+                {canEditFarmer(selectedFarmer) && (
+                  <>
+                <button
+                  onClick={() => {
+                    openEditForm(selectedFarmer);
+                    setSelectedFarmer(null);
+                  }}
+                  className="bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1.5 rounded text-xs font-semibold"
+                >
+                  Edit
+                </button>
                 <button
                   onClick={() => handleDelete(selectedFarmer.id)}
                   className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded text-xs font-semibold"
                 >
                   Delete Farmer
                 </button>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -3411,7 +3728,9 @@ export default function FarmersPage() {
                   placeholder="Select Agent"
                   options={formAvailableAgents.map((a) => ({
                     value: String(a.id),
-                    label: a.agent_name,
+                    label:
+                      a.agent_name +
+                      (isAgentNonExclusive(a) ? " (non-ex.)" : ""),
                   }))}
                 />
               </div>
@@ -3509,19 +3828,14 @@ export default function FarmersPage() {
                         Shed Name
                       </label>
                       <input
-                        placeholder="Bridge par — khali rakhle auto naam hobe"
+                        placeholder="Shed 1 or Bridge par"
                         value={shed.shed_name || ""}
                         onChange={(e) =>
                           updateShedField(sIdx, "shed_name", e.target.value)
                         }
                         className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
                       />
-                      <p className="mt-1 text-[11px] leading-snug text-slate-500">
-                        Khali rakhle: 1 ta shed hole sudhu farmer-er naam
-                        dekhabe; 2nd shed theke auto &ldquo;Farmer Name -
-                        Shed N&rdquo; hobe. Nijer label (jemon Bridge par)
-                        dile setao cholbe.
-                      </p>
+                      
                     </div>
                     <div>
                       <label className="block text-[11px] font-bold text-slate-600 mb-1">
@@ -3740,6 +4054,8 @@ export default function FarmersPage() {
               center={
                 pickerCenterOverride
                   ? pickerCenterOverride
+                  : formAgentCenter
+                  ? formAgentCenter
                   : selectedUpazila
                   ? [Number(selectedUpazila.lat), Number(selectedUpazila.lon)]
                   : selectedDistrict
@@ -3752,6 +4068,8 @@ export default function FarmersPage() {
               zoom={
                 pickerCenterOverride
                   ? 17
+                  : formAgentCenter
+                  ? 14
                   : selectedUpazila
                   ? 13
                   : selectedDistrict

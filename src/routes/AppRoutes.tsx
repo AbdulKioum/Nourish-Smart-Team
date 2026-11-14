@@ -19,6 +19,8 @@ import SubAgentPage from "../pages/sub-agents/SubAgentPage";
 import RetailersPage from "../pages/retailers/RetailerPage";
 import FarmersPage from "../pages/farmers/FarmersPage";
 import VisitsPage from "../pages/visits/VisitsPage";
+import AquaVisitsPage from "../pages/visits/AquaVisitsPage";
+import CattleVisitsPage from "../pages/visits/CattleVisitsPage";
 import ReportsPage from "../pages/reports/ReportsPage";
 import UsersPage from "../pages/users/UsersPage";
 import FarmerStatusPage from "../pages/farmers/FarmerStatusPage";
@@ -206,6 +208,8 @@ export default function AppRoutes() {
           <Route path="/retailers" element={<RetailersPage />} />
           <Route path="/farmers" element={<FarmersPage />} />
           <Route path="/visits" element={<VisitsPage />} />
+          <Route path="/aqua-visits" element={<AquaVisitsPage />} />
+          <Route path="/cattle-visits" element={<CattleVisitsPage />} />
           <Route path="/reports" element={<ReportsPage />} />
           <Route path="/users" element={<UsersPage />} />
           <Route path="/farmer-status" element={<FarmerStatusPage />} />

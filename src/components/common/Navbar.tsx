@@ -61,7 +61,6 @@ export default function Navbar({
   const [loading, setLoading] = useState(false);
   const [runningVisits, setRunningVisits] = useState<any[]>([]);
   const [, setAgentsMap] = useState<Record<string, any>>({});
-  const [vaccinesList, setVaccinesList] = useState<any[]>([]);
   const [lowWeightList, setLowWeightList] = useState<any[]>([]);
   const [lowEggList, setLowEggList] = useState<any[]>([]);
   const [latestTrackings, setLatestTrackings] = useState<any[]>([]);
@@ -79,13 +78,32 @@ export default function Navbar({
     districts: [],
   });
 
+  // Page title: exact name per route, so the header always shows the
+  // page you are on ("/visits" is Poultry Visit, not "Visits").
+  const PAGE_TITLES: Record<string, string> = {
+    "/": "Dashboard",
+    "/companies": "Companies",
+    "/agents": "Agents",
+    "/sub-agents": "Sub Agents",
+    "/retailers": "Retailers",
+    "/farmers": "Farmers",
+    "/visits": "Poultry Visit",
+    "/aqua-visits": "Aqua Visit",
+    "/cattle-visits": "Cattle Visit",
+    "/reports": "Reports",
+    "/users": "Users",
+    "/farmer-status": "Farmer Status",
+    "/doc-agents": "DOC Agents",
+    "/doc-tracking": "DOC Tracking",
+    "/farmer-tracking": "Farmer Tracking",
+    "/agent-tracking": "Agent Tracking",
+  };
   const pageTitle =
-    location.pathname === "/"
-      ? "Dashboard"
-      : location.pathname
-          .replace("/", "")
-          .replaceAll("-", " ")
-          .replace(/\b\w/g, (c) => c.toUpperCase());
+    PAGE_TITLES[location.pathname] ??
+    location.pathname
+      .replace("/", "")
+      .replaceAll("-", " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase());
 
   function isFarmerAllowed(farmer: any): boolean {
     if (!farmer) return false;
@@ -372,7 +390,6 @@ export default function Navbar({
         { data: vData },
         { data: agData },
         { data: frmData },
-        { data: vacData },
         { data: trkData },
         { data: agentTrkData },
       ] = await Promise.all([
@@ -382,7 +399,6 @@ export default function Navbar({
           .in("status", ["Activated", "Running"]),
         supabase.from("agents").select("*"),
         supabase.from("farmers").select("*"),
-        supabase.from("vaccines").select("*"),
         supabase
           .from("farmer_trackings")
           .select("*")
@@ -399,7 +415,6 @@ export default function Navbar({
       (agData || []).forEach((a: any) => (agDict[String(a.id)] = a));
       agentsRef.current = agDict;
       setAgentsMap(agDict);
-      setVaccinesList(vacData || []);
 
       const frmDict: Record<string, any> = {};
       (frmData || []).forEach((f: any) => (frmDict[String(f.id)] = f));
@@ -618,35 +633,10 @@ export default function Navbar({
     return age >= 28;
   });
 
-  const layerVaccineAlerts: any[] = [];
-  runningVisits.forEach((v: any) => {
-    const cat = (v.category || "").toLowerCase();
-    if (cat !== "layer") return;
-    const ageDays = getAgeDays(v.hatch_date);
-    const lastGiven = String(v.last_vaccine_name || "").trim().toLowerCase();
-
-    const matchedVac = vaccinesList.filter(
-      (vac: any) =>
-        vac.category?.toLowerCase() === "layer" &&
-        Number(vac.age_days) >= ageDays &&
-        Number(vac.age_days) <= ageDays + 3 &&
-        !lastGiven.includes(vac.vaccine_name?.trim().toLowerCase())
-    );
-
-    matchedVac.forEach((vac: any) => {
-      layerVaccineAlerts.push({
-        ...v,
-        vaccineDue: vac,
-        daysLeft: Number(vac.age_days) - ageDays,
-      });
-    });
-  });
-
   const totalAlertsCount =
     latestTrackings.length +
     latestAgentTrackings.length + // ⚠️ ٹوٹাল কাউন্টে এজেন্ট ট্র্যাকিং যোগ করা হলো
     broilerSellAlerts.length +
-    layerVaccineAlerts.length +
     lowWeightList.length +
     lowEggList.length;
 
@@ -661,7 +651,6 @@ export default function Navbar({
   }
 
   const broilerByAgent = groupByAgent(broilerSellAlerts);
-  const layerByAgent = groupByAgent(layerVaccineAlerts);
 
   return (
     <>
@@ -741,7 +730,7 @@ export default function Navbar({
                 </div>
               ) : totalAlertsCount === 0 ? (
                 <div className="py-10 text-center text-slate-400 font-medium">
-                  No pending sale, vaccination, or tracking alerts at this
+                  No pending sale or tracking alerts at this
                   moment.
                 </div>
               ) : (
@@ -969,76 +958,7 @@ export default function Navbar({
                     </div>
                   )}
 
-                  {/* SECTION 2: LAYER VACCINE ALERTS */}
-                  {Object.keys(layerByAgent).length > 0 && (
-                    <div className="space-y-1.5 pt-1">
-                      <h4 className="font-bold text-indigo-700 text-xs sm:text-sm uppercase tracking-wider border-b pb-0.5">
-                        Layer Upcoming Vaccines (in 3 days)
-                      </h4>
-
-                      {Object.entries(layerByAgent).map(([agentName, list]) => (
-                        <div
-                          key={agentName}
-                          className="bg-indigo-50/30 border border-indigo-200 rounded-xl overflow-hidden shadow-xs"
-                        >
-                          <div className="bg-indigo-50 px-3 py-1 font-bold text-indigo-900 border-b border-indigo-200">
-                            Agent:{" "}
-                            <span className="text-emerald-700">
-                              {agentName}
-                            </span>
-                          </div>
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-left border-collapse text-[11px] sm:text-xs">
-                              <thead>
-                                <tr className="bg-indigo-50/50 border-b border-indigo-200 text-indigo-900">
-                                  <th className="px-2.5 py-1">Farmer Name</th>
-                                  <th className="px-2.5 py-1">Current Age</th>
-                                  <th className="px-2.5 py-1">Vaccine Name</th>
-                                  <th className="px-2.5 py-1">Route</th>
-                                  <th className="px-2.5 py-1 text-right">
-                                    Due Schedule
-                                  </th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-indigo-100">
-                                {list.map((v: any, i: number) => {
-                                  const ageDays = getAgeDays(v.hatch_date);
-                                  return (
-                                    <tr
-                                      key={i}
-                                      className="hover:bg-indigo-50/40 leading-tight"
-                                    >
-                                      <td className="px-2.5 py-0.5 font-bold text-slate-800 whitespace-nowrap">
-                                        {v.batch_label ||
-                                          v.farmers?.farmer_name}
-                                      </td>
-                                      <td className="px-2.5 py-0.5 font-semibold text-slate-700 whitespace-nowrap">
-                                        {ageDays} Days
-                                      </td>
-                                      <td className="px-2.5 py-0.5 font-bold text-indigo-800 whitespace-nowrap">
-                                        {v.vaccineDue.vaccine_name}
-                                      </td>
-                                      <td className="px-2.5 py-0.5 text-slate-600 whitespace-nowrap">
-                                        {v.vaccineDue.route}
-                                      </td>
-                                      <td className="px-2.5 py-0.5 text-right font-bold text-amber-700 whitespace-nowrap">
-                                        Day {v.vaccineDue.age_days} (
-                                        {v.daysLeft === 0
-                                          ? "Today"
-                                          : `in ${v.daysLeft}d`}
-                                        )
-                                      </td>
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </>
+                                  </>
               )}
             </div>
 

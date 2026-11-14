@@ -3,7 +3,14 @@ import React, { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../context/AuthContext";
+import {
+  canEditRecord,
+  canAddReport,
+  canAddFarmer,
+} from "../../utils/accessControl";
 import LocationPicker from "../../components/maps/LocationPicker";
+import { Marker } from "react-leaflet";
+import L from "leaflet";
 import {
   MapPin,
   Navigation,
@@ -286,33 +293,174 @@ function getShedsForFarmer(farmer: any): any[] {
   return [shed];
 }
 
-// Never show a bare "Shed 2" label. Single-shed farmer = just farmer name.
+// Shed naming — single source of truth, identical in Farmers/Visits/Doc:
+// - Stored shed_name is the SHORT label only ("Shed 1", "Shed 2", "Bridge par").
+// - A farmer with a single shed (no shed explicitly added) has NO shed name:
+//   the Shed column is blank and the full name is just the farmer name.
+// - getShedShortName() normalises any legacy stored value: empty, or exactly
+//   the farmer name, or an auto "Shed N" label, is blank for a single shed
+//   and "Shed N" once a 2nd shed exists; a value starting with the farmer
+//   name (full name or first name, e.g. "Raju Ahmed - Shed 1" or "Raju Shed 1")
+//   has that prefix stripped; "Shed-1" normalises to "Shed 1"; a bare custom
+//   label ("Bridge par") is kept as-is.
+// - getShedDisplayName() is just the farmer name for a single unnamed shed,
+//   otherwise "Farmer Name - Short Name". The ONLY place showing the short
+//   name alone is the farmer table Shed column (and the form Shed Name input).
+function getShedShortName(
+  farmer: any,
+  shed: any,
+  index: number = 0,
+  totalSheds: number = 1
+): string {
+  const farmerName = String(farmer?.farmer_name || "").trim() || "Farmer";
+  const raw = String(shed?.shed_name || "").trim();
+  const lowerRaw = raw.toLowerCase();
+  const lowerFarmer = farmerName.toLowerCase();
+  const firstName = lowerFarmer.split(/\s+/)[0] || "";
+  let rest = raw;
+  const stripPrefix = (prefix: string): boolean => {
+    if (prefix && lowerRaw.startsWith(prefix)) {
+      const next = raw.charAt(prefix.length);
+      if (next === " " || next === "-") {
+        rest = raw.slice(prefix.length).replace(/^[\s-]+/, "").trim();
+        return true;
+      }
+    }
+    return false;
+  };
+  if (rest && rest.toLowerCase() !== lowerFarmer) {
+    if (!stripPrefix(lowerFarmer) && firstName) stripPrefix(firstName);
+  } else {
+    rest = "";
+  }
+  // Auto-generated labels ("Shed 1", "Shed-1") carry no real name.
+  const autoMatch = rest.match(/^shed\s*-?\s*(\d+)$/i);
+  if ((totalSheds ?? 1) <= 1) {
+    if (!rest || autoMatch) return "";
+    return rest;
+  }
+  if (!rest) return `Shed ${index + 1}`;
+  if (autoMatch) return `Shed ${autoMatch[1]}`;
+  return rest;
+}
+
 function getShedDisplayName(
   farmer: any,
   shed: any,
-  index: number,
-  totalSheds?: number
+  index: number = 0,
+  totalSheds: number = 1
 ): string {
-  const farmerName = String(farmer?.farmer_name || "Farmer");
-  const raw = String(shed?.shed_name || "").trim();
-  const total =
-    totalSheds !== undefined && totalSheds !== null
-      ? totalSheds
-      : getShedsForFarmer(farmer).length;
-  if (raw) {
-    // Already farmer-prefixed ("Raju Ahmed - Shed 2", "Raju Ahmed - Bridge par")
-    // or otherwise carries a "Name - label" form: show as-is.
-    if (
-      raw.toLowerCase().startsWith(farmerName.toLowerCase()) ||
-      raw.includes(" - ")
-    ) {
-      return raw;
+  const farmerName = String(farmer?.farmer_name || "").trim() || "Farmer";
+  const short = getShedShortName(farmer, shed, index, totalSheds);
+  return short ? `${farmerName} - ${short}` : farmerName;
+}
+
+function getFarmerBadgeInfo(farmerOrCategory: any) {
+  // Backward compat: accepts a farmer/shed object OR a category string.
+  const farmer =
+    typeof farmerOrCategory === "string"
+      ? { farm_category: farmerOrCategory }
+      : farmerOrCategory || {};
+  if (farmer.farm_category === "Poultry") {
+    if (Number(farmer.layer || 0) > 0 && Number(farmer.broiler || 0) === 0) {
+      return { emoji: "🥚", label: "Layer", bg: "#d97706", border: "#b45309" };
     }
-    // Bare label ("Bridge par", "Shed 2"): prefix the farmer name.
-    return `${farmerName} - ${raw}`;
+    if (Number(farmer.sonali || 0) > 0 && Number(farmer.broiler || 0) === 0) {
+      return { emoji: "🐓", label: "Sonali", bg: "#ea580c", border: "#c2410c" };
+    }
+    if (Number(farmer.duck || 0) > 0 && Number(farmer.broiler || 0) === 0) {
+      return { emoji: "🦆", label: "Duck", bg: "#0d9488", border: "#0f766e" };
+    }
+    return { emoji: "🐔", label: "Broiler", bg: "#f59e0b", border: "#d97706" };
   }
-  if (total <= 1) return farmerName;
-  return `${farmerName} - Shed ${index + 1}`;
+  if (farmer.farm_category === "Cattle") {
+    return { emoji: "🐄", label: "Cattle", bg: "#16a34a", border: "#15803d" };
+  }
+  if (farmer.farm_category === "Fish") {
+    return { emoji: "🐟", label: "Fish", bg: "#0284c7", border: "#0369a1" };
+  }
+  return { emoji: "🏡", label: "Farm", bg: "#475569", border: "#334155" };
+}
+
+// Clean Marker without circular background; auto-scales horizontal vs square/round logos
+function buildCustomFarmMarker(
+  farmer: any,
+  shed: any = null,
+  highlight: any = false,
+  distText?: string,
+  shedIndex: number = 0,
+  totalSheds: number = 1
+) {
+  // Backward compat: old calls passed (farmer, highlight, distText).
+  if (typeof shed === "boolean") {
+    distText = typeof highlight === "string" ? highlight : distText;
+    highlight = shed;
+    shed = null;
+  }
+  if (typeof highlight === "string") {
+    distText = highlight;
+    highlight = false;
+  }
+  const badgeSource = shed || farmer;
+  const { emoji, border } = getFarmerBadgeInfo(badgeSource);
+  const logoUrl = farmer.companies?.logo_url;
+  const labelText = shed
+    ? getShedDisplayName(farmer, shed, shedIndex, totalSheds)
+    : farmer.farmer_name || "Farmer";
+  const safeName = String(labelText).replace(/</g, "&lt;").slice(0, 20);
+
+  const ring = highlight
+    ? "0 0 0 3px rgba(16,185,129,0.45)"
+    : "0 1px 2px rgba(0,0,0,0.15)";
+
+  const distBadge = distText
+    ? `<div style="margin-top:2px;background:#0f172a;color:#ffffff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;white-space:nowrap;">${distText}</div>`
+    : "";
+
+  const html = `
+    <div style="display:flex;flex-direction:column;align-items:center;transform:translateY(-14px);">
+      <div style="position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+        <span style="font-size:${highlight ? 25 : 20}px;line-height:1;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.35));">${emoji}</span>
+        ${
+          logoUrl
+            ? `<img src="${logoUrl}" onload="if(this.naturalWidth > this.naturalHeight * 1.3){this.style.width='44px';this.style.height='auto';this.style.maxHeight='20px';}else{this.style.width='22px';this.style.height='22px';}" style="margin-top:1px;width:24px;height:22px;object-fit:contain;background:rgba(255,255,255,0.92);padding:1px 2px;border-radius:3px;box-shadow:0 1px 2px rgba(0,0,0,0.2);" />`
+            : ""
+        }
+      </div>
+      <div style="margin-top:2px;background:rgba(252, 244, 236, 0.95);border:1.5px solid ${border};color:#314158;font-size:10px;font-weight:700;padding:0px 5px;border-radius:4px;white-space:nowrap;box-shadow:${ring};">
+        ${safeName}
+      </div>
+      ${distBadge}
+    </div>
+  `;
+
+  return L.divIcon({
+    className: "custom-farm-div-icon",
+    html,
+    iconSize: [52, 54],
+    iconAnchor: [26, 44],
+    popupAnchor: [0, -38],
+  });
+}
+
+// Multi-company agents (agent_companies table): an agent matches a company
+// if ANY linked company equals it. Falls back to the single company_id.
+function getAgentCompanyIds(agent: any): string[] {
+  const linked = agent?.linked_company_ids || agent?.agent_companies || [];
+  if (Array.isArray(linked) && linked.length > 0) {
+    return linked
+      .map((c: any) =>
+        String(typeof c === "object" ? c.company_id ?? c.id : c)
+      )
+      .filter(Boolean);
+  }
+  return agent?.company_id != null && agent.company_id !== ""
+    ? [String(agent.company_id)]
+    : [];
+}
+
+function isAgentNonExclusive(agent: any): boolean {
+  return getAgentCompanyIds(agent).length > 1;
 }
 
 // The shed a visit belongs to: its stored shed_id when it matches one of
@@ -342,10 +490,83 @@ function getVisitShedDisplayName(visit: any, farmer: any): string {
   return getShedDisplayName(farmer, shed, sheds.indexOf(shed), sheds.length);
 }
 
-function shedFormToDb(shed: any, farmerId: number): any {
+// Per-shed status — the same rule as the farmer-level computedStatus,
+// but keyed by shed (identical helper in FarmersPage): a shed with a
+// Running/Activated visit is Running; otherwise the status comes from
+// that shed's own last sale (<=60 days => Active, older => Inactive);
+// a shed with no visit history falls back to its stored status
+// (default Active). A visit without a shed_id counts only when the
+// farmer has a single shed (same rule as getShedForVisit).
+function getShedVisitStatus(
+  farmer: any,
+  shed: any,
+  farmerVisits: any[]
+): {
+  status: "Running" | "Active" | "Inactive";
+  statusDate: string;
+  daysSinceSale: number | null;
+  closedType: string;
+} {
+  const sheds = getShedsForFarmer(farmer);
+  const shedId =
+    shed?.id != null && !String(shed.id).startsWith("legacy-")
+      ? String(shed.id)
+      : null;
+  const shedVisits = (farmerVisits || []).filter((v: any) => {
+    const sid = v?.shed_id;
+    if (sid !== null && sid !== undefined && String(sid) !== "") {
+      return shedId !== null && String(sid) === shedId;
+    }
+    return sheds.length === 1;
+  });
+  const running = shedVisits.filter(
+    (v: any) => v.status === "Activated" || v.status === "Running"
+  );
+  const closed = shedVisits
+    .filter((v: any) => v.status === "Sold" || v.status === "Culled")
+    .sort((a: any, b: any) =>
+      String(b.closed_date || b.created_at || "").localeCompare(
+        String(a.closed_date || a.created_at || "")
+      )
+    );
+  const lastSale =
+    closed[0]?.closed_date ||
+    (closed[0]?.created_at ? String(closed[0].created_at).slice(0, 10) : null);
+  const days = getDaysSince(lastSale);
+  let status: "Running" | "Active" | "Inactive";
+  if (running.length > 0) status = "Running";
+  else if (days !== null && days <= 60) status = "Active";
+  else if (days !== null) status = "Inactive";
+  else
+    status =
+      shed?.status === "Running" ||
+      shed?.status === "Active" ||
+      shed?.status === "Inactive"
+        ? shed.status
+        : "Active";
+  return {
+    status,
+    statusDate: lastSale || "",
+    daysSinceSale: days,
+    closedType: closed[0]?.status || "",
+  };
+}
+
+function shedFormToDb(
+  shed: any,
+  farmerId: number,
+  farmerName: string = "",
+  index: number = 0,
+  totalSheds: number = 1
+): any {
   const db: any = {
     farmer_id: farmerId,
-    shed_name: String(shed?.shed_name || ""),
+    shed_name: getShedShortName(
+      { farmer_name: farmerName },
+      shed,
+      index,
+      totalSheds
+    ),
     farm_category: shed?.farm_category || "",
     latitude:
       shed?.latitude === "" || shed?.latitude == null
@@ -531,6 +752,24 @@ export default function VetVisitsPage() {
   const { role } = useAuth();
   const isSuperAdmin = role === "super_admin";
   const isFullAccess = role === "super_admin" || role === "manager";
+  // Permissions (src/utils/accessControl.ts): this page is the POULTRY
+  // visit page (rule 5) — report add/edit/delete needs Poultry
+  // assigned; edits/deletes also need ownership (old rows with
+  // created_by null are editable by area officers — the save stamps
+  // the creator). Farmer add is NOT category-gated. View / history /
+  // export / Map stay open to everyone.
+  const [currentUserId, setCurrentUserId] = useState("");
+  const [assignedCategories, setAssignedCategories] = useState<string[]>([]);
+
+  const canAddPoultryReport = canAddReport(role, assignedCategories, "Poultry");
+  const canAddFarmerHere = canAddFarmer(role);
+  const canEditPoultryReport = (rec: any) =>
+    canAddPoultryReport && canEditRecord(role, rec?.created_by, currentUserId);
+  // Full row edit (farmer + batch modal): farmer part follows the
+  // farmer rule, batch part follows the Poultry report rule.
+  const canFullEditRow = (r: any) =>
+    canEditRecord(role, r?.farmer?.created_by, currentUserId) &&
+    (!r?.visit || canEditPoultryReport(r.visit));
 
   const [currentUserProfile, setCurrentUserProfile] = useState({
     fullName: "Officer",
@@ -568,8 +807,6 @@ export default function VetVisitsPage() {
   // Activate / Run Farm / Add Batch
   const [showActivateModal, setShowActivateModal] = useState(false);
   const [activateFarmer, setActivateFarmer] = useState<any>(null);
-  const [activateBulk, setActivateBulk] = useState(false);
-  const [selectedFarmerIds, setSelectedFarmerIds] = useState<string[]>([]);
   const [activateMode, setActivateMode] = useState<"add" | "replace">("add");
   const [activateForm, setActivateForm] = useState({
     category: "Broiler",
@@ -600,6 +837,7 @@ export default function VetVisitsPage() {
   // Multi-shed: chosen shed for the Activate/Run Farm modal, and the shed
   // list edited in the Add/Edit Farmer modal (first shed = farmer form).
   const [activateShedId, setActivateShedId] = useState<string>("");
+  const [addingActivateShed, setAddingActivateShed] = useState(false);
   const [formSheds, setFormSheds] = useState<any[]>([{ ...EMPTY_SHED_FORM }]);
   const [geoDistricts, setGeoDistricts] = useState<any[]>([]);
   const [geoUpazilas, setGeoUpazilas] = useState<any[]>([]);
@@ -612,6 +850,7 @@ export default function VetVisitsPage() {
 
   // Track if a report modal is currently editing an existing report from History
   const [editingReportId, setEditingReportId] = useState<any>(null);
+  const [editingReportCreatedBy, setEditingReportCreatedBy] = useState<string | null>(null);
 
   const [vaccines, setVaccines] = useState<any[]>([]);
   const [broilerStds, setBroilerStds] = useState<Record<number, any>>({});
@@ -835,6 +1074,16 @@ export default function VetVisitsPage() {
     (u) => u.name === farmerForm.upazila
   );
 
+  // Map picker centre: the farmer's agent first (farmers cluster around
+  // their agent); falls back to upazila/district when the agent has no lat/lon.
+  const formAgent = farmerForm.agent_id
+    ? allAgents.find((a: any) => String(a.id) === String(farmerForm.agent_id))
+    : null;
+  const formAgentCenter: [number, number] | null =
+    formAgent?.latitude && formAgent?.longitude
+      ? [Number(formAgent.latitude), Number(formAgent.longitude)]
+      : null;
+
   useEffect(() => {
     async function loadModalUnions() {
       if (!selectedFormUpazila) {
@@ -859,13 +1108,30 @@ export default function VetVisitsPage() {
 
     let uUpazilas: string[] = [];
     let uDistricts: string[] = [];
+    let uCats: string[] = [];
 
     if (user) {
-      const { data: uProf } = await supabase
-        .from("users")
-        .select("full_name, email, designation, region, upazilas, districts")
-        .eq("id", user.id)
-        .single();
+      setCurrentUserId(user.id);
+      // assigned_categories comes from the permissions migration;
+      // fall back gracefully if the column is not there yet.
+      let uProf: any = null;
+      {
+        const { data, error } = await supabase
+          .from("users")
+          .select("full_name, email, designation, region, upazilas, districts, assigned_categories")
+          .eq("id", user.id)
+          .single();
+        if (!error && data) {
+          uProf = data;
+        } else {
+          const retry = await supabase
+            .from("users")
+            .select("full_name, email, designation, region, upazilas, districts")
+            .eq("id", user.id)
+            .single();
+          uProf = retry.data || null;
+        }
+      }
 
       if (uProf) {
         setCurrentUserProfile({
@@ -876,8 +1142,10 @@ export default function VetVisitsPage() {
         });
         uUpazilas = parseList(uProf.upazilas);
         uDistricts = parseList(uProf.districts);
+        uCats = parseList(uProf.assigned_categories);
       }
     }
+    setAssignedCategories(uCats);
 
     setAssignedUpazilas(uUpazilas);
     setAssignedDistricts(uDistricts);
@@ -984,6 +1252,27 @@ export default function VetVisitsPage() {
 
     const comps = compData || [];
     setCompanies(comps);
+    // Multi-company agents: attach linked company ids (agent_companies).
+    // If the table is missing, the single company_id fallback applies.
+    try {
+      const { data: linkData, error: linkError } = await supabase
+        .from("agent_companies")
+        .select("agent_id, company_id");
+      if (!linkError && linkData) {
+        const byAgent: Record<string, string[]> = {};
+        (linkData as any[]).forEach((l: any) => {
+          const k = String(l.agent_id);
+          if (!byAgent[k]) byAgent[k] = [];
+          if (!byAgent[k].includes(String(l.company_id)))
+            byAgent[k].push(String(l.company_id));
+        });
+        (agData || [] as any[]).forEach((a: any) => {
+          if (byAgent[String(a.id)]) a.linked_company_ids = byAgent[String(a.id)];
+        });
+      }
+    } catch {
+      // agent_companies table not created yet — single company_id fallback applies.
+    }
     setAllAgents(agData || []);
 
     const nourish = comps.find((c) =>
@@ -1027,19 +1316,29 @@ export default function VetVisitsPage() {
       !String(shedId).startsWith("legacy-")
         ? shedId
         : null;
-    if (numericShedId == null) {
-      return supabase.from(table).insert([payload]);
+    // Ownership (rule 2): stamp the creator on new rows. If the
+    // created_by column does not exist yet, retry without it so the
+    // save itself never fails for a missing column.
+    const withCreator =
+      currentUserId && (payload as any).created_by == null
+        ? { ...payload, created_by: currentUserId }
+        : payload;
+    const doInsert = (p: any, withShed: boolean) => {
+      if (withShed && numericShedId != null) {
+        return supabase.from(table).insert([{ ...p, shed_id: numericShedId }]);
+      }
+      return supabase.from(table).insert([p]);
+    };
+    let res = await doInsert(withCreator, true);
+    let strippedCreator = false;
+    if (res.error && /created_by/i.test(String(res.error.message || ""))) {
+      strippedCreator = true;
+      res = await doInsert(payload, true);
     }
-    const first = await supabase
-      .from(table)
-      .insert([{ ...payload, shed_id: numericShedId }]);
-    if (
-      first.error &&
-      String(first.error.message || "").toLowerCase().includes("shed_id")
-    ) {
-      return supabase.from(table).insert([payload]);
+    if (res.error && /shed_id/i.test(String(res.error.message || ""))) {
+      res = await doInsert(strippedCreator ? payload : withCreator, false);
     }
-    return first;
+    return res;
   }
 
   async function updateWithOptionalShedId(
@@ -1056,20 +1355,43 @@ export default function VetVisitsPage() {
       !String(shedId).startsWith("legacy-")
         ? shedId
         : null;
-    if (numericShedId == null) {
-      return supabase.from(table).update(updates).eq(eqColumn, eqValue);
+    // Ownership (rule 2): stamp created_by on first edit of an old
+    // row; never overwrite an existing creator. Best-effort: a
+    // missing created_by column must not break the update.
+    let withCreator: Record<string, any> = { ...updates };
+    if (currentUserId) {
+      try {
+        const { data: existing } = await supabase
+          .from(table)
+          .select("created_by")
+          .eq(eqColumn, eqValue)
+          .maybeSingle();
+        if (existing && !(existing as any).created_by) {
+          withCreator = { ...updates, created_by: currentUserId };
+        }
+      } catch {
+        // created_by column not added yet.
+      }
     }
-    const first = await supabase
-      .from(table)
-      .update({ ...updates, shed_id: numericShedId })
-      .eq(eqColumn, eqValue);
-    if (
-      first.error &&
-      String(first.error.message || "").toLowerCase().includes("shed_id")
-    ) {
-      return supabase.from(table).update(updates).eq(eqColumn, eqValue);
+    const doUpdate = (u: Record<string, any>, withShed: boolean) => {
+      if (withShed && numericShedId != null) {
+        return supabase
+          .from(table)
+          .update({ ...u, shed_id: numericShedId })
+          .eq(eqColumn, eqValue);
+      }
+      return supabase.from(table).update(u).eq(eqColumn, eqValue);
+    };
+    let res = await doUpdate(withCreator, true);
+    let strippedCreator = false;
+    if (res.error && /created_by/i.test(String(res.error.message || ""))) {
+      strippedCreator = true;
+      res = await doUpdate(updates, true);
     }
-    return first;
+    if (res.error && /shed_id/i.test(String(res.error.message || ""))) {
+      res = await doUpdate(strippedCreator ? updates : withCreator, false);
+    }
+    return res;
   }
 
   // Upsert a farmer's sheds into farmer_sheds (delete sheds removed from
@@ -1077,8 +1399,9 @@ export default function VetVisitsPage() {
   // missing farmer_sheds table only warns — it never loses the farmer.
   async function saveShedsForFarmer(
     farmerId: number,
-    _farmerName: string,
-    sheds: any[]
+    farmerName: string,
+    sheds: any[],
+    creatorId?: string | null
   ): Promise<boolean> {
     const list =
       sheds && sheds.length > 0
@@ -1106,7 +1429,7 @@ export default function VetVisitsPage() {
       }
       for (let i = 0; i < list.length; i++) {
         const s = list[i];
-        const db = shedFormToDb(s, farmerId);
+        const db = shedFormToDb(s, farmerId, farmerName, i, list.length);
         const numericId =
           s.id != null && !String(s.id).startsWith("legacy-")
             ? Number(s.id)
@@ -1123,6 +1446,20 @@ export default function VetVisitsPage() {
             .insert([db]);
           if (error) throw error;
         }
+      }
+      // Ownership: stamp sheds that still have no creator with the
+      // farmer's creator. Never overwrites a non-null created_by.
+      try {
+        const shedCreator = creatorId || currentUserId || null;
+        if (shedCreator) {
+          await supabase
+            .from("farmer_sheds")
+            .update({ created_by: shedCreator })
+            .eq("farmer_id", farmerId)
+            .is("created_by", null);
+        }
+      } catch {
+        // created_by column not added yet on farmer_sheds.
       }
       return true;
     } catch (shedErr: any) {
@@ -1155,9 +1492,11 @@ export default function VetVisitsPage() {
   }
 
   // The Add/Edit Farmer modal edits the FIRST shed through farmerForm; extra
-  // sheds live in formSheds. Merge them into save-ready sheds: first shed
-  // keeps an empty shed_name (shown as the farmer name), extra sheds get
-  // "Farmer Name - Shed N" when no label was typed.
+  // sheds live in formSheds. Merge them into save-ready sheds: shed names
+  // are normalised by getShedShortName() — a single shed stays blank (shown
+  // as just the farmer name); with 2+ sheds a blank label becomes "Shed N"
+  // (the full "Farmer Name - Shed N" is composed at display time by
+  // getShedDisplayName).
   function syncFormShedsWithFarmerForm(): any[] {
     const base =
       formSheds && formSheds.length > 0
@@ -1167,7 +1506,12 @@ export default function VetVisitsPage() {
     return base.map((s: any, i: number) => {
       const shed: any = { ...s };
       if (i === 0) {
-        shed.shed_name = "";
+        shed.shed_name = getShedShortName(
+          { farmer_name: farmerName },
+          s,
+          0,
+          base.length
+        );
         shed.farm_category = farmerForm.farm_category || "";
         shed.latitude = farmerForm.latitude || "";
         shed.longitude = farmerForm.longitude || "";
@@ -1179,9 +1523,12 @@ export default function VetVisitsPage() {
       } else {
         shed.farm_category =
           shed.farm_category || farmerForm.farm_category || "";
-        shed.shed_name =
-          String(shed.shed_name || "").trim() ||
-          `${farmerName} - Shed ${i + 1}`;
+        shed.shed_name = getShedShortName(
+          { farmer_name: farmerName },
+          s,
+          i,
+          base.length
+        );
         if (shed.latitude === undefined) shed.latitude = "";
         if (shed.longitude === undefined) shed.longitude = "";
         SHED_STOCK_FIELDS.forEach((field) => {
@@ -1199,14 +1546,61 @@ export default function VetVisitsPage() {
   }
 
   function addFormShed() {
-    setFormSheds((prev: any[]) => [
-      ...prev,
-      {
-        ...EMPTY_SHED_FORM,
-        shed_name: "",
-        farm_category: farmerForm.farm_category || "Poultry",
-      },
-    ]);
+    // Adding a 2nd shed: if the only existing shed has no name yet, ask for
+    // its name first. Empty/cancel => it becomes "Shed 1" automatically.
+    // The previous shed's name is saved to the DB right away (when it is an
+    // existing shed row), not just in the form state.
+    const prev = formSheds && formSheds.length > 0 ? formSheds[0] : null;
+    const prevNeedsName =
+      formSheds.length === 1 &&
+      prev &&
+      getShedShortName({ farmer_name: farmerForm.farmer_name }, prev, 0, 1) ===
+        "";
+    let prevName = "";
+    if (prevNeedsName) {
+      const answer = window.prompt(
+        "Enter name for the shed or will be shed 1:",
+        ""
+      );
+      prevName =
+        answer && answer.trim()
+          ? getShedShortName(
+              { farmer_name: farmerForm.farmer_name },
+              { shed_name: answer.trim() },
+              0,
+              2
+            )
+          : "Shed 1";
+      if (prev && prev.id != null && !String(prev.id).startsWith("legacy-")) {
+        const prevId = Number(prev.id);
+        supabase
+          .from("farmer_sheds")
+          .update({ shed_name: prevName })
+          .eq("id", prevId)
+          .then(({ error }: any) => {
+            if (error)
+              console.error("Could not save previous shed name:", error);
+          });
+      }
+    }
+    // Prefill the SHORT label only ("Shed 2"); the full name
+    // ("Farmer Name - Shed 2") is composed at display time.
+    setFormSheds((prevSheds: any[]) => {
+      const newCount = prevSheds.length + 1;
+      const updated = prevNeedsName
+        ? prevSheds.map((s: any, i: number) =>
+            i === 0 ? { ...s, shed_name: prevName } : s
+          )
+        : prevSheds;
+      return [
+        ...updated,
+        {
+          ...EMPTY_SHED_FORM,
+          shed_name: `Shed ${newCount}`,
+          farm_category: farmerForm.farm_category || "Poultry",
+        },
+      ];
+    });
   }
 
   function removeFormShed(index: number) {
@@ -1403,11 +1797,19 @@ export default function VetVisitsPage() {
         const agentObj = agentsList.find(
           (a: any) => String(a.id) === String(f.agent_id)
         );
+        // Per-shed status (same rule as computedStatus, keyed by shed)
+        // so the table can show Active/Inactive sheds too, not only
+        // the sheds that currently have a Running batch.
+        const shedStatuses = getShedsForFarmer(f).map((shed: any) => {
+          const st = getShedVisitStatus(f, shed, fv);
+          return { shed, ...st };
+        });
         return {
           ...f,
           computedStatus,
           statusDate,
           daysSinceSale,
+          shedStatuses,
           closedType: latestClosed?.status || "",
           closedCategory: latestClosed?.category || "",
           category: runningVisits[0]?.category || normalizeCategory(f),
@@ -1565,6 +1967,21 @@ export default function VetVisitsPage() {
   async function handleSaveLoggedVaccine(e: React.FormEvent) {
     e.preventDefault();
     if (!activeVaccineVisit || !logVaccineForm.vaccine_name.trim()) return;
+    // Logging a vaccine edits the visit row: Poultry category +
+    // ownership.
+    if (!canEditPoultryReport(activeVaccineVisit)) {
+      alert("You can only log vaccines on visits you added.");
+      return;
+    }
+    // Vaccine log date: never after today, never before hatch date.
+    const vacDateErr = validateReportDate(
+      logVaccineForm.vaccine_date,
+      activeVaccineVisit.hatch_date
+    );
+    if (vacDateErr) {
+      alert(vacDateErr);
+      return;
+    }
 
     try {
       const { error } = await supabase
@@ -1576,6 +1993,18 @@ export default function VetVisitsPage() {
         .eq("id", activeVaccineVisit.id);
 
       if (error) throw error;
+
+      // Ownership (rule 2): stamp created_by on first edit of an old row.
+      if (!activeVaccineVisit.created_by && currentUserId) {
+        try {
+          await supabase
+            .from("vet_visits")
+            .update({ created_by: currentUserId })
+            .eq("id", activeVaccineVisit.id);
+        } catch {
+          // created_by column not added yet.
+        }
+      }
 
       setShowLogVaccineModal(false);
       setActiveVaccineVisit(null);
@@ -1704,7 +2133,25 @@ export default function VetVisitsPage() {
         ? overrideMortality
         : layerForm.mortality_pcs || 0
     );
-    const liveBirds = Math.max(0, baseBirds - mort);
+    // While editing, t_birds already had the old mortality subtracted, so
+    // add it back before subtracting the new mortality (same recompute as
+    // the save path); on add the old mortality is 0.
+    const oldMortForFeed =
+      editingReportId !== null && editingReportId !== undefined
+        ? Math.max(
+            0,
+            Number(
+              allReportsForFarmer.layer.find(
+                (r: any) => String(r.id) === String(editingReportId)
+              )?.mortality ??
+                allReportsForFarmer.layer.find(
+                  (r: any) => String(r.id) === String(editingReportId)
+                )?.mortality_pcs ??
+                0
+            )
+          )
+        : 0;
+    const liveBirds = Math.max(0, baseBirds + oldMortForFeed - mort);
     const num = Number(rawValue);
 
     if (mode === "total_kg") {
@@ -1724,6 +2171,31 @@ export default function VetVisitsPage() {
         feed_total_kg: totalKg,
       }));
     }
+  }
+
+  // Report validation (same rules on every report submit path):
+  // a report date can never be after today or before the batch's hatch
+  // date, and mortality can never exceed total birds. Returns the exact
+  // Banglish alert message, or null when the value is allowed.
+  function validateReportDate(
+    reportDate: string,
+    hatchDate: string | null | undefined
+  ): string | null {
+    const today = new Date().toISOString().split("T")[0];
+    if (reportDate && reportDate > today) {
+      return "Agami date e report dewa jabe na.";
+    }
+    if (reportDate && hatchDate && reportDate < hatchDate) {
+      return "Hatch date er age report dewa jabe na.";
+    }
+    return null;
+  }
+
+  function validateMortality(mortality: number, cap: number): string | null {
+    if (Number(mortality) > Number(cap)) {
+      return "Mortality total bird er cheye beshi hote parbe na.";
+    }
+    return null;
   }
 
   function validateBeforeSaleInputs(formObj: any): boolean {
@@ -1972,10 +2444,27 @@ ${currentUserProfile.region}`;
 
     const mortVal = Number(rep.mortality ?? rep.mortality_pcs ?? 0);
     const baseBirds = Number(visit.t_birds || 0);
-    const displayBirds =
-      isFromForm && !editingReportId
-        ? Math.max(0, baseBirds - mortVal)
-        : baseBirds;
+    // From the form, the live total is recomputed from scratch: on edit the
+    // visit's t_birds already had the old mortality subtracted, so add it
+    // back before subtracting the new mortality.
+    const editingOldMortForWa =
+      isFromForm && editingReportId !== null && editingReportId !== undefined
+        ? Math.max(
+            0,
+            Number(
+              allReportsForFarmer.layer.find(
+                (r: any) => String(r.id) === String(editingReportId)
+              )?.mortality ??
+                allReportsForFarmer.layer.find(
+                  (r: any) => String(r.id) === String(editingReportId)
+                )?.mortality_pcs ??
+                0
+            )
+          )
+        : 0;
+    const displayBirds = isFromForm
+      ? Math.max(0, baseBirds + editingOldMortForWa - mortVal)
+      : baseBirds;
 
     const rmkText = getRemarkText(rep);
     const remarksLine = rmkText ? `\nRemarks: ${rmkText}\n` : "";
@@ -2121,7 +2610,12 @@ ${currentUserProfile.region}`;
     type: "before_sale" | "after_sale" | "layer_report",
     visit: any
   ) {
+    if (!canAddPoultryReport) {
+      alert("Your assigned categories do not include Poultry, so you cannot add reports here.");
+      return;
+    }
     setEditingReportId(null);
+    setEditingReportCreatedBy(null);
     setActiveReportVisit(visit);
     setReportVisitDate(new Date().toISOString().split("T")[0]);
     setTransferAgentId("");
@@ -2202,10 +2696,15 @@ ${currentUserProfile.region}`;
     table: "before_sale_reports" | "after_sale_reports" | "layer_reports",
     rep: any
   ) {
+    if (!canEditPoultryReport(rep)) {
+      alert("You can only edit reports you added.");
+      return;
+    }
     const visit = selectedHistoryVisit;
     if (!visit) return;
 
     setEditingReportId(rep.id);
+    setEditingReportCreatedBy(rep?.created_by ?? null);
     setActiveReportVisit(visit);
     setReportVisitDate(
       rep.visit_date || new Date().toISOString().split("T")[0]
@@ -2291,6 +2790,12 @@ ${currentUserProfile.region}`;
     table: "before_sale_reports" | "after_sale_reports" | "layer_reports"
   ) {
     if (!editingReportId) return;
+    // Permission guard (rule 5): Poultry report delete needs the
+    // category assigned AND ownership.
+    if (!canEditPoultryReport({ created_by: editingReportCreatedBy })) {
+      alert("You can only delete reports you added.");
+      return;
+    }
     const ok = window.confirm(
       "Are you sure you want to delete this report permanently?"
     );
@@ -2304,6 +2809,7 @@ ${currentUserProfile.region}`;
       if (error) throw error;
 
       setEditingReportId(null);
+      setEditingReportCreatedBy(null);
       setShowBeforeSaleModal(false);
       setShowAfterSaleModal(false);
       setShowLayerModal(false);
@@ -2322,6 +2828,37 @@ ${currentUserProfile.region}`;
   async function handleBeforeSaleSubmit() {
     if (!activeReportVisit) return;
     if (!validateBeforeSaleInputs(beforeForm)) return;
+    // Permission guard (rule 5): Poultry report add needs the category
+    // assigned; edits also need ownership (old rows: first edit stamps).
+    if (editingReportId !== null && editingReportId !== undefined) {
+      if (!canEditPoultryReport({ created_by: editingReportCreatedBy })) {
+        alert("You can only edit reports you added.");
+        return;
+      }
+    } else if (!canAddPoultryReport) {
+      alert("Your assigned categories do not include Poultry, so you cannot add reports here.");
+      return;
+    }
+
+    // Report validation (before any DB write): date + mortality cap.
+    // Before/After reports never change t_birds stock, so the cap is the
+    // batch total itself on both add and edit.
+    const beforeDateErr = validateReportDate(
+      reportVisitDate,
+      activeReportVisit.hatch_date
+    );
+    if (beforeDateErr) {
+      alert(beforeDateErr);
+      return;
+    }
+    const beforeMortErr = validateMortality(
+      Number(beforeForm.mortality_pcs) || 0,
+      Number(activeReportVisit.t_birds) || 0
+    );
+    if (beforeMortErr) {
+      alert(beforeMortErr);
+      return;
+    }
 
     try {
       // --- NEW CHECK FOR DUPLICATE DATE ---
@@ -2396,6 +2933,19 @@ ${currentUserProfile.region}`;
           ),
         }));
 
+        // Ownership (rule 2): stamp created_by on first edit of an
+        // old row that has none.
+        if (!editingReportCreatedBy && currentUserId) {
+          try {
+            await supabase
+              .from("before_sale_reports")
+              .update({ created_by: currentUserId })
+              .eq("id", editingReportId);
+          } catch {
+            // created_by column not added yet.
+          }
+        }
+
         alert("Before Sale Report updated!");
       } else {
         const insertPayload = {
@@ -2415,6 +2965,7 @@ ${currentUserProfile.region}`;
       }
 
       setEditingReportId(null);
+      setEditingReportCreatedBy(null);
       setShowBeforeSaleModal(false);
       await loadVetVisits();
       if (showHistoryModal && selectedHistoryVisit) {
@@ -2431,6 +2982,37 @@ ${currentUserProfile.region}`;
   async function handleAfterSaleSoldSubmit() {
     if (!activeReportVisit) return;
     if (!validateAfterSaleInputs(afterForm)) return;
+    // Permission guard (rule 5): Poultry report add needs the category
+    // assigned; edits also need ownership (old rows: first edit stamps).
+    if (editingReportId !== null && editingReportId !== undefined) {
+      if (!canEditPoultryReport({ created_by: editingReportCreatedBy })) {
+        alert("You can only edit reports you added.");
+        return;
+      }
+    } else if (!canAddPoultryReport) {
+      alert("Your assigned categories do not include Poultry, so you cannot add reports here.");
+      return;
+    }
+
+    // Report validation (before any DB write): date + mortality cap.
+    // Before/After reports never change t_birds stock, so the cap is the
+    // batch total itself on both add and edit.
+    const afterDateErr = validateReportDate(
+      reportVisitDate,
+      activeReportVisit.hatch_date
+    );
+    if (afterDateErr) {
+      alert(afterDateErr);
+      return;
+    }
+    const afterMortErr = validateMortality(
+      Number(afterForm.mortality) || 0,
+      Number(activeReportVisit.t_birds) || 0
+    );
+    if (afterMortErr) {
+      alert(afterMortErr);
+      return;
+    }
 
     try {
       // --- NEW CHECK FOR DUPLICATE DATE ---
@@ -2503,6 +3085,19 @@ ${currentUserProfile.region}`;
           ),
         }));
 
+        // Ownership (rule 2): stamp created_by on first edit of an
+        // old row that has none.
+        if (!editingReportCreatedBy && currentUserId) {
+          try {
+            await supabase
+              .from("after_sale_reports")
+              .update({ created_by: currentUserId })
+              .eq("id", editingReportId);
+          } catch {
+            // created_by column not added yet.
+          }
+        }
+
         alert("After Sale Report updated!");
       } else {
         const insertPayload: any = {
@@ -2546,6 +3141,7 @@ ${currentUserProfile.region}`;
       }
 
       setEditingReportId(null);
+      setEditingReportCreatedBy(null);
       setShowAfterSaleModal(false);
       await loadVetVisits();
       if (showHistoryModal && selectedHistoryVisit) {
@@ -2562,6 +3158,43 @@ ${currentUserProfile.region}`;
   
   async function handleLayerReportSubmit(markAsCulled = false) {
     if (!activeReportVisit) return;
+    // Permission guard (rule 5): Poultry report add needs the category
+    // assigned; edits also need ownership (old rows: first edit stamps).
+    if (editingReportId !== null && editingReportId !== undefined) {
+      if (!canEditPoultryReport({ created_by: editingReportCreatedBy })) {
+        alert("You can only edit reports you added.");
+        return;
+      }
+    } else if (!canAddPoultryReport) {
+      alert("Your assigned categories do not include Poultry, so you cannot add reports here.");
+      return;
+    }
+
+    // Report validation (before any DB write, incl. the feed-company
+    // change below): date + mortality cap. On edit, t_birds already had
+    // the old mortality subtracted, so the cap is t_birds + old mortality
+    // (editingLayerOldMort, same value the save-path recompute uses).
+    const layerDateErr = validateReportDate(
+      reportVisitDate,
+      activeReportVisit.hatch_date
+    );
+    if (layerDateErr) {
+      alert(layerDateErr);
+      return;
+    }
+    const layerMortCap =
+      Number(activeReportVisit.t_birds || 0) +
+      (editingReportId !== null && editingReportId !== undefined
+        ? editingLayerOldMort
+        : 0);
+    const layerMortErr = validateMortality(
+      Math.max(0, Number(layerForm.mortality_pcs || 0)),
+      layerMortCap
+    );
+    if (layerMortErr) {
+      alert(layerMortErr);
+      return;
+    }
 
     if (!markAsCulled) {
       if (!validateLayerInputs(layerForm)) return;
@@ -2603,7 +3236,38 @@ ${currentUserProfile.region}`;
 
       const mortNum = Math.max(0, Number(layerForm.mortality_pcs || 0));
       const prevBirds = Number(activeReportVisit.t_birds || 0);
-      const updatedTBirds = Math.max(0, prevBirds - mortNum);
+     
+      const isEditingLayerReport =
+        editingReportId !== null && editingReportId !== undefined;
+      const editingLayerOldRep = isEditingLayerReport
+        ? allReportsForFarmer.layer.find(
+            (r: any) => String(r.id) === String(editingReportId)
+          )
+        : null;
+      let oldMortNum = editingLayerOldRep
+        ? Math.max(
+            0,
+            Number(
+              editingLayerOldRep.mortality ??
+                editingLayerOldRep.mortality_pcs ??
+                0
+            )
+          )
+        : 0;
+      if (isEditingLayerReport && !editingLayerOldRep) {
+        const { data: oldRep } = await supabase
+          .from("layer_reports")
+          .select("mortality, mortality_pcs")
+          .eq("id", editingReportId)
+          .maybeSingle();
+        oldMortNum = Math.max(
+          0,
+          Number(
+            (oldRep as any)?.mortality ?? (oldRep as any)?.mortality_pcs ?? 0
+          )
+        );
+      }
+      const correctedTBirds = Math.max(0, prevBirds + oldMortNum - mortNum);
 
       const cleanRemarks = String(layerForm.remarks || "").trim();
       const finalRemarks =
@@ -2687,6 +3351,18 @@ ${currentUserProfile.region}`;
                 : r
             ),
           }));
+          // Ownership (rule 2): stamp created_by on first edit of an
+          // old row that has none.
+          if (!editingReportCreatedBy && currentUserId) {
+            try {
+              await supabase
+                .from("layer_reports")
+                .update({ created_by: currentUserId })
+                .eq("id", editingReportId);
+            } catch {
+              // created_by column not added yet.
+            }
+          }
         } else {
           const insertPayload: any = {
             ...updateFields,
@@ -2725,17 +3401,28 @@ ${currentUserProfile.region}`;
           .eq("id", activeReportVisit.id);
       }
 
-      if (!editingReportId && mortNum > 0) {
+      // Mortality changes the live total on ADD and on EDIT alike. On edit
+      // the visit/shed/farmer stocks already had oldMort subtracted, so
+      // recompute each from scratch from its pre-mortality base (stock +
+      // oldMort - new mortality); never subtract the new mortality again.
+      // Add: oldMort is 0, so this is the old add-only behaviour.
+      if (
+        (!isEditingLayerReport && mortNum > 0) ||
+        (isEditingLayerReport && correctedTBirds !== prevBirds)
+      ) {
         await supabase
           .from("vet_visits")
-          .update({ t_birds: updatedTBirds })
+          .update({ t_birds: correctedTBirds })
           .eq("id", activeReportVisit.id);
 
         const targetFarmerObj = statusFarmers.find(
           (f) => String(f.id) === String(activeReportVisit.farmer_id)
         );
         const currentLayerStock = Number(targetFarmerObj?.layer || prevBirds);
-        let newLayerStock = Math.max(0, currentLayerStock - mortNum);
+        let newLayerStock = Math.max(
+          0,
+          currentLayerStock + oldMortNum - mortNum
+        );
         // Multi-shed: mortality belongs to this visit's shed. Update that
         // shed's layer stock and recompute the farmer-row legacy total as
         // the sum across sheds, so old reports keep working.
@@ -2743,7 +3430,7 @@ ${currentUserProfile.region}`;
         if (mortShed && !String(mortShed.id).startsWith("legacy-")) {
           const shedLayer = Math.max(
             0,
-            Number(mortShed.layer || 0) - mortNum
+            Number(mortShed.layer || 0) + oldMortNum - mortNum
           );
           const mortSheds = getShedsForFarmer(targetFarmerObj);
           newLayerStock = mortSheds.reduce(
@@ -2769,7 +3456,7 @@ ${currentUserProfile.region}`;
         const visitCullUpdate: Record<string, any> = {
           status: "Culled",
           closed_date: reportVisitDate,
-          t_birds: editingReportId ? prevBirds : updatedTBirds,
+          t_birds: correctedTBirds,
           culled_reason: cullReasonText.trim(),
         };
         const { error: cullErr } = await supabase
@@ -2801,6 +3488,7 @@ ${currentUserProfile.region}`;
       }
 
       setEditingReportId(null);
+      setEditingReportCreatedBy(null);
       setShowLayerModal(false);
       setShowCullReasonInput(false);
       setCullReasonText("");
@@ -2845,6 +3533,10 @@ ${currentUserProfile.region}`;
   }
 
   function openAddFarmerUnderAgent(agentGroup: any) {
+    if (!canAddFarmerHere) {
+      alert("You do not have permission to add farmers.");
+      return;
+    }
     const agentObj = allAgents.find(
       (a) => String(a.id) === String(agentGroup.agentId)
     );
@@ -2882,6 +3574,14 @@ ${currentUserProfile.region}`;
   function handleFullEditRow(row: any) {
     const f = row.farmer;
     const v = row.visit;
+    if (!canEditRecord(role, f?.created_by, currentUserId)) {
+      alert("You can only edit farmers you added.");
+      return;
+    }
+    if (v && !canEditPoultryReport(v)) {
+      alert("You can only edit batches you added.");
+      return;
+    }
 
     setEditingFarmerId(f.id);
     setEditingBatchVisit(v || null);
@@ -2936,6 +3636,7 @@ ${currentUserProfile.region}`;
     setFormSheds(
       getShedsForFarmer(f).map((s: any, sIdx: number) => {
         const base: any = { ...EMPTY_SHED_FORM, ...s };
+        base.shed_name = getShedShortName(f, s, sIdx, getShedsForFarmer(f).length);
         if (sIdx === 0) {
           base.farm_category = f.farm_category || "Poultry";
           base.latitude =
@@ -2986,6 +3687,34 @@ ${currentUserProfile.region}`;
       return;
     }
 
+    // Permission guards: farmer add is NOT category-gated; farmer
+    // edits are creator-only; batch (vet_visit) edits also need
+    // Poultry assigned.
+    let editingFarmerCreator: string | null = null;
+    if (editingFarmerId) {
+      try {
+        const { data: existingFarmer } = await supabase
+          .from("farmers")
+          .select("created_by")
+          .eq("id", editingFarmerId)
+          .maybeSingle();
+        editingFarmerCreator = (existingFarmer as any)?.created_by ?? null;
+      } catch {
+        // created_by column not added yet — treat as old data.
+      }
+      if (!canEditRecord(role, editingFarmerCreator, currentUserId)) {
+        alert("You can only edit farmers you added.");
+        return;
+      }
+    } else if (!canAddFarmerHere) {
+      alert("You do not have permission to add farmers.");
+      return;
+    }
+    if (editingBatchVisit && !canEditPoultryReport(editingBatchVisit)) {
+      alert("You can only edit batches you added.");
+      return;
+    }
+
     try {
       const payload: any = {
         ...farmerForm,
@@ -3019,10 +3748,24 @@ ${currentUserProfile.region}`;
           .eq("id", editingFarmerId);
         if (fErr) throw fErr;
 
+        // Ownership (rule 2): stamp created_by on first edit of an
+        // old row that has none.
+        if (!editingFarmerCreator && currentUserId) {
+          try {
+            await supabase
+              .from("farmers")
+              .update({ created_by: currentUserId })
+              .eq("id", editingFarmerId);
+          } catch {
+            // created_by column not added yet.
+          }
+        }
+
         await saveShedsForFarmer(
           editingFarmerId,
           farmerForm.farmer_name,
-          shedsToSave
+          shedsToSave,
+          editingFarmerCreator || currentUserId
         );
 
         if (editingBatchVisit) {
@@ -3082,10 +3825,22 @@ ${currentUserProfile.region}`;
           }
         }
         if (newFarmerId) {
+          // Ownership: new farmers are stamped with their creator.
+          if (currentUserId) {
+            try {
+              await supabase
+                .from("farmers")
+                .update({ created_by: currentUserId })
+                .eq("id", newFarmerId);
+            } catch {
+              // created_by column not added yet.
+            }
+          }
           await saveShedsForFarmer(
             newFarmerId,
             farmerForm.farmer_name,
-            shedsToSave
+            shedsToSave,
+            currentUserId
           );
         }
         alert("New Farmer saved!");
@@ -3130,6 +3885,11 @@ ${currentUserProfile.region}`;
     if (row.kind !== "batch" || !row.visit) return;
     const visit = row.visit;
     const farmer = row.farmer;
+    // Removing a running batch deletes the visit + its reports.
+    if (!canEditPoultryReport(visit)) {
+      alert("You can only remove batches you added.");
+      return;
+    }
 
     const ok = window.confirm(
       `Warning: Remove "${
@@ -3635,7 +4395,7 @@ ${currentUserProfile.region}`;
   const availableAgentsForDropdown = allAgents.filter((a) => {
     if (
       selectedCompany !== "all" &&
-      String(a.company_id) !== String(selectedCompany)
+      !getAgentCompanyIds(a).includes(String(selectedCompany))
     ) {
       return false;
     }
@@ -3656,7 +4416,7 @@ ${currentUserProfile.region}`;
   const modalAvailableAgents = allAgents.filter((a) => {
     if (
       farmerForm.company_id &&
-      String(a.company_id) !== String(farmerForm.company_id)
+      !getAgentCompanyIds(a).includes(String(farmerForm.company_id))
     ) {
       return false;
     }
@@ -3694,34 +4454,123 @@ ${currentUserProfile.region}`;
     return { total: list.length, byCat };
   }
 
+  // ---- Per-shed table rows (one row per shed, not per farmer) ----
+  // A shed with a running batch shows one row per running visit
+  // (status Running, as before). Every other shed shows one row with
+  // its own Active/Inactive status from its own visits, so Active and
+  // Inactive sheds are visible in the table — not only Running ones.
+  // A row's status is therefore always that SHED's status.
+  const tableRows: any[] = [];
+  companyScopedFarmers.forEach((f) => {
+    const rows: any[] = [];
+    (f.runningVisits || []).forEach((v: any) => {
+      rows.push({
+        kind: "batch",
+        key: "v" + v.id,
+        status: "Running",
+        category: v.category || "Broiler",
+        farmer: f,
+        visit: v,
+        shed: getShedForVisit(v, f),
+        shedDisplayName: getVisitShedDisplayName(v, f),
+        statusDate: v.hatch_date || "",
+        daysSinceSale: f.daysSinceSale,
+        closedType: "",
+        isFirstRowOfFarmer: false,
+        isLastBatchOfFarmer: false,
+      });
+    });
+    (f.shedStatuses || []).forEach((ss: any) => {
+      if (ss.status === "Running") return; // covered by a batch row above
+      const shedList = getShedsForFarmer(f);
+      rows.push({
+        kind: "shed",
+        key: "s" + String(ss.shed?.id ?? `${f.id}-${rows.length}`),
+        status: ss.status,
+        category: f.category,
+        farmer: f,
+        visit: null,
+        shed: ss.shed,
+        shedDisplayName: getShedDisplayName(
+          f,
+          ss.shed,
+          shedList.indexOf(ss.shed),
+          shedList.length
+        ),
+        statusDate: ss.statusDate,
+        daysSinceSale: ss.daysSinceSale,
+        closedType: ss.closedType,
+        isFirstRowOfFarmer: false,
+        isLastBatchOfFarmer: false,
+      });
+    });
+    // Fallback: a farmer with no shed rows at all (cannot normally
+    // happen — getShedsForFarmer always yields at least one) keeps the
+    // old single farmer row so the farmer never disappears.
+    if (rows.length === 0) {
+      rows.push({
+        kind: "farmer",
+        key: "f" + f.id,
+        status: f.computedStatus,
+        category: f.category,
+        farmer: f,
+        visit: null,
+        shed: null,
+        shedDisplayName: f.farmer_name,
+        statusDate: f.statusDate,
+        daysSinceSale: f.daysSinceSale,
+        closedType: f.closedType,
+        isFirstRowOfFarmer: false,
+        isLastBatchOfFarmer: false,
+      });
+    }
+    rows[0].isFirstRowOfFarmer = true;
+    rows[rows.length - 1].isLastBatchOfFarmer = true;
+    rows.forEach((r: any) => tableRows.push(r));
+  });
+
+  // Summary counts are per-shed ROWS now (Total/Running/Active/
+  // Inactive), matching the table. Leave/Convert stay farmer-level
+  // (nourishTag is a farmer attribute) via getSummaryForGroup.
+  function getRowSummaryForGroup(groupFilter: (r: any) => boolean) {
+    const list = tableRows.filter(groupFilter);
+    const byCat: Record<string, number> = {};
+    CATEGORIES.forEach((c) => {
+      byCat[c] = list.filter(
+        (item) => item.category?.toLowerCase() === c.toLowerCase()
+      ).length;
+    });
+    return { total: list.length, byCat };
+  }
+
   const summaryCards = [
     {
       key: "all" as StatusTab,
       title: "Total",
       color: "border-slate-300 bg-white text-slate-800",
       badgeBg: "bg-slate-800 text-white",
-      data: getSummaryForGroup(() => true),
+      data: getRowSummaryForGroup(() => true),
     },
     {
       key: "Running" as StatusTab,
       title: "Running",
       color: "border-emerald-300 bg-emerald-50/60 text-emerald-900",
       badgeBg: "bg-emerald-600 text-white",
-      data: getSummaryForGroup((f) => f.computedStatus === "Running"),
+      data: getRowSummaryForGroup((r) => r.status === "Running"),
     },
     {
       key: "Active" as StatusTab,
       title: "Active (<2M)",
       color: "border-blue-300 bg-blue-50/60 text-blue-900",
       badgeBg: "bg-blue-600 text-white",
-      data: getSummaryForGroup((f) => f.computedStatus === "Active"),
+      data: getRowSummaryForGroup((r) => r.status === "Active"),
     },
     {
       key: "Inactive" as StatusTab,
       title: "Inactive (>2M)",
       color: "border-amber-300 bg-amber-50/60 text-amber-900",
       badgeBg: "bg-amber-600 text-white",
-      data: getSummaryForGroup((f) => f.computedStatus === "Inactive"),
+      data: getRowSummaryForGroup((r) => r.status === "Inactive"),
     },
     {
       key: "Leave from Nourish" as StatusTab,
@@ -3739,32 +4588,6 @@ ${currentUserProfile.region}`;
     },
   ];
 
-  const tableRows: any[] = [];
-  companyScopedFarmers.forEach((f) => {
-    if (f.runningVisits.length > 0) {
-      f.runningVisits.forEach((v: any, idx: number) =>
-        tableRows.push({
-          kind: "batch",
-          key: "v" + v.id,
-          status: "Running",
-          category: v.category || "Broiler",
-          farmer: f,
-          visit: v,
-          isLastBatchOfFarmer: idx === f.runningVisits.length - 1,
-        })
-      );
-    } else {
-      tableRows.push({
-        kind: "farmer",
-        key: "f" + f.id,
-        status: f.computedStatus,
-        category: f.category,
-        farmer: f,
-        visit: null,
-        isLastBatchOfFarmer: true,
-      });
-    }
-  });
 
   function rowRank(r: any) {
     const base = STATUS_RANK[r.status] ?? 3;
@@ -3802,6 +4625,9 @@ ${currentUserProfile.region}`;
           getShedsForFarmer(f).some((s: any, si: number) =>
             getShedDisplayName(f, s, si, getShedsForFarmer(f).length)
               .toLowerCase()
+              .includes(q) ||
+            getShedShortName(f, s, si, getShedsForFarmer(f).length)
+              .toLowerCase()
               .includes(q)
           );
         if (!match) return false;
@@ -3836,13 +4662,183 @@ ${currentUserProfile.region}`;
     String(x.agentName).localeCompare(String(y.agentName))
   ) as any[];
 
-  function toggleFarmerCheckbox(id: string) {
-    setSelectedFarmerIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
+  // Add a shed for the activate-modal farmer, right from the Add Batch
+  // modal (same naming + previous-shed prompt as addFormShed, but the
+  // shed is written to farmer_sheds immediately so it appears in the
+  // shed select at once — and on FarmersPage, which reads the same table).
+  // Shed add follows the farmer rule: any officer may add (no category
+  // gate — only reports are category-gated).
+  async function addActivateShed() {
+    if (!activateFarmer || addingActivateShed) return;
+    if (!canAddFarmerHere) return;
+    const farmer = activateFarmer;
+    const sheds = getShedsForFarmer(farmer);
+    setAddingActivateShed(true);
+    try {
+      // Insert a shed row; stamp the creator when the column exists,
+      // retry without it when it does not (same as insertWithOptionalShedId).
+      const insertShedRow = async (row: any) => {
+        let res: any = await supabase
+          .from("farmer_sheds")
+          .insert([{ ...row, created_by: currentUserId || null }])
+          .select()
+          .single();
+        if (
+          res.error &&
+          /created_by/i.test(String(res.error.message || ""))
+        ) {
+          res = await supabase
+            .from("farmer_sheds")
+            .insert([row])
+            .select()
+            .single();
+        }
+        return res;
+      };
+
+      // Adding a 2nd shed: if the only existing shed has no name yet,
+      // ask for its name first (empty/cancel => "Shed 1").
+      const prev = sheds.length > 0 ? sheds[0] : null;
+      const prevNeedsName =
+        sheds.length === 1 &&
+        prev &&
+        getShedShortName(
+          { farmer_name: farmer.farmer_name },
+          prev,
+          0,
+          1
+        ) === "";
+      let baseSheds: any[] = sheds;
+      if (prevNeedsName && prev) {
+        const answer = window.prompt(
+          "Enter name for the shed or will be shed 1:",
+          ""
+        );
+        const prevName =
+          answer && answer.trim()
+            ? getShedShortName(
+                { farmer_name: farmer.farmer_name },
+                { shed_name: answer.trim() },
+                0,
+                2
+              )
+            : "Shed 1";
+        const prevIsLegacy =
+          prev.id == null || String(prev.id).startsWith("legacy-");
+        if (prevIsLegacy) {
+          // The old single shed only exists on the farmer row — save it
+          // as a real shed row first, otherwise it would vanish once a
+          // 2nd shed exists.
+          const prevDb = shedFormToDb(
+            { ...prev, shed_name: prevName },
+            Number(farmer.id),
+            farmer.farmer_name,
+            0,
+            2
+          );
+          const prevRes = await insertShedRow(prevDb);
+          if (prevRes.error) throw prevRes.error;
+          baseSheds = [prevRes.data];
+        } else {
+          await supabase
+            .from("farmer_sheds")
+            .update({ shed_name: prevName })
+            .eq("id", Number(prev.id));
+          baseSheds = [{ ...prev, shed_name: prevName }];
+        }
+      }
+
+      // The new shed: ask for its name first — a typed name is saved,
+      // empty/cancel falls back to the default "Shed N" label.
+      const newCount = baseSheds.length + 1;
+      const newAnswer = window.prompt(
+        `Notun shed er nam din (khali rakhle 'Shed ${newCount}' hobe):`,
+        ""
+      );
+      const newName =
+        newAnswer && newAnswer.trim()
+          ? getShedShortName(
+              { farmer_name: farmer.farmer_name },
+              { shed_name: newAnswer.trim() },
+              newCount - 1,
+              newCount
+            )
+          : `Shed ${newCount}`;
+      const cat = activateForm.category;
+      const farmCat = cat === "Cattle" || cat === "Fish" ? cat : "Poultry";
+      const newDb = shedFormToDb(
+        {
+          ...EMPTY_SHED_FORM,
+          shed_name: newName,
+          farm_category: farmCat,
+          latitude: farmer.latitude != null ? String(farmer.latitude) : "",
+          longitude:
+            farmer.longitude != null ? String(farmer.longitude) : "",
+          status: "Active",
+        },
+        Number(farmer.id),
+        farmer.farmer_name,
+        newCount - 1,
+        newCount
+      );
+      const newRes = await insertShedRow(newDb);
+      if (newRes.error) throw newRes.error;
+      const newShed = newRes.data;
+
+      // Refresh the modal select + the table behind it from local state
+      // (no full reload — the modal stays open on the new shed).
+      const allSheds = [...baseSheds, newShed];
+      setActivateFarmer({ ...farmer, farmer_sheds: allSheds });
+      setStatusFarmers((prevList: any[]) =>
+        prevList.map((f: any) => {
+          if (String(f.id) !== String(farmer.id)) return f;
+          const updatedStatuses = (f.shedStatuses || []).map((ss: any) => {
+            if (
+              prevNeedsName &&
+              prev &&
+              String(ss.shed?.id) === String(prev.id)
+            ) {
+              return { ...ss, shed: baseSheds[0] };
+            }
+            const match = allSheds.find(
+              (s: any) => String(s.id) === String(ss.shed?.id)
+            );
+            return match ? { ...ss, shed: match } : ss;
+          });
+          if (
+            !updatedStatuses.some(
+              (ss: any) => String(ss.shed?.id) === String(newShed.id)
+            )
+          ) {
+            updatedStatuses.push({
+              shed: newShed,
+              status: "Active",
+              statusDate: "",
+              daysSinceSale: null,
+              closedType: "",
+            });
+          }
+          return {
+            ...f,
+            farmer_sheds: allSheds,
+            shedStatuses: updatedStatuses,
+          };
+        })
+      );
+      setActivateShedId(String(newShed.id));
+    } catch (e: any) {
+      console.error("Could not add shed:", e);
+      alert("Shed add kora jayni. " + (e?.message || ""));
+    } finally {
+      setAddingActivateShed(false);
+    }
   }
 
   function openActivateModal(farmer: any) {
+    if (!canAddPoultryReport) {
+      alert("Your assigned categories do not include Poultry, so you cannot activate batches here.");
+      return;
+    }
     const defaultCat = farmer.category || "Broiler";
     const defaultBreeds = BREEDS_BY_CATEGORY[defaultCat] || [];
     const defaultHatchery =
@@ -3850,7 +4846,6 @@ ${currentUserProfile.region}`;
         ?.company_name ||
       companies[0]?.company_name ||
       "";
-    setActivateBulk(false);
     setActivateFarmer(farmer);
     setActivateShedId("");
     setActivateMode("add");
@@ -3867,31 +4862,8 @@ ${currentUserProfile.region}`;
     setShowActivateModal(true);
   }
 
-  function openBulkActivateModal() {
-    if (selectedFarmerIds.length === 0) return;
-    const defaultHatchery =
-      companies.find((c) => String(c.id) === String(selectedCompany))
-        ?.company_name ||
-      companies[0]?.company_name ||
-      "";
-    setActivateBulk(true);
-    setActivateFarmer(null);
-    setActivateMode("add");
-    setActivateForm({
-      category: "Broiler",
-      hatch_date: new Date().toISOString().split("T")[0],
-      hatchery: defaultHatchery,
-      breed: BREEDS_BY_CATEGORY["Broiler"][0],
-      grade: "AG",
-      box_no: "",
-      t_birds: "",
-      batch_mark: "",
-    });
-    setShowActivateModal(true);
-  }
-
   const activatePrevCats: string[] = (() => {
-    if (activateBulk || !activateFarmer) return [];
+    if (!activateFarmer) return [];
     const running = (activateFarmer.runningVisits || [])
       .map((v: any) => v.category)
       .filter(Boolean);
@@ -3900,7 +4872,6 @@ ${currentUserProfile.region}`;
     return activateFarmer.category ? [activateFarmer.category] : [];
   })();
   const activateNeedsChoice =
-    !activateBulk &&
     activatePrevCats.length > 0 &&
     !activatePrevCats.some(
       (c) => c.toLowerCase() === activateForm.category.toLowerCase()
@@ -3914,11 +4885,12 @@ ${currentUserProfile.region}`;
       alert("Hatch Date and Total Birds are required.");
       return;
     }
-    const targets = activateBulk
-      ? statusFarmers.filter((f) => selectedFarmerIds.includes(String(f.id)))
-      : activateFarmer
-      ? [activateFarmer]
-      : [];
+    // Activating a batch creates a vet_visit (a Poultry report).
+    if (!canAddPoultryReport) {
+      alert("Your assigned categories do not include Poultry, so you cannot activate batches here.");
+      return;
+    }
+    const targets = activateFarmer ? [activateFarmer] : [];
     if (targets.length === 0) return;
 
     try {
@@ -3934,7 +4906,7 @@ ${currentUserProfile.region}`;
           (v) => (v.category || "").toLowerCase() === catLower
         );
         const mode: "add" | "replace" =
-          !activateBulk && activateNeedsChoice ? activateMode : "add";
+          activateNeedsChoice ? activateMode : "add";
 
         const targetSheds = getShedsForFarmer(target);
         const chosenShed =
@@ -3942,7 +4914,7 @@ ${currentUserProfile.region}`;
             (s: any) => String(s.id) === String(activateShedId)
           ) || targetSheds[0] || null;
 
-        const manual = (!activateBulk && activateForm.batch_mark.trim()) || "";
+        const manual = activateForm.batch_mark.trim() || "";
         const autoNumberedName = `${baseName} Batch ${nextSeqNum}`;
         const batchLabel = manual
           ? `${autoNumberedName} (${manual})`
@@ -4030,7 +5002,6 @@ ${currentUserProfile.region}`;
       }
       alert("Farm is now Running!");
       setShowActivateModal(false);
-      setSelectedFarmerIds([]);
       loadVetVisits();
     } catch (err: any) {
       alert(err.message || "Failed to activate farmer");
@@ -4063,10 +5034,13 @@ ${currentUserProfile.region}`;
         sheet.addRow([
           idx + 1,
           r.status,
-          r.kind === "batch" ? v?.hatch_date || "-" : f.statusDate || "-",
+          r.kind === "batch" ? v?.hatch_date || "-" : r.statusDate || f.statusDate || "-",
           r.category,
           f.agentName,
-          v?.shedDisplayName || v?.displayBatchName || f.farmer_name,
+          v?.shedDisplayName ||
+            r.shedDisplayName ||
+            v?.displayBatchName ||
+            f.farmer_name,
           f.mobile || "-",
           [f.village, f.upazila].filter(Boolean).join(", "),
           v?.hatchery || "-",
@@ -4091,6 +5065,8 @@ ${currentUserProfile.region}`;
       alert("Farmer Status export failed.");
     }
   }
+
+  const todayStr = new Date().toISOString().split("T")[0];
 
   const activeAgeDays = getAgeDays(
     activeReportVisit?.hatch_date,
@@ -4121,13 +5097,36 @@ ${currentUserProfile.region}`;
     UPDATED_FEED_TYPES_BY_CATEGORY[activeReportVisit?.category || "Broiler"] ||
     UPDATED_FEED_TYPES_BY_CATEGORY["Broiler"];
 
-  const liveLayerBirdsAfterMortality = editingReportId
-    ? Number(activeReportVisit?.t_birds || 0)
-    : Math.max(
-        0,
-        Number(activeReportVisit?.t_birds || 0) -
-          Math.max(0, Number(layerForm.mortality_pcs || 0))
-      );
+  // Live birds shown in the layer modal: on edit, recompute from scratch
+  // (t_birds + old mortality - new mortality), exactly like the save path.
+  const editingLayerOldMort =
+    editingReportId !== null && editingReportId !== undefined
+      ? Math.max(
+          0,
+          Number(
+            allReportsForFarmer.layer.find(
+              (r: any) => String(r.id) === String(editingReportId)
+            )?.mortality ??
+              allReportsForFarmer.layer.find(
+                (r: any) => String(r.id) === String(editingReportId)
+              )?.mortality_pcs ??
+              0
+          )
+        )
+      : 0;
+  const liveLayerBirdsAfterMortality = Math.max(
+    0,
+    Number(activeReportVisit?.t_birds || 0) +
+      editingLayerOldMort -
+      Math.max(0, Number(layerForm.mortality_pcs || 0))
+  );
+
+  // Mortality caps for the report inputs (submit-time validation above is
+  // the real gate; these only bound the number picker). Before/After
+  // reports never change t_birds, so their cap is the batch total; Layer
+  // on edit is t_birds + old mortality. Unset (undefined) when unknown.
+  const reportMortalityCap = Number(activeReportVisit?.t_birds || 0);
+  const layerMortalityCap = reportMortalityCap + editingLayerOldMort;
 
   const beforeExtraCols = [
     { key: "pro_date", label: "MFG Date" },
@@ -4171,7 +5170,7 @@ ${currentUserProfile.region}`;
       <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-slate-300 rounded-xl px-3 py-2 shadow-sm">
         <div className="flex items-center gap-2">
           <h1 className="text-sm sm:text-base font-bold text-slate-800">
-            Vet Visits
+            Poultry Visit
           </h1>
           <span className="text-[11px] font-semibold bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-lg text-slate-700">
             Rows: <strong>{tableFilteredRows.length}</strong>
@@ -4179,15 +5178,6 @@ ${currentUserProfile.region}`;
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
-          {selectedFarmerIds.length > 0 && (
-            <button
-              type="button"
-              onClick={openBulkActivateModal}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded-lg text-[11px] font-bold shadow-sm transition"
-            >
-              Activate Selected ({selectedFarmerIds.length})
-            </button>
-          )}
           <button
             type="button"
             onClick={exportFilteredFarmersExcel}
@@ -4336,7 +5326,6 @@ ${currentUserProfile.region}`;
               setSelectedCategoryFilter("all");
               setSelectedStatusFilter("all");
               setSearchQuery("");
-              setSelectedFarmerIds([]);
               setFocusVisitId(null);
             }}
             className="rounded-md bg-slate-100 hover:bg-slate-200 border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 transition"
@@ -4371,6 +5360,7 @@ ${currentUserProfile.region}`;
                       {agentGroup.agentName}
                     </span>
                   </h2>
+                  {canAddFarmerHere && (
                   <button
                     type="button"
                     onClick={() => openAddFarmerUnderAgent(agentGroup)}
@@ -4380,6 +5370,7 @@ ${currentUserProfile.region}`;
                     <Plus size={11} />
                     <UserPlus size={12} />
                   </button>
+                  )}
                 </div>
                 <span className="text-[11px] bg-white border border-slate-300 text-slate-700 px-2 py-0.5 rounded font-semibold">
                   {agentGroup.rows.length} ({countsText})
@@ -4390,6 +5381,9 @@ ${currentUserProfile.region}`;
                 <table className="w-full text-left border-collapse text-xs">
                   <thead className="bg-slate-50 text-slate-700 whitespace-nowrap">
                     <tr>
+                      <th className="border border-slate-300 px-2 py-1 text-center">
+                        Sl.
+                      </th>
                       <th className="border border-slate-300 px-2 py-1">
                         Status & Date
                       </th>
@@ -4429,7 +5423,7 @@ ${currentUserProfile.region}`;
                     </tr>
                   </thead>
                   <tbody>
-                    {agentGroup.rows.map((row: any) => {
+                    {agentGroup.rows.map((row: any, rowIdx: number) => {
                       const farmer = row.farmer;
                       const visit = row.visit;
                       const isBatch = row.kind === "batch";
@@ -4453,10 +5447,10 @@ ${currentUserProfile.region}`;
                         : "";
                       const shedName = isBatch
                         ? getVisitShedDisplayName(visit, farmer)
-                        : farmer.farmer_name || "N/A";
+                        : row.shedDisplayName || farmer.farmer_name || "N/A";
                       const isFocused =
                         isBatch && focusVisitId === String(visit.id);
-                      const days = farmer.daysSinceSale;
+                      const days = row.daysSinceSale ?? farmer.daysSinceSale;
                       const daysText =
                         days === null || days === undefined
                           ? ""
@@ -4490,21 +5484,13 @@ ${currentUserProfile.region}`;
                             isFocused ? "bg-yellow-50" : ""
                           }`}
                         >
-                          {/* 1. STATUS & DATE */}
+                          {/* 1. SL. */}
+                          <td className="border border-slate-300 px-2 py-1 text-center">
+                            {rowIdx + 1}
+                          </td>
+                          {/* 2. STATUS & DATE */}
                           <td className="border border-slate-300 px-2 py-1 whitespace-nowrap">
                             <div className="flex items-center gap-1">
-                              {!isBatch && (
-                                <input
-                                  type="checkbox"
-                                  checked={selectedFarmerIds.includes(
-                                    String(farmer.id)
-                                  )}
-                                  onChange={() =>
-                                    toggleFarmerCheckbox(String(farmer.id))
-                                  }
-                                  className="w-3.5 h-3.5 accent-emerald-600 cursor-pointer"
-                                />
-                              )}
                               <span
                                 className={`inline-block px-1.5 py-0 rounded-full text-[10px] font-bold ${
                                   row.status === "Running"
@@ -4531,10 +5517,12 @@ ${currentUserProfile.region}`;
                             <div className="text-[10px] text-slate-500 truncate">
                               {isBatch ? (
                                 <>H.Date: {formatDmy(visit.hatch_date)}</>
-                              ) : farmer.statusDate ? (
+                              ) : row.statusDate ? (
                                 <>
-                                  {farmer.closedType || "Sale"}:{" "}
-                                  {formatDmy(farmer.statusDate)}
+                                  {row.closedType ||
+                                    farmer.closedType ||
+                                    "Sale"}
+                                  : {formatDmy(row.statusDate)}
                                   {daysText && (
                                     <span className="ml-1 font-semibold text-slate-600">
                                       • {daysText}
@@ -4640,6 +5628,7 @@ ${currentUserProfile.region}`;
                                       </div>
                                     )}
                                   </div>
+                                  {canEditPoultryReport(visit) && (
                                   <button
                                     type="button"
                                     onClick={() =>
@@ -4650,12 +5639,13 @@ ${currentUserProfile.region}`;
                                   >
                                     +
                                   </button>
+                                  )}
                                 </div>
                               </td>
 
                               {/* 10. TAKE REPORT */}
                               <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap">
-                                {isLayer ? (
+                                {!canAddPoultryReport ? null : isLayer ? (
                                   <button
                                     type="button"
                                     id={`after-sale-btn-${visit.id}`}
@@ -4780,13 +5770,15 @@ ${currentUserProfile.region}`;
                                   ? `${actionOptionLabel} ▾`
                                   : "Action ▾"}
                               </option>
-                              {row.isLastBatchOfFarmer && (
+                              {row.isLastBatchOfFarmer && canAddPoultryReport && (
                                 <option value="run">
                                   + {actionOptionLabel}
                                 </option>
                               )}
-                              <option value="edit">✎ Edit</option>
-                              {isBatch && (
+                              {canFullEditRow(row) && (
+                                <option value="edit">✎ Edit</option>
+                              )}
+                              {isBatch && canEditPoultryReport(visit) && (
                                 <option value="remove_running">
                                   ✖ Remove
                                 </option>
@@ -4823,100 +5815,91 @@ ${currentUserProfile.region}`;
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3 text-xs">
               <div>
-                <label className="block font-bold text-slate-600 mb-1">
+                <label className="block text-xs font-bold text-slate-600 mb-1">
                   Company *
                 </label>
-                <select
+                <SearchableSelect
                   value={farmerForm.company_id}
-                  onChange={(e) =>
+                  onChange={(v) =>
                     setFarmerForm({
                       ...farmerForm,
-                      company_id: e.target.value,
+                      company_id: v,
                       agent_id: "",
                     })
                   }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5"
-                >
-                  <option value="">Select Company</option>
-                  {companies.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.company_name}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="Select Company"
+                  options={companies.map((c) => ({
+                    value: String(c.id),
+                    label: c.company_name,
+                  }))}
+                />
               </div>
 
               <div>
-                <label className="block font-bold text-slate-600 mb-1">
+                <label className="block text-xs font-bold text-slate-600 mb-1">
                   District *
                 </label>
-                <select
+                <SearchableSelect
+                  searchable={false}
                   value={farmerForm.district}
-                  onChange={(e) =>
+                  onChange={(v) =>
                     setFarmerForm({
                       ...farmerForm,
-                      district: e.target.value,
+                      district: v,
                       upazila: "",
                       union_name: "",
+                      agent_id: "",
                     })
                   }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5"
-                >
-                  <option value="">Select District</option>
-                  {geoDistricts.map((d) => (
-                    <option key={d.id} value={d.name}>
-                      {d.name}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="Select District"
+                  options={geoDistricts.map((d) => ({
+                    value: d.name,
+                    label: d.name,
+                  }))}
+                />
               </div>
 
               <div>
-                <label className="block font-bold text-slate-600 mb-1">
+                <label className="block text-xs font-bold text-slate-600 mb-1">
                   Upazila *
                 </label>
-                <select
+                <SearchableSelect
                   value={farmerForm.upazila}
-                  onChange={(e) =>
+                  onChange={(v) =>
                     setFarmerForm({
                       ...farmerForm,
-                      upazila: e.target.value,
+                      upazila: v,
                       union_name: "",
+                      agent_id: "",
                     })
                   }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5"
-                >
-                  <option value="">Select Upazila</option>
-                  {geoUpazilas.map((u) => (
-                    <option key={u.id} value={u.name}>
-                      {u.name}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="Select Upazila"
+                  options={geoUpazilas.map((u) => ({
+                    value: u.name,
+                    label: u.name,
+                  }))}
+                />
               </div>
 
               <div>
-                <label className="block font-bold text-slate-600 mb-1">
+                <label className="block text-xs font-bold text-slate-600 mb-1">
                   Agent *
                 </label>
-                <select
+                <SearchableSelect
                   value={farmerForm.agent_id}
-                  onChange={(e) =>
-                    setFarmerForm({ ...farmerForm, agent_id: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5"
-                >
-                  <option value="">Select Agent</option>
-                  {modalAvailableAgents.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.agent_name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => setFarmerForm({ ...farmerForm, agent_id: v })}
+                  placeholder="Select Agent"
+                  options={modalAvailableAgents.map((a) => ({
+                    value: String(a.id),
+                    label:
+                      a.agent_name +
+                      (isAgentNonExclusive(a) ? " (non-ex.)" : ""),
+                  }))}
+                />
               </div>
 
               <div>
-                <label className="block font-bold text-slate-600 mb-1">
+                <label className="block text-xs font-bold text-slate-600 mb-1">
                   Farmer Name *
                 </label>
                 <input
@@ -4928,12 +5911,12 @@ ${currentUserProfile.region}`;
                       farmer_name: e.target.value,
                     })
                   }
-                  className="w-full rounded border border-slate-300 px-2.5 py-1.5"
+                  className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
                 />
               </div>
 
               <div>
-                <label className="block font-bold text-slate-600 mb-1">
+                <label className="block text-xs font-bold text-slate-600 mb-1">
                   Mobile
                 </label>
                 <input
@@ -4942,35 +5925,27 @@ ${currentUserProfile.region}`;
                   onChange={(e) =>
                     setFarmerForm({ ...farmerForm, mobile: e.target.value })
                   }
-                  className="w-full rounded border border-slate-300 px-2.5 py-1.5"
+                  className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
                 />
               </div>
 
               <div>
-                <label className="block font-bold text-slate-600 mb-1">
+                <label className="block text-xs font-bold text-slate-600 mb-1">
                   Union
                 </label>
-                <select
+                <SearchableSelect
                   value={farmerForm.union_name}
-                  onChange={(e) =>
-                    setFarmerForm({
-                      ...farmerForm,
-                      union_name: e.target.value,
-                    })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5"
-                >
-                  <option value="">Select Union</option>
-                  {geoUnions.map((u) => (
-                    <option key={u.id} value={u.name}>
-                      {u.name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => setFarmerForm({ ...farmerForm, union_name: v })}
+                  placeholder="Select Union"
+                  options={geoUnions.map((u) => ({
+                    value: u.name,
+                    label: u.name,
+                  }))}
+                />
               </div>
 
               <div>
-                <label className="block font-bold text-slate-600 mb-1">
+                <label className="block text-xs font-bold text-slate-600 mb-1">
                   Village
                 </label>
                 <input
@@ -4979,256 +5954,138 @@ ${currentUserProfile.region}`;
                   onChange={(e) =>
                     setFarmerForm({ ...farmerForm, village: e.target.value })
                   }
-                  className="w-full rounded border border-slate-300 px-2.5 py-1.5"
+                  className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
                 />
               </div>
             </div>
 
-            <div className="mb-3 flex flex-wrap items-center gap-2 bg-slate-50 border border-slate-200 rounded p-2.5 text-xs">
-              <button
-                type="button"
-                onClick={() => {
-                  setPickerCenterOverride(null);
-                  setShowMapPicker(true);
-                }}
-                className="inline-flex items-center gap-1.5 bg-blue-600 text-white px-3 py-1.5 rounded font-semibold"
-              >
-                <MapPin size={13} /> Select Location from Map
-              </button>
-
-              {farmerForm.latitude && farmerForm.longitude && (
-                <span className="text-emerald-700 font-semibold">
-                  📍 Selected ({Number(farmerForm.latitude).toFixed(4)},{" "}
-                  {Number(farmerForm.longitude).toFixed(4)})
-                </span>
-              )}
-            </div>
-
-            <div className="mb-3 text-xs">
-              <label className="block font-bold text-slate-600 mb-1">
-                Farm Category *
-              </label>
-              <select
-                value={farmerForm.farm_category || ""}
-                onChange={(e) =>
-                  setFarmerForm({
-                    ...farmerForm,
-                    farm_category: e.target.value,
-                  })
-                }
-                className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5"
-              >
-                <option value="">Select Category</option>
-                <option value="Poultry">🐔 Poultry</option>
-                <option value="Cattle">🐄 Cattle</option>
-                <option value="Fish">🐟 Fish</option>
-              </select>
-            </div>
-
-            {farmerForm.farm_category === "Poultry" && (
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3 bg-amber-50 border border-amber-200 rounded p-2.5 text-xs">
-                {POULTRY_FIELDS.map((item) => (
-                  <div key={item}>
-                    <label className="block text-[11px] font-semibold capitalize">
-                      {item.replace("_", " ")}
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={(farmerForm as any)[item] || ""}
-                      onChange={(e) =>
-                        setFarmerForm({
-                          ...farmerForm,
-                          [item]: e.target.value,
-                        })
-                      }
-                      className="w-full rounded border border-slate-300 bg-white px-2 py-1"
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {farmerForm.farm_category === "Cattle" && (
-              <div className="grid grid-cols-3 gap-2 mb-3 bg-emerald-50 border border-emerald-200 rounded p-2.5 text-xs">
-                {CATTLE_FIELDS.map((item) => (
-                  <div key={item}>
-                    <label className="block text-[11px] font-semibold capitalize">
-                      {item.replace("_", " ")}
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={(farmerForm as any)[item] || ""}
-                      onChange={(e) =>
-                        setFarmerForm({
-                          ...farmerForm,
-                          [item]: e.target.value,
-                        })
-                      }
-                      className="w-full rounded border border-slate-300 bg-white px-2 py-1"
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {farmerForm.farm_category === "Fish" && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3 bg-sky-50 border border-sky-200 rounded p-2.5 text-xs">
-                {FISH_FIELDS.map((item) => (
-                  <div key={item}>
-                    <label className="block text-[11px] font-semibold capitalize">
-                      {item}
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={(farmerForm as any)[item] || ""}
-                      onChange={(e) =>
-                        setFarmerForm({
-                          ...farmerForm,
-                          [item]: e.target.value,
-                        })
-                      }
-                      className="w-full rounded border border-slate-300 bg-white px-2 py-1"
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3 text-xs">
-                <div>
-                  <label className="block font-bold text-slate-600 mb-1">
-                    Feed Type
-                  </label>
-                  <SearchableSelect
-                  searchable={false}
-                    value={farmerForm.feed_type}
-                    onChange={(v) =>
-                      setFarmerForm({ ...farmerForm, feed_type: v })
-                    }
-                    placeholder="Select Feed Type"
-                    options={
-                      typeof activeFeedTypeOptions !== "undefined"
-                        ? activeFeedTypeOptions.map((ft) => ({
-                            value: ft,
-                            label: ft,
-                          }))
-                        : [] 
-                    }
-                  />
-                </div>
-
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">
-                  Remarks
+            {/* Sheds — one farmer, multiple sheds, each with its own location/category/stock */}
+            <div className="mb-3">
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-xs font-bold text-slate-600">
+                  Sheds * ({formSheds.length})
                 </label>
-                <input
-                  placeholder="Remarks"
-                  value={farmerForm.remarks}
-                  onChange={(e) =>
-                    setFarmerForm({ ...farmerForm, remarks: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 px-2.5 py-1.5"
-                />
               </div>
-            </div>
 
-            {/* Sheds: the first shed is the farmer (shown as the farmer name);
-                extra sheds get their own label, category and location. */}
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 mb-3 space-y-2.5 text-xs">
-              <div className="flex items-center justify-between">
-                <div className="font-bold text-slate-800">
-                  Sheds ({formSheds.length})
-                </div>
-                <button
-                  type="button"
-                  onClick={addFormShed}
-                  className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
-                >
-                  + Add Shed
-                </button>
-              </div>
-              <p className="text-[11px] text-slate-500">
-                The first shed is shown as the farmer name — no “Shed 1”
-                label. A second shed is named “Farmer Name - Shed 2” unless
-                you give it its own label.
-              </p>
-              {formSheds.map((shed: any, sIdx: number) => (
-                <div
-                  key={sIdx}
-                  className="border border-slate-200 bg-white rounded-lg p-2.5 space-y-2"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-bold text-slate-700">
-                      {sIdx === 0
-                        ? farmerForm.farmer_name || "Farmer"
-                        : getShedDisplayName(
-                            { farmer_name: farmerForm.farmer_name } as any,
-                            shed,
-                            sIdx,
-                            formSheds.length
-                          )}
-                    </span>
-                    {formSheds.length > 1 && (
+              {formSheds.map((shed: any, sIdx: number) => {
+                const shedCat =
+                  sIdx === 0
+                    ? farmerForm.farm_category || ""
+                    : shed.farm_category || farmerForm.farm_category || "";
+                const shedShort = getShedShortName(
+                  { farmer_name: farmerForm.farmer_name } as any,
+                  shed,
+                  sIdx,
+                  formSheds.length
+                );
+                const stockVal = (field: string) =>
+                  sIdx === 0 ? (farmerForm as any)[field] : shed[field];
+                const setStockVal = (field: string, value: string) => {
+                  if (sIdx === 0) {
+                    setFarmerForm({ ...farmerForm, [field]: value });
+                  } else {
+                    updateFormShedField(sIdx, field, value);
+                  }
+                };
+                const feedOptions = (
+                  UPDATED_FEED_TYPES_BY_CATEGORY[shedCat] ||
+                  UPDATED_FEED_TYPES_BY_CATEGORY["Broiler"] ||
+                  []
+                ).map((ft) => ({ value: ft, label: ft }));
+                return (
+                  <div
+                    key={shed.id || sIdx}
+                    className="border border-slate-300 rounded-lg p-3 mb-2 bg-slate-50"
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-slate-700">
+                        Shed {sIdx + 1}
+                        {shedShort ? ` — ${shedShort}` : ""}
+                      </span>
                       <button
                         type="button"
                         onClick={() => removeFormShed(sIdx)}
-                        className="text-red-600 font-bold"
+                        disabled={formSheds.length === 1}
+                        className="text-red-600 hover:text-red-800 disabled:opacity-40 text-[11px] font-semibold"
                       >
-                        Remove
+                        Remove Shed
                       </button>
-                    )}
-                  </div>
-                  {sIdx > 0 && (
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
                       <div>
-                        <label className="block font-semibold text-slate-600 mb-0.5">
-                          Shed Label
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                          Shed Name
                         </label>
                         <input
-                          type="text"
-                          placeholder={`${
-                            farmerForm.farmer_name || "Farmer"
-                          } - Shed ${sIdx + 1}`}
+                          placeholder="Shed 1 or Bridge par"
                           value={shed.shed_name || ""}
-                          onChange={(e: any) =>
+                          onChange={(e) =>
                             updateFormShedField(
                               sIdx,
                               "shed_name",
                               e.target.value
                             )
                           }
-                          className="w-full rounded border border-slate-300 px-2 py-1"
+                          className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
                         />
                       </div>
                       <div>
-                        <label className="block font-semibold text-slate-600 mb-0.5">
-                          Farm Category
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                          Farm Category *
                         </label>
-                        <select
-                          value={
-                            shed.farm_category ||
-                            farmerForm.farm_category ||
-                            ""
+                        <SearchableSelect
+                          searchable={false}
+                          value={shedCat}
+                          onChange={(v) =>
+                            sIdx === 0
+                              ? setFarmerForm({
+                                  ...farmerForm,
+                                  farm_category: v,
+                                })
+                              : updateFormShedField(sIdx, "farm_category", v)
                           }
-                          onChange={(e: any) =>
-                            updateFormShedField(
-                              sIdx,
-                              "farm_category",
-                              e.target.value
-                            )
-                          }
-                          className="w-full rounded border border-slate-300 bg-white px-2 py-1"
-                        >
-                          <option value="Poultry">🐔 Poultry</option>
-                          <option value="Cattle">🐄 Cattle</option>
-                          <option value="Fish">🐟 Fish</option>
-                        </select>
+                          placeholder="Select Category"
+                          options={[
+                            { value: "Poultry", label: "🐔 Poultry" },
+                            { value: "Cattle", label: "🐄 Cattle" },
+                            { value: "Fish", label: "🐟 Fish" },
+                          ]}
+                        />
                       </div>
-                      <div>
-                        <label className="block font-semibold text-slate-600 mb-0.5">
+                    </div>
+
+                    {sIdx === 0 ? (
+                      <div className="mb-2 flex flex-wrap items-center gap-2 bg-white border border-slate-200 rounded p-2.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPickerCenterOverride(null);
+                            setShowMapPicker(true);
+                          }}
+                          className="inline-flex items-center gap-1.5 bg-blue-600 text-white px-3 py-1.5 rounded text-xs font-semibold"
+                        >
+                          <MapPin size={13} /> Select Location from Map
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleLocateMeInPicker}
+                          disabled={locatingInPicker}
+                          className="inline-flex items-center gap-1.5 bg-slate-600 text-white px-3 py-1.5 rounded text-xs font-semibold disabled:opacity-50"
+                        >
+                          <Navigation size={13} /> Locate Me
+                        </button>
+                        {farmerForm.latitude && farmerForm.longitude && (
+                          <span className="text-emerald-700 text-xs font-semibold">
+                            📍 Selected (
+                            {Number(farmerForm.latitude).toFixed(4)}, {" "}
+                            {Number(farmerForm.longitude).toFixed(4)})
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="mb-2">
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
                           Location (lat, lng)
                         </label>
                         <div className="flex gap-1">
@@ -5243,7 +6100,7 @@ ${currentUserProfile.region}`;
                                 e.target.value
                               )
                             }
-                            className="w-full rounded border border-slate-300 px-2 py-1"
+                            className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
                           />
                           <input
                             type="text"
@@ -5256,22 +6113,114 @@ ${currentUserProfile.region}`;
                                 e.target.value
                               )
                             }
-                            className="w-full rounded border border-slate-300 px-2 py-1"
+                            className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
                           />
                         </div>
                       </div>
+                    )}
+
+                    {shedCat === "Poultry" && (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-2 bg-amber-50 border border-amber-200 rounded p-2.5">
+                        {POULTRY_FIELDS.map((item) => (
+                          <div key={item}>
+                            <label className="block text-[11px] font-semibold capitalize">
+                              {item.replace("_", " ")}
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              value={stockVal(item) || ""}
+                              onChange={(e) => setStockVal(item, e.target.value)}
+                              className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {shedCat === "Cattle" && (
+                      <div className="grid grid-cols-3 gap-2 mb-2 bg-emerald-50 border border-emerald-200 rounded p-2.5">
+                        {CATTLE_FIELDS.map((item) => (
+                          <div key={item}>
+                            <label className="block text-[11px] font-semibold capitalize">
+                              {item.replace("_", " ")}
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              value={stockVal(item) || ""}
+                              onChange={(e) => setStockVal(item, e.target.value)}
+                              className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {shedCat === "Fish" && (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2 bg-sky-50 border border-sky-200 rounded p-2.5">
+                        {FISH_FIELDS.map((item) => (
+                          <div key={item}>
+                            <label className="block text-[11px] font-semibold capitalize">
+                              {item}
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              value={stockVal(item) || ""}
+                              onChange={(e) => setStockVal(item, e.target.value)}
+                              className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                        Feed Type
+                      </label>
+                      <SearchableSelect
+                        value={
+                          sIdx === 0 ? farmerForm.feed_type : shed.feed_type || ""
+                        }
+                        onChange={(v) =>
+                          sIdx === 0
+                            ? setFarmerForm({ ...farmerForm, feed_type: v })
+                            : updateFormShedField(sIdx, "feed_type", v)
+                        }
+                        placeholder="Select Feed Type"
+                        options={feedOptions}
+                      />
                     </div>
-                  )}
-                  {sIdx === 0 && (
-                    <p className="text-[11px] text-slate-500">
-                      Location, category and stock for this shed are the
-                      farmer details above.
-                    </p>
-                  )}
-                </div>
-              ))}
+                  </div>
+                );
+              })}
+
+              <button
+                type="button"
+                onClick={addFormShed}
+                className="inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold"
+              >
+                <Plus size={13} /> Add Shed
+              </button>
             </div>
 
+            <div className="grid grid-cols-1 gap-3 mb-3 text-xs">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">
+                  Remarks
+                </label>
+                <input
+                  placeholder="Remarks"
+                  value={farmerForm.remarks}
+                  onChange={(e) =>
+                    setFarmerForm({ ...farmerForm, remarks: e.target.value })
+                  }
+                  className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
+                />
+              </div>
+            </div>
             {editingBatchVisit && (
               <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-3 mb-3 space-y-2.5 text-xs">
                 <div className="font-bold text-emerald-900 border-b border-emerald-200 pb-1">
@@ -5485,6 +6434,8 @@ ${currentUserProfile.region}`;
               center={
                 pickerCenterOverride
                   ? pickerCenterOverride
+                  : formAgentCenter
+                  ? formAgentCenter
                   : selectedFormUpazila &&
                     selectedFormUpazila.lat &&
                     selectedFormUpazila.lon
@@ -5504,6 +6455,8 @@ ${currentUserProfile.region}`;
               zoom={
                 pickerCenterOverride
                   ? 17
+                  : formAgentCenter
+                  ? 14
                   : selectedFormUpazila
                   ? 13
                   : selectedFormDistrict
@@ -5526,6 +6479,40 @@ ${currentUserProfile.region}`;
                 });
                 setShowMapPicker(false);
               }}
+              markers={
+                <>
+                  {statusFarmers.flatMap((farmer: any) => {
+                    const sheds = getShedsForFarmer(farmer);
+                    return sheds
+                      .map((shed: any, sIdx: number) => ({
+                        farmer,
+                        shed,
+                        sIdx,
+                        totalSheds: sheds.length,
+                      }))
+                      .filter((x: any) => x.shed.latitude && x.shed.longitude)
+                      .map(({ farmer: f2, shed, sIdx, totalSheds }: any) => (
+                        <Marker
+                          key={
+                            shed.id ? `shed-${shed.id}` : `${f2.id}-${sIdx}`
+                          }
+                          position={[
+                            Number(shed.latitude),
+                            Number(shed.longitude),
+                          ]}
+                          icon={buildCustomFarmMarker(
+                            f2,
+                            shed,
+                            false,
+                            undefined,
+                            sIdx,
+                            totalSheds
+                          )}
+                        />
+                      ));
+                  })}
+                </>
+              }
             />
           </div>
         </div>
@@ -5539,9 +6526,7 @@ ${currentUserProfile.region}`;
           <div className="bg-white rounded-xl p-5 w-full max-w-md max-h-[92vh] overflow-y-auto shadow-2xl border border-slate-300">
             <div className="flex justify-between items-center pb-2.5 mb-3 border-b">
               <h3 className="text-sm sm:text-base font-bold text-slate-800">
-                {activateBulk
-                  ? `Bulk Run Farms (${selectedFarmerIds.length})`
-                  : activateFarmer?.runningCount > 0
+                {activateFarmer?.runningCount > 0
                   ? `Add Batch (${
                       (activateFarmer?.allBatches?.length || 0) + 1
                     }): ${activateFarmer?.farmer_name}`
@@ -5583,7 +6568,7 @@ ${currentUserProfile.region}`;
     />
   </div>
 
-  {activateFarmer && !activateBulk && activateSheds.length > 1 && (
+  {activateFarmer && activateSheds.length > 1 && (
     <div>
       <label className="block font-bold text-slate-600 mb-1">
         Shed *
@@ -5604,10 +6589,20 @@ ${currentUserProfile.region}`;
           </option>
         ))}
       </select>
+      {canAddFarmerHere && (
+        <button
+          type="button"
+          onClick={addActivateShed}
+          disabled={addingActivateShed}
+          className="mt-1 text-[11px] font-bold text-emerald-700 hover:text-emerald-800 disabled:opacity-50"
+        >
+          {addingActivateShed ? "Adding..." : "+ Add Shed"}
+        </button>
+      )}
     </div>
   )}
 
-  {activateFarmer && !activateBulk && activateSheds.length <= 1 && (
+  {activateFarmer && activateSheds.length <= 1 && (
     <div>
       <label className="block font-bold text-slate-600 mb-1">Shed</label>
       <div className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-slate-700 font-semibold">
@@ -5623,13 +6618,17 @@ ${currentUserProfile.region}`;
       <p className="text-[11px] text-slate-500 mt-1">
         Single shed — used automatically for this batch.
       </p>
+      {canAddFarmerHere && (
+        <button
+          type="button"
+          onClick={addActivateShed}
+          disabled={addingActivateShed}
+          className="mt-1 text-[11px] font-bold text-emerald-700 hover:text-emerald-800 disabled:opacity-50"
+        >
+          {addingActivateShed ? "Adding..." : "+ Add Shed"}
+        </button>
+      )}
     </div>
-  )}
-
-  {activateBulk && (
-    <p className="text-[11px] text-slate-500">
-      Bulk run: each farm uses its first shed.
-    </p>
   )}
 
   {activateNeedsChoice && (
@@ -5772,7 +6771,6 @@ ${currentUserProfile.region}`;
     </div>
   </div>
 
-  {!activateBulk && (
     <div>
       <label className="block font-bold text-slate-600 mb-1">
         Batch Mark (Optional — Auto:{" "}
@@ -5792,7 +6790,6 @@ ${currentUserProfile.region}`;
         className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none"
       />
     </div>
-  )}
 
   <div className="flex justify-end gap-2 pt-3 border-t">
     <button
@@ -5904,6 +6901,8 @@ ${currentUserProfile.region}`;
                 <input
                   type="date"
                   required
+                  min={activeVaccineVisit?.hatch_date || undefined}
+                  max={todayStr}
                   value={logVaccineForm.vaccine_date}
                   onChange={(e) =>
                     setLogVaccineForm({
@@ -6000,6 +6999,8 @@ ${currentUserProfile.region}`;
                 <input
                   type="date"
                   value={reportVisitDate}
+                  min={activeReportVisit.hatch_date || undefined}
+                  max={todayStr}
                   onChange={(e) => setReportVisitDate(e.target.value)}
                   className="w-full border border-emerald-300 rounded px-1.5 py-0.5 bg-white text-xs font-semibold"
                 />
@@ -6037,6 +7038,8 @@ ${currentUserProfile.region}`;
                     <input
                       type="number"
                       required
+                      min={0}
+                      max={reportMortalityCap > 0 ? reportMortalityCap : undefined}
                       value={beforeForm.mortality_pcs}
                       onChange={(e) =>
                         updateBeforeCalculations({ mortality_pcs: e.target.value })
@@ -6312,7 +7315,7 @@ ${currentUserProfile.region}`;
                         {allAgents
                           .filter(
                             (a) =>
-                              String(a.company_id) === String(beforeChangedComp.id)
+                              getAgentCompanyIds(a).includes(String(beforeChangedComp.id))
                           )
                           .map((ag) => (
                             <option key={ag.id} value={String(ag.id)}>
@@ -6345,7 +7348,8 @@ ${currentUserProfile.region}`;
 
             <div className="flex flex-wrap justify-between items-center gap-2 pt-3 border-t">
               <div className="flex items-center gap-2">
-                {editingReportId && (
+                {editingReportId &&
+                  canEditPoultryReport({ created_by: editingReportCreatedBy }) && (
                   <button
                     type="button"
                     title="Delete this report"
@@ -6458,6 +7462,8 @@ ${currentUserProfile.region}`;
                 <input
                   type="date"
                   value={reportVisitDate}
+                  min={activeReportVisit.hatch_date || undefined}
+                  max={todayStr}
                   onChange={(e) => setReportVisitDate(e.target.value)}
                   className="w-full border border-red-300 rounded px-1.5 py-0.5 bg-white text-xs font-semibold"
                 />
@@ -6472,6 +7478,8 @@ ${currentUserProfile.region}`;
                 <input
                   type="number"
                   required
+                  min={0}
+                  max={reportMortalityCap > 0 ? reportMortalityCap : undefined}
                   value={afterForm.mortality}
                   onChange={(e) =>
                     updateAfterCalculations({ mortality: e.target.value })
@@ -6637,7 +7645,7 @@ ${currentUserProfile.region}`;
                     {allAgents
                       .filter(
                         (a) =>
-                          String(a.company_id) === String(afterChangedComp.id)
+                          getAgentCompanyIds(a).includes(String(afterChangedComp.id))
                       )
                       .map((ag) => (
                         <option key={ag.id} value={String(ag.id)}>
@@ -6665,7 +7673,8 @@ ${currentUserProfile.region}`;
 
             <div className="flex justify-between items-center gap-2 pt-3 border-t">
               <div>
-                {editingReportId && (
+                {editingReportId &&
+                  canEditPoultryReport({ created_by: editingReportCreatedBy }) && (
                   <button
                     type="button"
                     title="Delete this report"
@@ -6756,10 +7765,16 @@ ${currentUserProfile.region}`;
                 </span>
                 <strong className="text-slate-800">
                   {liveLayerBirdsAfterMortality} Pcs
-                  {!editingReportId &&
-                    Number(layerForm.mortality_pcs || 0) > 0 && (
+                  {((!editingReportId &&
+                    Number(layerForm.mortality_pcs || 0) > 0) ||
+                    (editingReportId &&
+                      Number(layerForm.mortality_pcs || 0) !==
+                        editingLayerOldMort)) && (
                       <span className="text-[10px] text-red-600 ml-1">
-                        ({activeReportVisit.t_birds} -{" "}
+                        (
+                        {editingReportId
+                          ? `${activeReportVisit.t_birds} + ${editingLayerOldMort} - `
+                          : `${activeReportVisit.t_birds} - `}
                         {Number(layerForm.mortality_pcs)})
                       </span>
                     )}
@@ -6780,6 +7795,8 @@ ${currentUserProfile.region}`;
                 <input
                   type="date"
                   value={reportVisitDate}
+                  min={activeReportVisit.hatch_date || undefined}
+                  max={todayStr}
                   onChange={(e) => setReportVisitDate(e.target.value)}
                   className="w-full border border-indigo-300 rounded px-1.5 py-0.5 bg-white text-xs font-semibold"
                 />
@@ -6818,6 +7835,7 @@ ${currentUserProfile.region}`;
                     <input
                       type="number"
                       min={0}
+                      max={layerMortalityCap > 0 ? layerMortalityCap : undefined}
                       required
                       value={layerForm.mortality_pcs}
                       onChange={(e) => {
@@ -7063,7 +8081,7 @@ ${currentUserProfile.region}`;
                         {allAgents
                           .filter(
                             (a) =>
-                              String(a.company_id) === String(layerChangedComp.id)
+                              getAgentCompanyIds(a).includes(String(layerChangedComp.id))
                           )
                           .map((ag) => (
                             <option key={ag.id} value={String(ag.id)}>
@@ -7144,7 +8162,8 @@ ${currentUserProfile.region}`;
 
             <div className="flex flex-wrap justify-between items-center gap-2 pt-3 border-t">
               <div className="flex items-center gap-2">
-                {editingReportId && (
+                {editingReportId &&
+                  canEditPoultryReport({ created_by: editingReportCreatedBy }) && (
                   <button
                     type="button"
                     title="Delete this report"
@@ -7626,6 +8645,7 @@ ${currentUserProfile.region}`;
                                 >
                                   WtsApp
                                 </button>
+                                {canEditPoultryReport(rep) && (
                                 <button
                                   type="button"
                                   onClick={() =>
@@ -7635,6 +8655,7 @@ ${currentUserProfile.region}`;
                                 >
                                   Edit
                                 </button>
+                                )}
                               </td>
                             </tr>
                           );
@@ -7805,6 +8826,7 @@ ${currentUserProfile.region}`;
                                     >
                                       WtsApp
                                     </button>
+                                    {canEditPoultryReport(rep) && (
                                     <button
                                       type="button"
                                       onClick={() =>
@@ -7817,6 +8839,7 @@ ${currentUserProfile.region}`;
                                     >
                                       Edit
                                     </button>
+                                    )}
                                   </td>
                                 </tr>
                               );
@@ -7966,6 +8989,7 @@ ${currentUserProfile.region}`;
                                   {getRemarkText(rep) || "-"}
                                 </td>
                                 <td className="border border-slate-300 px-1.5 py-0.5 text-center">
+                                  {canEditPoultryReport(rep) && (
                                   <button
                                     type="button"
                                     onClick={() =>
@@ -7975,6 +8999,7 @@ ${currentUserProfile.region}`;
                                   >
                                     Edit
                                   </button>
+                                  )}
                                 </td>
                               </tr>
                             );

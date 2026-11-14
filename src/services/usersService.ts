@@ -10,6 +10,7 @@ export interface UserData {
   status?: string;
   districts?: string[];
   upazilas?: string[];
+  assigned_categories?: string[];
 }
 
 // 1. Fetch all users from public.users table
@@ -46,12 +47,17 @@ export const createUser = async (userData: UserData) => {
   }
 
   // Edge Function ইউজার তৈরি করার পর public.users টেবিলে districts ও upazilas সেভ করা
-  if (userData.districts !== undefined || userData.upazilas !== undefined) {
+  if (
+    userData.districts !== undefined ||
+    userData.upazilas !== undefined ||
+    userData.assigned_categories !== undefined
+  ) {
     const { error: areaError } = await supabase
       .from("users")
       .update({
         districts: userData.districts || [],
         upazilas: userData.upazilas || [],
+        assigned_categories: userData.assigned_categories || [],
       })
       .eq("email", userData.email);
 
@@ -84,6 +90,8 @@ export const updateUser = async (userId: string, userData: Partial<UserData>) =>
   if (userData.status !== undefined) updatePayload.status = userData.status;
   if (userData.districts !== undefined) updatePayload.districts = userData.districts;
   if (userData.upazilas !== undefined) updatePayload.upazilas = userData.upazilas;
+  if (userData.assigned_categories !== undefined)
+    updatePayload.assigned_categories = userData.assigned_categories;
 
   const { data, error } = await supabase
     .from("users")

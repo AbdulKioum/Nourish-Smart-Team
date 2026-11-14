@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, useMemo } from "react";
 import XLSX from "xlsx-js-style";
 import ExcelJS from "exceljs";
 import { supabase } from "../../lib/supabase";
+import { canEditRecord, canAddReport } from "../../utils/accessControl";
 import LocationPicker from "../../components/maps/LocationPicker";
 import {
   FaFileUpload,
@@ -151,6 +152,28 @@ function normDate(val: any): string {
   return String(val ?? "").trim().slice(0, 10);
 }
 
+// Shared report-date validation — identical rule/message on every page:
+// a report/entry date can never be after today, and never before the
+// batch's hatch (DOC) date. Returns the Banglish error message, or null.
+// (DOC Tracking: the entry date is H.Date; the floor is the batch's hatch
+// date, activeTarget.h_date. No mortality field exists on this page, so
+// the mortality rule does not apply here.)
+function validateReportDate(
+  reportDate: string,
+  hatchDate: string | null | undefined
+): string | null {
+  const today = new Date().toISOString().split("T")[0];
+  const cleanReport = normDate(reportDate);
+  if (cleanReport && cleanReport > today) {
+    return "Agami date e report dewa jabe na.";
+  }
+  const cleanHatch = normDate(hatchDate);
+  if (cleanReport && cleanHatch && cleanReport < cleanHatch) {
+    return "Hatch date er age report dewa jabe na.";
+  }
+  return null;
+}
+
 function normCode(val: any): string {
   return String(val ?? "").trim().toUpperCase();
 }
@@ -190,34 +213,85 @@ function getShedsForFarmer(farmer: any): FarmerShed[] {
   return [shed];
 }
 
-// Display name rule — never show a bare "Shed 2" etc:
-// - raw already starts with the farmer name, or raw contains " - " with a
-//   name part -> return raw as-is ("Raju Ahmed - Shed 2", "Raju Ahmed - Bridge par").
-// - raw is a bare label ("Bridge par", "Shed 2") -> "Farmer Name - <raw>".
-// - raw empty: single-shed farmer -> just the farmer name; multi-shed ->
-//   "Farmer Name - Shed N".
+// Shed naming — single source of truth, identical in Farmers/Visits/Doc:
+// - Stored shed_name is the SHORT label only ("Shed 1", "Shed 2", "Bridge par").
+// - A farmer with a single shed (no shed explicitly added) has NO shed name:
+//   the Shed column is blank and the full name is just the farmer name.
+// - getShedShortName() normalises any legacy stored value: empty, or exactly
+//   the farmer name, or an auto "Shed N" label, is blank for a single shed
+//   and "Shed N" once a 2nd shed exists; a value starting with the farmer
+//   name (full name or first name, e.g. "Raju Ahmed - Shed 1" or "Raju Shed 1")
+//   has that prefix stripped; "Shed-1" normalises to "Shed 1"; a bare custom
+//   label ("Bridge par") is kept as-is.
+// - getShedDisplayName() is just the farmer name for a single unnamed shed,
+//   otherwise "Farmer Name - Short Name". The ONLY place showing the short
+//   name alone is the farmer table Shed column (and the form Shed Name input).
+function getShedShortName(
+  farmer: any,
+  shed: any,
+  index: number = 0,
+  totalSheds: number = 1
+): string {
+  const farmerName = String(farmer?.farmer_name || "").trim() || "Farmer";
+  const raw = String(shed?.shed_name || "").trim();
+  const lowerRaw = raw.toLowerCase();
+  const lowerFarmer = farmerName.toLowerCase();
+  const firstName = lowerFarmer.split(/\s+/)[0] || "";
+  let rest = raw;
+  const stripPrefix = (prefix: string): boolean => {
+    if (prefix && lowerRaw.startsWith(prefix)) {
+      const next = raw.charAt(prefix.length);
+      if (next === " " || next === "-") {
+        rest = raw.slice(prefix.length).replace(/^[\s-]+/, "").trim();
+        return true;
+      }
+    }
+    return false;
+  };
+  if (rest && rest.toLowerCase() !== lowerFarmer) {
+    if (!stripPrefix(lowerFarmer) && firstName) stripPrefix(firstName);
+  } else {
+    rest = "";
+  }
+  // Auto-generated labels ("Shed 1", "Shed-1") carry no real name.
+  const autoMatch = rest.match(/^shed\s*-?\s*(\d+)$/i);
+  if ((totalSheds ?? 1) <= 1) {
+    if (!rest || autoMatch) return "";
+    return rest;
+  }
+  if (!rest) return `Shed ${index + 1}`;
+  if (autoMatch) return `Shed ${autoMatch[1]}`;
+  return rest;
+}
+
 function getShedDisplayName(
   farmer: any,
   shed: any,
-  index: number,
-  totalSheds?: number
+  index: number = 0,
+  totalSheds: number = 1
 ): string {
-  const farmerName =
-    String(farmer?.farmer_name || "").trim() || "Farmer";
-  const raw = String(shed?.shed_name || "").trim();
-  const total =
-    totalSheds != null ? totalSheds : getShedsForFarmer(farmer).length;
-  if (raw) {
-    if (raw.toLowerCase().startsWith(farmerName.toLowerCase())) return raw;
-    if (raw.includes(" - ")) {
-      const namePart = raw.split(" - ")[0].trim();
-      if (namePart) return raw;
-    }
-    return `${farmerName} - ${raw}`;
-  }
-  if (total <= 1) return farmerName;
-  return `${farmerName} - Shed ${index + 1}`;
+  const farmerName = String(farmer?.farmer_name || "").trim() || "Farmer";
+  const short = getShedShortName(farmer, shed, index, totalSheds);
+  return short ? `${farmerName} - ${short}` : farmerName;
 }
+
+// Multi-company agents (agent_companies table): an agent matches a company
+// if ANY linked company equals it. Falls back to the single company_id.
+function getAgentCompanyIds(agent: any): string[] {
+  const linked = agent?.linked_company_ids || agent?.agent_companies || [];
+  if (Array.isArray(linked) && linked.length > 0) {
+    return linked
+      .map((c: any) =>
+        String(typeof c === "object" ? c.company_id ?? c.id : c)
+      )
+      .filter(Boolean);
+  }
+  return agent?.company_id != null && agent.company_id !== ""
+    ? [String(agent.company_id)]
+    : [];
+}
+
+
 
 // A shed id that exists in farmer_sheds (usable as doc_trackings.shed_id),
 // or null for the synthesised legacy shed / no shed chosen.
@@ -387,6 +461,7 @@ export default function DocTrackingPage() {
   const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>(
     cachedPageState?.assignedUpazilas || []
   );
+  const [assignedCategories, setAssignedCategories] = useState<string[]>([]);
 
   const [agents, setAgents] = useState<DocAgent[]>(
     cachedPageState?.agents || []
@@ -530,6 +605,10 @@ export default function DocTrackingPage() {
 
   const isManagerOrAdmin =
     userRole === "super_admin" || userRole === "manager";
+  // Permissions (src/utils/accessControl.ts): DOC is Poultry (rule 5) —
+  // officers need Poultry assigned to add/edit/delete DOC entries.
+  // isManagerOrAdmin above is the isManager check for this page.
+  const canAddDocTracking = canAddReport(userRole, assignedCategories, "Poultry");
 
   useEffect(() => {
     if (cachedPageState?.initialized) {
@@ -630,18 +709,35 @@ export default function DocTrackingPage() {
       let uName = user?.email?.split("@")[0] || "Officer";
       let role = "officer";
       let uUpazilas: string[] = [];
+      let uCats: string[] = [];
 
       if (user) {
-        const { data: profile } = await supabase
-          .from("users")
-          .select("id, full_name, email, role, upazilas")
-          .eq("id", user.id)
-          .single();
+        // assigned_categories comes from the permissions migration;
+        // fall back gracefully if the column is not there yet.
+        let profile: any = null;
+        {
+          const { data, error } = await supabase
+            .from("users")
+            .select("id, full_name, email, role, upazilas, assigned_categories")
+            .eq("id", user.id)
+            .single();
+          if (!error && data) {
+            profile = data;
+          } else {
+            const retry = await supabase
+              .from("users")
+              .select("id, full_name, email, role, upazilas")
+              .eq("id", user.id)
+              .single();
+            profile = retry.data || null;
+          }
+        }
 
         if (profile) {
           uName = profile.full_name || profile.email || uName;
           role = profile.role || "officer";
           uUpazilas = parseArray(profile.upazilas);
+          uCats = parseArray(profile.assigned_categories);
         }
       }
 
@@ -649,6 +745,7 @@ export default function DocTrackingPage() {
       setCurrentUserName(uName);
       setUserRole(role);
       setAssignedUpazilas(uUpazilas);
+      setAssignedCategories(uCats);
 
       await loadAllData(role, uUpazilas, uid, uName);
     } catch (err: any) {
@@ -728,6 +825,27 @@ export default function DocTrackingPage() {
       // farmer_sheds table not created yet — legacy fallback applies.
     }
 
+    // Multi-company agents: attach linked company ids (agent_companies).
+    // If the table is missing, the single company_id fallback applies.
+    try {
+      const { data: linkData, error: linkError } = await supabase
+        .from("agent_companies")
+        .select("agent_id, company_id");
+      if (!linkError && linkData) {
+        const byAgent: Record<string, string[]> = {};
+        (linkData as any[]).forEach((l: any) => {
+          const k = String(l.agent_id);
+          if (!byAgent[k]) byAgent[k] = [];
+          if (!byAgent[k].includes(String(l.company_id)))
+            byAgent[k].push(String(l.company_id));
+        });
+        (faData || [] as any[]).forEach((a: any) => {
+          if (byAgent[String(a.id)]) a.linked_company_ids = byAgent[String(a.id)];
+        });
+      }
+    } catch {
+      // agent_companies table not created yet — single company_id fallback applies.
+    }
     setOfficers(parsedOfficers);
     setFeedAgents((faData as any[]) || []);
     setFarmersList(farmersWithSheds);
@@ -1066,10 +1184,14 @@ export default function DocTrackingPage() {
   }
 
   function canModifyTracking(tr: DocTracking): boolean {
-    if (isManagerOrAdmin) return true;
-    if (tr.created_by && currentUserId && tr.created_by === currentUserId) {
-      return true;
-    }
+    // Category gate (rule 5): DOC is Poultry — officers need Poultry
+    // assigned to add/edit/delete. Manager / super admin pass via
+    // canAddReport; viewer never passes.
+    if (!canAddDocTracking) return false;
+    // Ownership (rule 4 + rule 2): manager/admin, old rows with
+    // created_by null, else only the creator.
+    if (canEditRecord(userRole, tr.created_by, currentUserId)) return true;
+    // Legacy rows without created_by sometimes carry only a name.
     if (
       !tr.created_by &&
       tr.tracked_by_name &&
@@ -1194,6 +1316,10 @@ export default function DocTrackingPage() {
 
   // Single "Add Tracking" button handler per agent
   function openAgentTrackingModal(agent: DocAgent, agentBlocks: any[]) {
+    if (!canAddDocTracking) {
+      alert("Your assigned categories do not include Poultry, so you cannot add DOC tracking here.");
+      return;
+    }
     const firstUntracked =
       agentBlocks.find((b) => b.untracked > 0) || agentBlocks[0];
     if (!firstUntracked || firstUntracked.untracked <= 0) {
@@ -1400,9 +1526,25 @@ export default function DocTrackingPage() {
   async function handleSaveTracking(e: React.FormEvent) {
     e.preventDefault();
     if (!activeTarget) return;
+    // Permission guard (rule 5): new DOC entries need Poultry
+    // assigned. Edits are guarded again below with canModifyTracking.
+    if (!editingTracking && !canAddDocTracking) {
+      setErrorMsg("Your assigned categories do not include Poultry, so you cannot add DOC tracking here.");
+      return;
+    }
 
     const trackHDate = normDate(trackForm.h_date || activeTarget.h_date);
     const trackPcd = normCode(trackForm.pcd || activeTarget.pcd);
+
+    // Report-date validation (same rule as the other pages): the DOC entry
+    // date (H.Date) can never be after today, and never before the batch's
+    // hatch date (activeTarget.h_date). Runs before any DB write.
+    const dateError = validateReportDate(trackHDate, activeTarget.h_date);
+    if (dateError) {
+      alert(dateError);
+      return;
+    }
+
     const liveStats = getStatsForAgentDatePcd(
       activeTarget.doc_id,
       trackHDate,
@@ -1487,6 +1629,19 @@ export default function DocTrackingPage() {
             .update(updateData)
             .eq("id", editingTracking.id);
           if (retryErr) throw retryErr;
+        }
+
+        // Ownership (rule 2): stamp created_by on first edit of an
+        // old row that has none. Never overwrites an existing creator.
+        if (!editingTracking.created_by && currentUserId) {
+          try {
+            await supabase
+              .from("doc_trackings")
+              .update({ created_by: currentUserId })
+              .eq("id", editingTracking.id);
+          } catch {
+            // created_by column not added yet.
+          }
         }
 
         // --- Farmer Page & Vet Visits Stock Sync on Edit ---
@@ -1615,6 +1770,7 @@ export default function DocTrackingPage() {
           const newFarmerPayload: Record<string, any> = {
             company_id: nfComp,
             agent_id: nfAgent,
+            created_by: currentUserId || null,
             farmer_name: trackForm.farmer_name.trim(),
             mobile: trackForm.mobile.trim(),
             village:
@@ -1658,6 +1814,9 @@ export default function DocTrackingPage() {
             targetFarmerId = c1.id;
           } else {
             delete newFarmerPayload.last_feed_company;
+            if (cErr && /created_by/i.test(cErr.message || "")) {
+              delete newFarmerPayload.created_by;
+            }
             const { data: c2, error: c2Err } = await supabase
               .from("farmers")
               .insert([newFarmerPayload])
@@ -1667,9 +1826,9 @@ export default function DocTrackingPage() {
             if (c2) targetFarmerId = c2.id;
           }
 
-          // Save the new farmer's sheds to farmer_sheds (first shed = just
-          // the farmer name, empty shed_name; later sheds auto-named
-          // "Farmer Name - Shed N" by getShedDisplayName when blank).
+          // Save the new farmer's sheds to farmer_sheds with SHORT labels
+          // only ("Shed 1", "Bridge par"); the full "Farmer Name - Shed N"
+          // is composed at display time by getShedDisplayName.
           // First-shed legacy values already live on the farmer row above,
           // so a missing farmer_sheds table must not break this save.
           if (targetFarmerId) {
@@ -1702,7 +1861,12 @@ export default function DocTrackingPage() {
                 const cat = ns.farm_category || finalCategory;
                 const db: Record<string, any> = {
                   farmer_id: targetFarmerId,
-                  shed_name: String(ns.shed_name || "").trim(),
+                  shed_name: getShedShortName(
+                    { farmer_name: trackForm.farmer_name },
+                    ns,
+                    nsIdx,
+                    newFarmerSheds.length > 0 ? newFarmerSheds.length : 1
+                  ),
                   farm_category: broadCat(cat),
                   latitude: isFirst
                     ? newFarmerForm.latitude === ""
@@ -1720,15 +1884,26 @@ export default function DocTrackingPage() {
                     : Number(ns.longitude),
                   feed_type: newFarmerForm.feed_type || "",
                   status: shouldShowInVisits ? "Running" : "Active",
+                  created_by: currentUserId || null,
                 };
                 POULTRY_STOCK_KEYS.forEach((k) => (db[k] = 0));
                 if (isFirst && stockKey)
                   db[stockKey] = effectiveBirdsForFarmAndVisit;
                 return db;
               });
-              const { error: shedInsErr } = await supabase
+              let { error: shedInsErr } = await supabase
                 .from("farmer_sheds")
                 .insert(shedsToSave);
+              if (shedInsErr && /created_by/i.test(shedInsErr.message || "")) {
+                const withoutCreator = shedsToSave.map((s: any) => {
+                  const { created_by, ...rest } = s;
+                  return rest;
+                });
+                const retry = await supabase
+                  .from("farmer_sheds")
+                  .insert(withoutCreator);
+                shedInsErr = retry.error;
+              }
               if (shedInsErr) throw shedInsErr;
             } catch {
               // farmer_sheds table not created yet — farmer row already saved.
@@ -1997,6 +2172,7 @@ export default function DocTrackingPage() {
 
             const visitPayload: Record<string, any> = {
               farmer_id: targetFarmerId ? String(targetFarmerId) : null,
+              created_by: currentUserId || null,
               agent_id: String(visitAgentId),
               company_id: String(targetCompId),
               category: finalCategory,
@@ -2014,6 +2190,9 @@ export default function DocTrackingPage() {
               .insert([visitPayload]);
 
             if (vErr) {
+              if (/created_by/i.test(vErr.message || "")) {
+                delete visitPayload.created_by;
+              }
               delete visitPayload.batch_label;
               await supabase.from("vet_visits").insert([visitPayload]);
             }
@@ -2794,13 +2973,19 @@ export default function DocTrackingPage() {
         const shedDisplayNames = farmerSheds.map((sh, si) =>
           getShedDisplayName(f, sh, si, farmerSheds.length)
         );
+        const shedShortNames = farmerSheds.map((sh, si) =>
+          getShedShortName(f, sh, si, farmerSheds.length)
+        );
         if (rawInput.length >= 2) {
           const normShedHit = shedDisplayNames.some(
             (n) => normalizeFarmerStr(n) === normInput
           );
-          if (normShedHit) score += 90;
+          const normShortHit = shedShortNames.some(
+            (n) => normalizeFarmerStr(n) === normInput
+          );
+          if (normShedHit || normShortHit) score += 90;
           else if (
-            shedDisplayNames.some((n) =>
+            [...shedDisplayNames, ...shedShortNames].some((n) =>
               n.toLowerCase().includes(rawInput.toLowerCase())
             )
           )
@@ -2954,12 +3139,11 @@ export default function DocTrackingPage() {
   }
 
   const nfAgentOptions = feedAgents.filter((a) => {
-    if (
-      newFarmerForm.company_id &&
-      a.company_id &&
-      String(a.company_id) !== String(newFarmerForm.company_id)
-    )
-      return false;
+    if (newFarmerForm.company_id) {
+      const ids = getAgentCompanyIds(a);
+      if (ids.length > 0 && !ids.includes(String(newFarmerForm.company_id)))
+        return false;
+    }
     if (
       newFarmerForm.upazila &&
       a.upazila &&
@@ -2978,12 +3162,11 @@ export default function DocTrackingPage() {
     ) {
       return false;
     }
-    if (
-      otherCompanyId &&
-      a.company_id &&
-      String(a.company_id) !== String(otherCompanyId)
-    ) {
-      return false;
+    if (otherCompanyId) {
+      const ids = getAgentCompanyIds(a);
+      if (ids.length > 0 && !ids.includes(String(otherCompanyId))) {
+        return false;
+      }
     }
     if (otherUpazila && a.upazila && a.upazila !== otherUpazila) {
       return false;
@@ -3467,6 +3650,7 @@ export default function DocTrackingPage() {
                       </span>
                     )}
 
+                    {canAddDocTracking && (
                     <button
                       type="button"
                       disabled={isAgentAllTracked}
@@ -3497,6 +3681,7 @@ export default function DocTrackingPage() {
                         </>
                       )}
                     </button>
+                    )}
                   </div>
                 </div>
 
@@ -4247,12 +4432,12 @@ export default function DocTrackingPage() {
                   {/* Sheds for the new farmer — first shed is just the farmer name */}
                   <div className="border-t border-indigo-200 pt-2 space-y-2">
                     <div className="font-bold text-[11px] text-indigo-900">
-                      Sheds — first shed is just the farmer name
+                      Sheds — short labels only
                     </div>
                     <p className="text-[11px] text-slate-500">
-                      Leave a shed label blank to use the farmer name (first
-                      shed) or “Farmer Name - Shed N” (later sheds). Each shed
-                      can have its own category and location.
+                      Type a short label — e.g. Shed 1 or Bridge par. A
+                      single shed can stay blank. The table shows only
+                      this label; the map/popup show it with the farmer name.
                     </p>
                     {newFarmerSheds.map(
                       (
@@ -4280,7 +4465,7 @@ export default function DocTrackingPage() {
                                   newFarmerSheds.length
                                 )
                               : nsIdx === 0
-                              ? "First shed (farmer name)"
+                              ? "First shed"
                               : `Shed ${nsIdx + 1}`}
                           </span>
                           {newFarmerSheds.length > 1 && (
@@ -4374,17 +4559,53 @@ export default function DocTrackingPage() {
                     ))}
                     <button
                       type="button"
-                      onClick={() =>
-                        setNewFarmerSheds((prev) => [
-                          ...prev,
-                          {
-                            shed_name: "",
-                            farm_category: "",
-                            latitude: "",
-                            longitude: "",
-                          },
-                        ])
-                      }
+                      onClick={() => {
+                        // Adding a 2nd shed: if the only shed has no name
+                        // yet, ask for its name first. Empty/cancel =>
+                        // it becomes "Shed 1" automatically. (No DB save
+                        // here — this farmer is still being created.)
+                        const prev = newFarmerSheds;
+                        const prevNeedsName =
+                          prev.length === 1 &&
+                          getShedShortName(
+                            { farmer_name: trackForm.farmer_name },
+                            prev[0],
+                            0,
+                            1
+                          ) === "";
+                        let prevName = "";
+                        if (prevNeedsName) {
+                          const answer = window.prompt(
+                            "Ager shed er nam din (khali rakhle 'Shed 1' hobe):",
+                            ""
+                          );
+                          prevName =
+                            answer && answer.trim()
+                              ? getShedShortName(
+                                  { farmer_name: trackForm.farmer_name },
+                                  { shed_name: answer.trim() },
+                                  0,
+                                  2
+                                )
+                              : "Shed 1";
+                        }
+                        setNewFarmerSheds((prevSheds) => {
+                          const updated = prevNeedsName
+                            ? prevSheds.map((s, i) =>
+                                i === 0 ? { ...s, shed_name: prevName } : s
+                              )
+                            : prevSheds;
+                          return [
+                            ...updated,
+                            {
+                              shed_name: `Shed ${prevSheds.length + 1}`,
+                              farm_category: "",
+                              latitude: "",
+                              longitude: "",
+                            },
+                          ];
+                        });
+                      }}
                       className="inline-flex items-center gap-1 bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded text-[11px] font-semibold"
                     >
                       + Add another shed

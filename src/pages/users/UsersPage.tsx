@@ -21,6 +21,7 @@ import {
   compressImageToTinyBase64,
   UserAvatar,
 } from "../../utils/avatarHelper";
+import { ALL_CATEGORIES } from "../../utils/accessControl";
 
 interface UserRecord {
   id: string;
@@ -33,6 +34,7 @@ interface UserRecord {
   avatar_url?: string | null;
   districts?: string[];
   upazilas?: string[];
+  assigned_categories?: string[];
   created_at?: string;
 }
 
@@ -84,6 +86,7 @@ export default function UsersPage() {
     status: string;
     districts: string[];
     upazilas: string[];
+    assigned_categories: string[];
   }>({
     email: "",
     password: "",
@@ -95,6 +98,7 @@ export default function UsersPage() {
     status: "active",
     districts: [],
     upazilas: [],
+    assigned_categories: [],
   });
 
   useEffect(() => {
@@ -245,6 +249,20 @@ export default function UsersPage() {
     });
   }
 
+  function handleToggleCategory(categoryName: string) {
+    setFormData((prev) => {
+      const isSelected = prev.assigned_categories.includes(categoryName);
+      const updatedCategories = isSelected
+        ? prev.assigned_categories.filter((c) => c !== categoryName)
+        : [...prev.assigned_categories, categoryName];
+
+      return {
+        ...prev,
+        assigned_categories: updatedCategories,
+      };
+    });
+  }
+
   function handleToggleUpazila(upazilaName: string) {
     setFormData((prev) => {
       const isSelected = prev.upazilas.includes(upazilaName);
@@ -289,6 +307,7 @@ export default function UsersPage() {
       status: "active",
       districts: [],
       upazilas: [],
+      assigned_categories: [],
     });
 
     setIsModalOpen(true);
@@ -315,6 +334,7 @@ export default function UsersPage() {
       status: user.status || "active",
       districts: parseArrayField(user.districts),
       upazilas: parseArrayField(user.upazilas),
+      assigned_categories: parseArrayField(user.assigned_categories),
     });
 
     setIsModalOpen(true);
@@ -343,6 +363,7 @@ export default function UsersPage() {
           status: formData.status,
           districts: formData.districts,
           upazilas: formData.upazilas,
+          assigned_categories: formData.assigned_categories,
         });
 
         // Also directly update designation, region, full_name, avatar_url in `users` table
@@ -357,6 +378,7 @@ export default function UsersPage() {
             status: formData.status,
             districts: formData.districts,
             upazilas: formData.upazilas,
+            assigned_categories: formData.assigned_categories,
           })
           .eq("id", editingUser.id);
 
@@ -377,6 +399,7 @@ export default function UsersPage() {
           status: formData.status,
           districts: formData.districts,
           upazilas: formData.upazilas,
+          assigned_categories: formData.assigned_categories,
         });
 
         const newId = created?.id || created?.user?.id;
@@ -387,6 +410,7 @@ export default function UsersPage() {
               designation: formData.designation.trim(),
               region: formData.region.trim(),
               avatar_url: formData.avatar_url || null,
+              assigned_categories: formData.assigned_categories,
             })
             .eq("id", newId);
         } else {
@@ -396,6 +420,7 @@ export default function UsersPage() {
               designation: formData.designation.trim(),
               region: formData.region.trim(),
               avatar_url: formData.avatar_url || null,
+              assigned_categories: formData.assigned_categories,
             })
             .eq("email", formData.email.trim());
         }
@@ -467,6 +492,9 @@ export default function UsersPage() {
     const userUpazilas = parseArrayField(user.upazilas)
       .join(" ")
       .toLowerCase();
+    const userCategories = parseArrayField(user.assigned_categories)
+      .join(" ")
+      .toLowerCase();
 
     const matchSearch =
       !searchText ||
@@ -475,7 +503,8 @@ export default function UsersPage() {
       user.designation?.toLowerCase().includes(searchText) ||
       user.region?.toLowerCase().includes(searchText) ||
       userDistricts.includes(searchText) ||
-      userUpazilas.includes(searchText);
+      userUpazilas.includes(searchText) ||
+      userCategories.includes(searchText);
 
     const matchRole = !roleFilter || user.role === roleFilter;
     const matchStatus = !statusFilter || user.status === statusFilter;
@@ -721,6 +750,28 @@ export default function UsersPage() {
                   )}
                 </div>
 
+                <div className="bg-slate-50 rounded-xl p-2.5 border border-slate-100">
+                  <p className="text-[10px] font-semibold text-slate-400 uppercase mb-1">
+                    Assigned Categories
+                  </p>
+                  {parseArrayField(user.assigned_categories).length === 0 ? (
+                    <span className="text-xs text-slate-400 italic">
+                      Not assigned
+                    </span>
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {parseArrayField(user.assigned_categories).map((c) => (
+                        <span
+                          key={c}
+                          className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-[11px] font-medium"
+                        >
+                          {c}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
                   <button
                     onClick={() => handleOpenEditModal(user)}
@@ -762,6 +813,9 @@ export default function UsersPage() {
                   Assigned Area
                 </th>
                 <th className="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase">
+                  Assigned Category
+                </th>
+                <th className="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase">
                   Role
                 </th>
                 <th className="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase">
@@ -776,14 +830,14 @@ export default function UsersPage() {
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={5} className="py-12 text-center text-slate-500">
+                  <td colSpan={6} className="py-12 text-center text-slate-500">
                     <FaSpinner className="animate-spin inline mr-2" />
                     Loading users...
                   </td>
                 </tr>
               ) : filteredUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="py-12 text-center">
+                  <td colSpan={6} className="py-12 text-center">
                     <div className="text-slate-400 text-sm">
                       No users found.
                     </div>
@@ -863,6 +917,28 @@ export default function UsersPage() {
                                   </span>
                                 ))}
                               </div>
+                            )}
+                          </div>
+                        )}
+                      </td>
+
+                      <td className="px-5 py-4">
+                        {parseArrayField(user.assigned_categories).length ===
+                        0 ? (
+                          <span className="text-xs text-slate-400 italic">
+                            Not assigned
+                          </span>
+                        ) : (
+                          <div className="flex flex-wrap gap-1 max-w-xs">
+                            {parseArrayField(user.assigned_categories).map(
+                              (c) => (
+                                <span
+                                  key={c}
+                                  className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-[11px] font-medium"
+                                >
+                                  {c}
+                                </span>
+                              )
                             )}
                           </div>
                         )}
@@ -1319,6 +1395,71 @@ export default function UsersPage() {
                     })}
                   </div>
                 )}
+              </div>
+
+              {/* MULTI-SELECT ASSIGNED CATEGORIES */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs sm:text-sm font-medium text-slate-700">
+                    Assign Categories (Multiple)
+                  </label>
+                  {formData.assigned_categories.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFormData({ ...formData, assigned_categories: [] })
+                      }
+                      className="text-xs text-red-500 hover:underline"
+                    >
+                      Clear All
+                    </button>
+                  )}
+                </div>
+
+                {formData.assigned_categories.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mb-2">
+                    {formData.assigned_categories.map((cat) => (
+                      <span
+                        key={cat}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-50 text-amber-700 border border-amber-200 text-xs font-medium"
+                      >
+                        {cat}
+                        <button
+                          type="button"
+                          onClick={() => handleToggleCategory(cat)}
+                          className="ml-1 text-amber-500 hover:text-amber-800"
+                        >
+                          <FaTimes />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-1.5">
+                  {ALL_CATEGORIES.map((cat) => {
+                    const checked =
+                      formData.assigned_categories.includes(cat);
+                    return (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => handleToggleCategory(cat)}
+                        className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition ${
+                          checked
+                            ? "bg-amber-50 text-amber-700 border-amber-300"
+                            : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Officers can add / edit / delete reports only in their
+                  assigned categories. Farmer add is not category-gated.
+                </p>
               </div>
 
               <div className="flex gap-2.5 pt-3 border-t border-slate-100 sticky bottom-0 bg-white">

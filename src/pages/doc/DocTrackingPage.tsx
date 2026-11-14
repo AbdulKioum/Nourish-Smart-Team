@@ -166,6 +166,68 @@ function normalizeFarmerStr(str?: string): string {
     .trim();
 }
 
+// ---------- Multi-shed helpers (same naming rule as FarmersPage) ----------
+// getShedsForFarmer: real rows from farmer_sheds when loaded, else ONE
+// synthesised legacy shed (empty shed_name) from the farmer's own fields.
+function getShedsForFarmer(farmer: any): FarmerShed[] {
+  const list = farmer?.farmer_sheds || farmer?.sheds || [];
+  if (Array.isArray(list) && list.length > 0) return list as FarmerShed[];
+  const shed: FarmerShed = {
+    id: `legacy-${farmer?.id}`,
+    farmer_id: farmer?.id,
+    shed_name: "",
+    farm_category: farmer?.farm_category || "",
+    latitude: farmer?.latitude ?? null,
+    longitude: farmer?.longitude ?? null,
+    feed_type: farmer?.feed_type || "",
+    status: farmer?.status || "Active",
+    broiler: Number(farmer?.broiler || 0),
+    layer: Number(farmer?.layer || 0),
+    sonali: Number(farmer?.sonali || 0),
+    duck: Number(farmer?.duck || 0),
+    quail: Number(farmer?.quail || 0),
+  };
+  return [shed];
+}
+
+// Display name rule — never show a bare "Shed 2" etc:
+// - raw already starts with the farmer name, or raw contains " - " with a
+//   name part -> return raw as-is ("Raju Ahmed - Shed 2", "Raju Ahmed - Bridge par").
+// - raw is a bare label ("Bridge par", "Shed 2") -> "Farmer Name - <raw>".
+// - raw empty: single-shed farmer -> just the farmer name; multi-shed ->
+//   "Farmer Name - Shed N".
+function getShedDisplayName(
+  farmer: any,
+  shed: any,
+  index: number,
+  totalSheds?: number
+): string {
+  const farmerName =
+    String(farmer?.farmer_name || "").trim() || "Farmer";
+  const raw = String(shed?.shed_name || "").trim();
+  const total =
+    totalSheds != null ? totalSheds : getShedsForFarmer(farmer).length;
+  if (raw) {
+    if (raw.toLowerCase().startsWith(farmerName.toLowerCase())) return raw;
+    if (raw.includes(" - ")) {
+      const namePart = raw.split(" - ")[0].trim();
+      if (namePart) return raw;
+    }
+    return `${farmerName} - ${raw}`;
+  }
+  if (total <= 1) return farmerName;
+  return `${farmerName} - Shed ${index + 1}`;
+}
+
+// A shed id that exists in farmer_sheds (usable as doc_trackings.shed_id),
+// or null for the synthesised legacy shed / no shed chosen.
+function shedIdForDb(shed: any): number | string | null {
+  if (!shed || shed.id == null || String(shed.id).startsWith("legacy-"))
+    return null;
+  const n = Number(shed.id);
+  return Number.isNaN(n) ? shed.id : n;
+}
+
 const STOCK_KEY_BY_CATEGORY: Record<string, string> = {
   Broiler: "broiler",
   Layer: "layer",
@@ -198,8 +260,26 @@ interface DocSupply {
   rmk: string;
 }
 
+interface FarmerShed {
+  id: number | string;
+  farmer_id?: number | null;
+  shed_name?: string;
+  farm_category?: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  feed_type?: string;
+  status?: string;
+  broiler?: number;
+  layer?: number;
+  sonali?: number;
+  duck?: number;
+  quail?: number;
+  [key: string]: any;
+}
+
 interface DocTracking {
   id: string;
+  shed_id?: number | string | null;
   supply_id?: string | null;
   doc_id: string;
   h_date: string;
@@ -254,6 +334,10 @@ interface FarmerRecord {
   sonali?: number;
   duck?: number;
   quail?: number;
+  feed_type?: string;
+  status?: string;
+  farmer_sheds?: FarmerShed[];
+  sheds?: FarmerShed[];
   companies?: { company_name?: string };
 }
 
@@ -401,6 +485,12 @@ export default function DocTrackingPage() {
     null
   );
   const [selectedFarmerId, setSelectedFarmerId] = useState<string>("");
+  const [selectedShedId, setSelectedShedId] = useState<string>("");
+  // Sheds for the "Create farmer & Track DOC" flow. First entry is the
+  // farmer's own (first) shed: blank label = just the farmer name.
+  const [newFarmerSheds, setNewFarmerSheds] = useState<
+    { shed_name: string; farm_category: string; latitude: string; longitude: string }[]
+  >([{ shed_name: "", farm_category: "", latitude: "", longitude: "" }]);
 
   const [activeTarget, setActiveTarget] = useState<{
     doc_id: string;
@@ -615,9 +705,32 @@ export default function DocTrackingPage() {
       new Set(loadedComps.map((c) => c.company_name?.trim()).filter(Boolean))
     );
 
+    // Attach farmer_sheds when the table exists; otherwise
+    // getShedsForFarmer() synthesises one legacy shed per farmer.
+    const farmersWithSheds: any[] = (frmData as any[]) || [];
+    try {
+      const { data: shedData, error: shedError } = await supabase
+        .from("farmer_sheds")
+        .select("*");
+      if (!shedError && shedData) {
+        const shedsByFarmer: Record<string, any[]> = {};
+        (shedData as any[]).forEach((sh: any) => {
+          const k = String(sh.farmer_id);
+          if (!shedsByFarmer[k]) shedsByFarmer[k] = [];
+          shedsByFarmer[k].push(sh);
+        });
+        farmersWithSheds.forEach((f: any) => {
+          if (shedsByFarmer[String(f.id)])
+            f.farmer_sheds = shedsByFarmer[String(f.id)];
+        });
+      }
+    } catch {
+      // farmer_sheds table not created yet — legacy fallback applies.
+    }
+
     setOfficers(parsedOfficers);
     setFeedAgents((faData as any[]) || []);
-    setFarmersList((frmData as any[]) || []);
+    setFarmersList(farmersWithSheds);
     setCompaniesList(loadedComps);
     setCompanyNames(loadedCompNames);
 
@@ -713,7 +826,7 @@ export default function DocTrackingPage() {
       trackings: loadedTrackings,
       officers: parsedOfficers,
       feedAgents: (faData as any[]) || [],
-      farmersList: (frmData as any[]) || [],
+      farmersList: farmersWithSheds,
       companiesList: loadedComps,
       companyNames: loadedCompNames,
       fromDate: defFrom,
@@ -967,6 +1080,64 @@ export default function DocTrackingPage() {
     return false;
   }
 
+  // Shed display name for a DOC tracking row: the linked shed when the
+  // record carries shed_id, else the farmer name (single-shed farmers).
+  function displayNameForTracking(tr: DocTracking): string {
+    const farmer = tr.farmer_id
+      ? farmersList.find((f) => Number(f.id) === Number(tr.farmer_id))
+      : undefined;
+    if (!farmer) return tr.farmer_name;
+    const sheds = getShedsForFarmer(farmer);
+    if (tr.shed_id != null && String(tr.shed_id) !== "") {
+      const idx = sheds.findIndex(
+        (sh) => String(sh.id) === String(tr.shed_id)
+      );
+      if (idx >= 0)
+        return getShedDisplayName(farmer, sheds[idx], idx, sheds.length);
+    }
+    if (sheds.length > 1) return tr.farmer_name;
+    return getShedDisplayName(farmer, sheds[0], 0, sheds.length);
+  }
+
+  // Apply a DOC stock change to the SELECTED shed's farmer_sheds row as
+  // well as the farmer-row legacy totals (the caller keeps the farmer row
+  // updated). Never breaks the main save: missing table/column is swallowed.
+  // Pass targetStock to SET the shed stock, or delta to ADD to it.
+  async function syncShedStock(args: {
+    shedId: number | string | null;
+    stockKey: string;
+    delta?: number;
+    targetStock?: number;
+    broadCategory: string;
+    zeroOtherPoultry?: boolean;
+  }): Promise<void> {
+    if (!args.shedId || !args.stockKey) return;
+    try {
+      const { data } = await supabase
+        .from("farmer_sheds")
+        .select("*")
+        .eq("id", args.shedId)
+        .single();
+      if (!data) return;
+      const next =
+        args.targetStock != null
+          ? Math.max(0, args.targetStock)
+          : Math.max(0, Number((data as any)[args.stockKey] || 0) + (args.delta || 0));
+      const upd: Record<string, any> = {
+        [args.stockKey]: next,
+        farm_category: args.broadCategory,
+      };
+      if (args.zeroOtherPoultry) {
+        POULTRY_STOCK_KEYS.forEach((k) => {
+          if (k !== args.stockKey) upd[k] = 0;
+        });
+      }
+      await supabase.from("farmer_sheds").update(upd).eq("id", args.shedId);
+    } catch {
+      // farmer_sheds missing / shed row missing — farmer-row totals still stand.
+    }
+  }
+
   function getStatsForAgentDatePcd(
     docId: string,
     hDate: string,
@@ -1065,6 +1236,10 @@ export default function DocTrackingPage() {
       remainingQty: stats.remaining,
     });
     setSelectedFarmerId("");
+    setSelectedShedId("");
+    setNewFarmerSheds([
+      { shed_name: "", farm_category: "", latitude: "", longitude: "" },
+    ]);
     setSaveToFarmers(false);
     setShowInVisits(true);
     setBatchMode("add");
@@ -1124,6 +1299,17 @@ export default function DocTrackingPage() {
       remainingQty: stats.remaining,
     });
     setSelectedFarmerId(tr.farmer_id ? String(tr.farmer_id) : "");
+    // Restore the shed this tracking was linked to (real shed id only);
+    // otherwise default to the farmer's first shed.
+    if (tr.shed_id != null && String(tr.shed_id) !== "") {
+      setSelectedShedId(String(tr.shed_id));
+    } else {
+      const editFarmer = tr.farmer_id
+        ? farmersList.find((f) => Number(f.id) === Number(tr.farmer_id))
+        : undefined;
+      const editSheds = editFarmer ? getShedsForFarmer(editFarmer) : [];
+      setSelectedShedId(editSheds[0] ? String(editSheds[0].id) : "");
+    }
     setTrackForm({
       farmer_name: tr.farmer_name || "",
       address: tr.address || "",
@@ -1174,16 +1360,23 @@ export default function DocTrackingPage() {
 
   function handleSelectFarmerFromDropdown(farmerId: string) {
     setSelectedFarmerId(farmerId);
-    if (!farmerId) return;
+    if (!farmerId) {
+      setSelectedShedId("");
+      return;
+    }
 
     const f = farmersList.find((item) => String(item.id) === String(farmerId));
     if (!f) return;
+    // Default to the farmer's first shed; the shed selector below lets the
+    // user pick another one when the farmer has more than one shed.
+    setSelectedShedId(String(getShedsForFarmer(f)[0]?.id || ""));
     populateFormFromFarmerRecord(f);
   }
 
   // Pick a farmer from Floating Duplicate Suggestions
   function handlePickSuggestedFarmer(f: FarmerRecord) {
     setSelectedFarmerId(String(f.id));
+    setSelectedShedId(String(getShedsForFarmer(f)[0]?.id || ""));
     setSaveToFarmers(false);
     setShowInVisits(true);
     setShowSimilarSuggestions(false);
@@ -1256,6 +1449,7 @@ export default function DocTrackingPage() {
         const qtyDiff = numQty - oldQty;
 
         const updateData: Record<string, any> = {
+          shed_id: selectedShedDbId,
           farmer_name: trackForm.farmer_name.trim(),
           address: trackForm.address.trim(),
           mobile: trackForm.mobile.trim(),
@@ -1268,16 +1462,26 @@ export default function DocTrackingPage() {
           ag_b: trackForm.ag_b || null,
         };
 
-        const { error } = await supabase
-          .from("doc_trackings")
-          .update(updateData)
-          .eq("id", editingTracking.id);
+        let updateErr: any = null;
+        {
+          const { error } = await supabase
+            .from("doc_trackings")
+            .update(updateData)
+            .eq("id", editingTracking.id);
+          updateErr = error;
+        }
+        // doc_trackings.shed_id may not exist yet (v2 column): retry without it.
+        if (updateErr && /shed_id/i.test(updateErr.message || "")) {
+          delete updateData.shed_id;
+          const { error: shedRetryErr } = await supabase
+            .from("doc_trackings")
+            .update(updateData)
+            .eq("id", editingTracking.id);
+          updateErr = shedRetryErr;
+        }
 
-        if (error) {
-          delete updateData.b_qty;
-          delete updateData.category;
-          delete updateData.breed;
-          delete updateData.ag_b;
+        if (updateErr) {
+          
           const { error: retryErr } = await supabase
             .from("doc_trackings")
             .update(updateData)
@@ -1307,6 +1511,22 @@ export default function DocTrackingPage() {
                 .update({ [stockKey]: newStock })
                 .eq("id", targetFarmerId);
             }
+          }
+
+          // Same stock change on the selected shed's farmer_sheds row.
+          const stockKeyForShed = STOCK_KEY_BY_CATEGORY[finalCategory];
+          if (stockKeyForShed) {
+            const boxDiffEdit =
+              numBoxes - Number(editingTracking.b_qty || 0);
+            await syncShedStock({
+              shedId: selectedShedDbId,
+              stockKey: stockKeyForShed,
+              delta: qtyDiff + boxDiffEdit,
+              broadCategory:
+                finalCategory === "Cattle" || finalCategory === "Fish"
+                  ? finalCategory
+                  : "Poultry",
+            });
           }
 
           const { data: runningVisit } = await supabase
@@ -1343,6 +1563,8 @@ export default function DocTrackingPage() {
               ? {
                   ...item,
                   ...updateData,
+                  shed_id:
+                    selectedShedDbId ?? item.shed_id ?? editingTracking.shed_id ?? null,
                   b_qty: numBoxes,
                   ag_b: trackForm.ag_b || "",
                 }
@@ -1373,6 +1595,7 @@ export default function DocTrackingPage() {
           !isOnlyTrackMode && selectedFarmerId
             ? Number(selectedFarmerId)
             : null;
+        let createdFarmerIdInThisSave: number | null = null;
 
         const stockKey = STOCK_KEY_BY_CATEGORY[finalCategory];
 
@@ -1443,6 +1666,74 @@ export default function DocTrackingPage() {
             if (c2Err) throw c2Err;
             if (c2) targetFarmerId = c2.id;
           }
+
+          // Save the new farmer's sheds to farmer_sheds (first shed = just
+          // the farmer name, empty shed_name; later sheds auto-named
+          // "Farmer Name - Shed N" by getShedDisplayName when blank).
+          // First-shed legacy values already live on the farmer row above,
+          // so a missing farmer_sheds table must not break this save.
+          if (targetFarmerId) {
+            createdFarmerIdInThisSave = targetFarmerId;
+            try {
+              const broadCat = (cat: string) =>
+                cat === "Cattle" || cat === "Fish" ? cat : "Poultry";
+              const shedsToSave = (
+                newFarmerSheds.length > 0
+                  ? newFarmerSheds
+                  : [
+                      {
+                        shed_name: "",
+                        farm_category: "",
+                        latitude: "",
+                        longitude: "",
+                      },
+                    ]
+              ).map(
+                (
+                  ns: {
+                    shed_name: string;
+                    farm_category: string;
+                    latitude: string;
+                    longitude: string;
+                  },
+                  nsIdx: number
+                ) => {
+                const isFirst = nsIdx === 0;
+                const cat = ns.farm_category || finalCategory;
+                const db: Record<string, any> = {
+                  farmer_id: targetFarmerId,
+                  shed_name: String(ns.shed_name || "").trim(),
+                  farm_category: broadCat(cat),
+                  latitude: isFirst
+                    ? newFarmerForm.latitude === ""
+                      ? null
+                      : Number(newFarmerForm.latitude)
+                    : ns.latitude === "" || ns.latitude == null
+                    ? null
+                    : Number(ns.latitude),
+                  longitude: isFirst
+                    ? newFarmerForm.longitude === ""
+                      ? null
+                      : Number(newFarmerForm.longitude)
+                    : ns.longitude === "" || ns.longitude == null
+                    ? null
+                    : Number(ns.longitude),
+                  feed_type: newFarmerForm.feed_type || "",
+                  status: shouldShowInVisits ? "Running" : "Active",
+                };
+                POULTRY_STOCK_KEYS.forEach((k) => (db[k] = 0));
+                if (isFirst && stockKey)
+                  db[stockKey] = effectiveBirdsForFarmAndVisit;
+                return db;
+              });
+              const { error: shedInsErr } = await supabase
+                .from("farmer_sheds")
+                .insert(shedsToSave);
+              if (shedInsErr) throw shedInsErr;
+            } catch {
+              // farmer_sheds table not created yet — farmer row already saved.
+            }
+          }
         }
 
         // 3. Save to DOC Trackings
@@ -1462,6 +1753,7 @@ export default function DocTrackingPage() {
           breed: finalBreed,
           ag_b: trackForm.ag_b || null,
           farmer_id: targetFarmerId || null,
+          shed_id: selectedShedDbId,
           created_by: currentUserId || null,
           tracked_by_name: currentUserName,
         };
@@ -1475,7 +1767,21 @@ export default function DocTrackingPage() {
         if (!trkInsErr && trkInsData && trkInsData[0]) {
           insertedTrackingRow = trkInsData[0];
         } else if (trkInsErr) {
+          // doc_trackings.shed_id may not exist yet (v2 column): retry without it.
+          if (/shed_id/i.test(trkInsErr.message || "")) {
+            const withoutShedId = { ...insertPayload };
+            delete withoutShedId.shed_id;
+            const { data: shedTryData, error: shedTryErr } = await supabase
+              .from("doc_trackings")
+              .insert([withoutShedId])
+              .select();
+            if (!shedTryErr && shedTryData && shedTryData[0]) {
+              insertedTrackingRow = shedTryData[0];
+            }
+          }
+          if (!insertedTrackingRow) {
           const withoutBQty = { ...insertPayload };
+          delete withoutBQty.shed_id;
           delete withoutBQty.b_qty;
           const { data: try2Data, error: try2Err } = await supabase
             .from("doc_trackings")
@@ -1505,6 +1811,7 @@ export default function DocTrackingPage() {
             if (retryErr) throw retryErr;
             insertedTrackingRow = retryData?.[0] || fallbackPayload;
           }
+          }
         }
 
         const uiTrackingRow: DocTracking = {
@@ -1526,6 +1833,7 @@ export default function DocTrackingPage() {
           breed: finalBreed,
           ag_b: trackForm.ag_b || "",
           farmer_id: targetFarmerId || null,
+          shed_id: selectedShedDbId ?? insertedTrackingRow?.shed_id ?? null,
           created_by: currentUserId || undefined,
           tracked_by_name: currentUserName,
         };
@@ -1602,6 +1910,36 @@ export default function DocTrackingPage() {
                 .from("farmers")
                 .update(farmerUpdatePayload)
                 .eq("id", targetFarmerId);
+            }
+
+            // Same stock change on the selected shed's farmer_sheds row
+            // (skipped for a farmer created in this same save: its shed
+            // rows were just inserted above with the stock already set).
+            if (
+              stockKey &&
+              targetFarmerId !== createdFarmerIdInThisSave
+            ) {
+              const broadCategory =
+                finalCategory === "Cattle" || finalCategory === "Fish"
+                  ? finalCategory
+                  : "Poultry";
+              if (sameCatRunning.length > 0) {
+                await syncShedStock({
+                  shedId: selectedShedDbId,
+                  stockKey,
+                  delta: effectiveBirdsForFarmAndVisit,
+                  broadCategory,
+                  zeroOtherPoultry: mode === "replace",
+                });
+              } else {
+                await syncShedStock({
+                  shedId: selectedShedDbId,
+                  stockKey,
+                  targetStock: effectiveBirdsForFarmAndVisit,
+                  broadCategory,
+                  zeroOtherPoultry: mode === "replace",
+                });
+              }
             }
           }
         }
@@ -1979,7 +2317,7 @@ export default function DocTrackingPage() {
               "DOC Qty": index === 0 ? g.qty : "",
               "DOC Type": g.pcd,
               "AG/B+": t.ag_b || "-",
-              Farmer: t.farmer_name,
+              Farmer: displayNameForTracking(t),
               "Farmer Address": t.address || "-",
               "Farmer Mobile": t.mobile || "-",
               "Tracked Qty": Number(t.qty) || 0,
@@ -2451,6 +2789,24 @@ export default function DocTrackingPage() {
           score += 80;
         }
 
+        // Also match shed names, so "Raju - Bridge par" finds that farmer.
+        const farmerSheds = getShedsForFarmer(f);
+        const shedDisplayNames = farmerSheds.map((sh, si) =>
+          getShedDisplayName(f, sh, si, farmerSheds.length)
+        );
+        if (rawInput.length >= 2) {
+          const normShedHit = shedDisplayNames.some(
+            (n) => normalizeFarmerStr(n) === normInput
+          );
+          if (normShedHit) score += 90;
+          else if (
+            shedDisplayNames.some((n) =>
+              n.toLowerCase().includes(rawInput.toLowerCase())
+            )
+          )
+            score += 40;
+        }
+
         const agentObj = feedAgents.find(
           (a) => Number(a.id) === Number(f.agent_id)
         );
@@ -2459,6 +2815,7 @@ export default function DocTrackingPage() {
           farmer: f,
           agentName: agentObj?.agent_name || "-",
           companyName: f.companies?.company_name || "-",
+          shedDisplayNames,
           score,
         };
       })
@@ -2579,6 +2936,9 @@ export default function DocTrackingPage() {
       c.company_name?.toLowerCase().includes("nourish")
     );
     const feedAgentId = getCollaboratedFeedAgentId(activeTarget);
+    setNewFarmerSheds([
+      { shed_name: "", farm_category: "", latitude: "", longitude: "" },
+    ]);
     setNewFarmerForm({
       company_id: String((comp || nourish || companiesList[0])?.id || ""),
       district: activeTarget.district || "Mymensingh",
@@ -2654,6 +3014,25 @@ export default function DocTrackingPage() {
   }
 
   const collaboratedFarmers = getCollaboratedFarmersForTarget(activeTarget);
+
+  // Selected farmer + shed for the tracking modal (shed selector + save).
+  const selectedFarmer: FarmerRecord | null = selectedFarmerId
+    ? farmersList.find((f) => String(f.id) === String(selectedFarmerId)) || null
+    : null;
+  const selectedFarmerSheds: FarmerShed[] = selectedFarmer
+    ? getShedsForFarmer(selectedFarmer)
+    : [];
+  const selectedShedIndex =
+    selectedFarmerSheds.findIndex(
+      (sh) => String(sh.id) === String(selectedShedId)
+    );
+  const selectedShed: FarmerShed | null =
+    selectedShedIndex >= 0
+      ? selectedFarmerSheds[selectedShedIndex]
+      : selectedFarmerSheds[0] || null;
+  const selectedShedDbId: number | string | null = selectedShed
+    ? shedIdForDb(selectedShed)
+    : null;
 
   // Live modal stats for selected H.Date & DOC Type
   const modalSelectedStats = activeTarget
@@ -3258,7 +3637,7 @@ export default function DocTrackingPage() {
                                                 className="hover:bg-emerald-50/40 whitespace-nowrap"
                                               >
                                                 <td className="py-0.5 px-1.5 font-bold text-slate-800">
-                                                  {tr.farmer_name}
+                                                  {displayNameForTracking(tr)}
                                                 </td>
                                                 <td className="py-0.5 px-1.5 text-slate-600">
                                                   {tr.h_date}
@@ -3634,6 +4013,15 @@ export default function DocTrackingPage() {
                             );
                             setFarmerEntryMode("create_farmer");
                             setSelectedFarmerId("");
+                            setSelectedShedId("");
+                            setNewFarmerSheds([
+                              {
+                                shed_name: "",
+                                farm_category: "",
+                                latitude: "",
+                                longitude: "",
+                              },
+                            ]);
                             setSaveToFarmers(true);
                             setShowInVisits(true); // Default checked: Run this farmer
                             initNewFarmerFormDefaults();
@@ -3855,12 +4243,210 @@ export default function DocTrackingPage() {
                       </span>
                     )}
                   </div>
+
+                  {/* Sheds for the new farmer — first shed is just the farmer name */}
+                  <div className="border-t border-indigo-200 pt-2 space-y-2">
+                    <div className="font-bold text-[11px] text-indigo-900">
+                      Sheds — first shed is just the farmer name
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      Leave a shed label blank to use the farmer name (first
+                      shed) or “Farmer Name - Shed N” (later sheds). Each shed
+                      can have its own category and location.
+                    </p>
+                    {newFarmerSheds.map(
+                      (
+                        ns: {
+                          shed_name: string;
+                          farm_category: string;
+                          latitude: string;
+                          longitude: string;
+                        },
+                        nsIdx: number
+                      ) => (
+                      <div
+                        key={nsIdx}
+                        className="border border-indigo-200 bg-white rounded-lg p-2 space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-slate-800">
+                            {trackForm.farmer_name.trim()
+                              ? getShedDisplayName(
+                                  {
+                                    farmer_name: trackForm.farmer_name.trim(),
+                                  },
+                                  { shed_name: ns.shed_name },
+                                  nsIdx,
+                                  newFarmerSheds.length
+                                )
+                              : nsIdx === 0
+                              ? "First shed (farmer name)"
+                              : `Shed ${nsIdx + 1}`}
+                          </span>
+                          {newFarmerSheds.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setNewFarmerSheds((prev) =>
+                                  prev.filter((_: any, i: number) => i !== nsIdx)
+                                )
+                              }
+                              className="text-red-600 text-[11px] font-semibold"
+                            >
+                              Remove
+                            </button>
+                          )}
+                        </div>
+                        <input
+                          placeholder={
+                            nsIdx === 0
+                              ? "Shed label (optional — blank = farmer name)"
+                              : "Shed label e.g. Bridge par (optional)"
+                          }
+                          value={ns.shed_name}
+                          onChange={(e) =>
+                            setNewFarmerSheds((prev) =>
+                              prev.map((s, i) =>
+                                i === nsIdx
+                                  ? { ...s, shed_name: e.target.value }
+                                  : s
+                              )
+                            )
+                          }
+                          className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
+                        />
+                        <select
+                          value={ns.farm_category || trackForm.category}
+                          onChange={(e) =>
+                            setNewFarmerSheds((prev) =>
+                              prev.map((s, i) =>
+                                i === nsIdx
+                                  ? { ...s, farm_category: e.target.value }
+                                  : s
+                              )
+                            )
+                          }
+                          className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
+                        >
+                          {FARM_CATEGORIES.map((cat) => (
+                            <option key={cat} value={cat}>
+                              {cat}
+                            </option>
+                          ))}
+                        </select>
+                        {nsIdx === 0 ? (
+                          <p className="text-[11px] text-slate-500">
+                            Location above is used for this shed.
+                          </p>
+                        ) : (
+                          <div className="grid grid-cols-2 gap-2">
+                            <input
+                              placeholder="Latitude (optional)"
+                              value={ns.latitude}
+                              onChange={(e) =>
+                                setNewFarmerSheds((prev) =>
+                                  prev.map((s, i) =>
+                                    i === nsIdx
+                                      ? { ...s, latitude: e.target.value }
+                                      : s
+                                  )
+                                )
+                              }
+                              className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
+                            />
+                            <input
+                              placeholder="Longitude (optional)"
+                              value={ns.longitude}
+                              onChange={(e) =>
+                                setNewFarmerSheds((prev) =>
+                                  prev.map((s, i) =>
+                                    i === nsIdx
+                                      ? { ...s, longitude: e.target.value }
+                                      : s
+                                  )
+                                )
+                              }
+                              className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setNewFarmerSheds((prev) => [
+                          ...prev,
+                          {
+                            shed_name: "",
+                            farm_category: "",
+                            latitude: "",
+                            longitude: "",
+                          },
+                        ])
+                      }
+                      className="inline-flex items-center gap-1 bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded text-[11px] font-semibold"
+                    >
+                      + Add another shed
+                    </button>
+                  </div>
                 </div>
               )}
 
               {/* TRACKING FORM FIELDS (Shown ONLY after an option/farmer is selected!) */}
               {isTrackingFormVisible && (
                 <div className="space-y-3 pt-2 border-t border-slate-200">
+                  {/* Shed selector — shown once a farmer is picked */}
+                  {selectedFarmer && selectedFarmerSheds.length > 0 && (
+                    <div>
+                      <label className="block font-medium text-slate-700 mb-1">
+                        Shed *
+                      </label>
+                      {selectedFarmerSheds.length > 1 ? (
+                        <select
+                          value={
+                            selectedShed
+                              ? String(selectedShed.id)
+                              : ""
+                          }
+                          onChange={(e) => setSelectedShedId(e.target.value)}
+                          className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white outline-none focus:border-emerald-500 font-semibold"
+                        >
+                          {selectedFarmerSheds.map((sh, shIdx) => (
+                            <option key={String(sh.id)} value={String(sh.id)}>
+                              {getShedDisplayName(
+                                selectedFarmer,
+                                sh,
+                                shIdx,
+                                selectedFarmerSheds.length
+                              )}
+                              {sh.farm_category
+                                ? ` — ${sh.farm_category}`
+                                : ""}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div className="w-full border border-slate-200 bg-slate-50 rounded-lg px-2.5 py-1.5 font-semibold text-slate-800">
+                          {getShedDisplayName(
+                            selectedFarmer,
+                            selectedFarmerSheds[0],
+                            0,
+                            1
+                          )}
+                        </div>
+                      )}
+                      {selectedShed?.farm_category && (
+                        <p className="text-[11px] text-slate-500 mt-1">
+                          Category: {selectedShed.farm_category}
+                          {selectedShed.latitude && selectedShed.longitude
+                            ? ` • 📍 (${Number(selectedShed.latitude).toFixed(4)}, ${Number(selectedShed.longitude).toFixed(4)})`
+                            : ""}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
                   {/* Farmer Name with Floating Duplicate Suggestion Dropdown */}
                   <div className="relative">
                     <label className="block font-medium text-slate-700 mb-1">
@@ -3902,7 +4488,7 @@ export default function DocTrackingPage() {
                             </button>
                           </div>
                           {similarFarmersList.map(
-                            ({ farmer: sf, agentName, companyName }) => (
+                            ({ farmer: sf, agentName, companyName, shedDisplayNames }: any) => (
                               <button
                                 key={sf.id}
                                 type="button"
@@ -3925,6 +4511,12 @@ export default function DocTrackingPage() {
                                     .filter(Boolean)
                                     .join(", ") || "-"}
                                 </div>
+                                {shedDisplayNames &&
+                                  getShedsForFarmer(sf).length > 1 && (
+                                    <div className="text-[10px] text-indigo-700 truncate">
+                                      Sheds: {shedDisplayNames.join(" • ")}
+                                    </div>
+                                  )}
                               </button>
                             )
                           )}

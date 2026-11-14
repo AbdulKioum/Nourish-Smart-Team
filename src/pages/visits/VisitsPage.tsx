@@ -226,6 +226,144 @@ function batchTagOf(label?: string, farmerName?: string): string {
   return label;
 }
 
+
+const SHED_STOCK_FIELDS = [
+  ...POULTRY_FIELDS,
+  ...CATTLE_FIELDS,
+  ...FISH_FIELDS,
+];
+
+const EMPTY_SHED_FORM: any = {
+  id: undefined,
+  shed_name: "",
+  farm_category: "",
+  broiler: "",
+  layer: "",
+  sonali: "",
+  duck: "",
+  quail: "",
+  deshi_chicken: "",
+  dairy_cow: "",
+  bull: "",
+  calf_heifer: "",
+  pangus: "",
+  tilapia: "",
+  koi: "",
+  shing: "",
+  pabda: "",
+  gulsha: "",
+  magur: "",
+  carp: "",
+  golda: "",
+  bagda: "",
+  tengra: "",
+  feed_type: "",
+  latitude: "",
+  longitude: "",
+  status: "Active",
+};
+
+// ---------- Multi-shed helpers ----------
+// A farmer's sheds come from farmer_sheds when that table exists; otherwise
+// one legacy shed is synthesised from the farmer row. The first/only shed
+// has an EMPTY shed_name — it is shown as just the farmer name.
+function getShedsForFarmer(farmer: any): any[] {
+  const list = farmer?.farmer_sheds || farmer?.sheds || [];
+  if (Array.isArray(list) && list.length > 0) return list;
+  const shed: any = {
+    id: `legacy-${farmer?.id}`,
+    farmer_id: farmer?.id,
+    shed_name: "",
+    farm_category: farmer?.farm_category || "",
+    latitude: farmer?.latitude ?? null,
+    longitude: farmer?.longitude ?? null,
+    feed_type: farmer?.feed_type || "",
+    status: farmer?.status || "Active",
+  };
+  SHED_STOCK_FIELDS.forEach((k) => {
+    shed[k] = Number(farmer?.[k] || 0);
+  });
+  return [shed];
+}
+
+// Never show a bare "Shed 2" label. Single-shed farmer = just farmer name.
+function getShedDisplayName(
+  farmer: any,
+  shed: any,
+  index: number,
+  totalSheds?: number
+): string {
+  const farmerName = String(farmer?.farmer_name || "Farmer");
+  const raw = String(shed?.shed_name || "").trim();
+  const total =
+    totalSheds !== undefined && totalSheds !== null
+      ? totalSheds
+      : getShedsForFarmer(farmer).length;
+  if (raw) {
+    // Already farmer-prefixed ("Raju Ahmed - Shed 2", "Raju Ahmed - Bridge par")
+    // or otherwise carries a "Name - label" form: show as-is.
+    if (
+      raw.toLowerCase().startsWith(farmerName.toLowerCase()) ||
+      raw.includes(" - ")
+    ) {
+      return raw;
+    }
+    // Bare label ("Bridge par", "Shed 2"): prefix the farmer name.
+    return `${farmerName} - ${raw}`;
+  }
+  if (total <= 1) return farmerName;
+  return `${farmerName} - Shed ${index + 1}`;
+}
+
+// The shed a visit belongs to: its stored shed_id when it matches one of
+// the farmer's sheds; the only shed when the farmer has exactly one; null
+// when the farmer has several sheds and the visit names none (do not guess).
+function getShedForVisit(visit: any, farmer: any): any | null {
+  if (!farmer) return null;
+  const sheds = getShedsForFarmer(farmer);
+  if (sheds.length === 0) return null;
+  const sid = visit?.shed_id;
+  if (sid !== null && sid !== undefined && String(sid) !== "") {
+    return sheds.find((s: any) => String(s.id) === String(sid)) || null;
+  }
+  return sheds.length === 1 ? sheds[0] : null;
+}
+
+function getVisitShedDisplayName(visit: any, farmer: any): string {
+  const farmerName =
+    farmer?.farmer_name ||
+    visit?.farmers?.farmer_name ||
+    visit?.batch_label ||
+    "Farmer";
+  if (!farmer) return farmerName;
+  const sheds = getShedsForFarmer(farmer);
+  const shed = getShedForVisit(visit, farmer);
+  if (!shed) return farmerName;
+  return getShedDisplayName(farmer, shed, sheds.indexOf(shed), sheds.length);
+}
+
+function shedFormToDb(shed: any, farmerId: number): any {
+  const db: any = {
+    farmer_id: farmerId,
+    shed_name: String(shed?.shed_name || ""),
+    farm_category: shed?.farm_category || "",
+    latitude:
+      shed?.latitude === "" || shed?.latitude == null
+        ? null
+        : Number(shed.latitude),
+    longitude:
+      shed?.longitude === "" || shed?.longitude == null
+        ? null
+        : Number(shed.longitude),
+    feed_type: shed?.feed_type || "",
+    status: shed?.status || "Active",
+  };
+  SHED_STOCK_FIELDS.forEach((k) => {
+    db[k] = Number(shed?.[k] || 0);
+  });
+  return db;
+}
+
 function hasValue(val: any): boolean {
   if (val === null || val === undefined) return false;
   const s = String(val).trim();
@@ -459,6 +597,10 @@ export default function VetVisitsPage() {
     category: "Broiler",
     batch_label: "",
   });
+  // Multi-shed: chosen shed for the Activate/Run Farm modal, and the shed
+  // list edited in the Add/Edit Farmer modal (first shed = farmer form).
+  const [activateShedId, setActivateShedId] = useState<string>("");
+  const [formSheds, setFormSheds] = useState<any[]>([{ ...EMPTY_SHED_FORM }]);
   const [geoDistricts, setGeoDistricts] = useState<any[]>([]);
   const [geoUpazilas, setGeoUpazilas] = useState<any[]>([]);
   const [geoUnions, setGeoUnions] = useState<any[]>([]);
@@ -865,6 +1007,215 @@ export default function VetVisitsPage() {
     setVaccines(data || []);
   }
 
+  // Insert with shed_id when the visit/record belongs to a real (non-legacy)
+  // shed; if the column does not exist yet (pre-v2 DB), retry without it so
+  // saving never breaks. Returns the Supabase result ({ error, ... }).
+  async function insertWithOptionalShedId(
+    table:
+      | "vet_visits"
+      | "before_sale_reports"
+      | "after_sale_reports"
+      | "layer_reports"
+      | "farmer_feed_logs",
+    payload: any,
+    shedId: any
+  ) {
+    const numericShedId =
+      shedId !== null &&
+      shedId !== undefined &&
+      String(shedId) !== "" &&
+      !String(shedId).startsWith("legacy-")
+        ? shedId
+        : null;
+    if (numericShedId == null) {
+      return supabase.from(table).insert([payload]);
+    }
+    const first = await supabase
+      .from(table)
+      .insert([{ ...payload, shed_id: numericShedId }]);
+    if (
+      first.error &&
+      String(first.error.message || "").toLowerCase().includes("shed_id")
+    ) {
+      return supabase.from(table).insert([payload]);
+    }
+    return first;
+  }
+
+  async function updateWithOptionalShedId(
+    table: "vet_visits",
+    updates: Record<string, any>,
+    shedId: any,
+    eqColumn: string,
+    eqValue: any
+  ) {
+    const numericShedId =
+      shedId !== null &&
+      shedId !== undefined &&
+      String(shedId) !== "" &&
+      !String(shedId).startsWith("legacy-")
+        ? shedId
+        : null;
+    if (numericShedId == null) {
+      return supabase.from(table).update(updates).eq(eqColumn, eqValue);
+    }
+    const first = await supabase
+      .from(table)
+      .update({ ...updates, shed_id: numericShedId })
+      .eq(eqColumn, eqValue);
+    if (
+      first.error &&
+      String(first.error.message || "").toLowerCase().includes("shed_id")
+    ) {
+      return supabase.from(table).update(updates).eq(eqColumn, eqValue);
+    }
+    return first;
+  }
+
+  // Upsert a farmer's sheds into farmer_sheds (delete sheds removed from
+  // the form). The farmer row itself is already saved by the caller, so a
+  // missing farmer_sheds table only warns — it never loses the farmer.
+  async function saveShedsForFarmer(
+    farmerId: number,
+    _farmerName: string,
+    sheds: any[]
+  ): Promise<boolean> {
+    const list =
+      sheds && sheds.length > 0
+        ? sheds
+        : [{ ...EMPTY_SHED_FORM, shed_name: "" }];
+    try {
+      const { data: existingSheds, error: existingErr } = await supabase
+        .from("farmer_sheds")
+        .select("id")
+        .eq("farmer_id", farmerId);
+      if (existingErr) throw existingErr;
+      const keepIds = new Set(
+        list
+          .map((s: any) => s.id)
+          .filter(
+            (id: any) => id != null && !String(id).startsWith("legacy-")
+          )
+          .map((id: any) => Number(id))
+      );
+      const staleIds = (existingSheds || [])
+        .map((s: any) => Number(s.id))
+        .filter((id: number) => !keepIds.has(id));
+      if (staleIds.length > 0) {
+        await supabase.from("farmer_sheds").delete().in("id", staleIds);
+      }
+      for (let i = 0; i < list.length; i++) {
+        const s = list[i];
+        const db = shedFormToDb(s, farmerId);
+        const numericId =
+          s.id != null && !String(s.id).startsWith("legacy-")
+            ? Number(s.id)
+            : null;
+        if (numericId) {
+          const { error } = await supabase
+            .from("farmer_sheds")
+            .update(db)
+            .eq("id", numericId);
+          if (error) throw error;
+        } else {
+          const { error } = await supabase
+            .from("farmer_sheds")
+            .insert([db]);
+          if (error) throw error;
+        }
+      }
+      return true;
+    } catch (shedErr: any) {
+      alert(
+        "Farmer saved, but sheds could not be saved. Please run the farmer_sheds migration in Supabase first, then edit the farmer again to add sheds."
+      );
+      return false;
+    }
+  }
+
+  // Apply a stock/category update to one shed's farmer_sheds row. Silently
+  // skipped for legacy (synthesised) sheds and when the table/column is
+  // missing — the caller still updates the farmer-row legacy totals.
+  async function updateFarmerShedStock(
+    _farmer: any,
+    shed: any,
+    stockUpdates: Record<string, any>
+  ): Promise<void> {
+    try {
+      if (!shed || shed.id == null || String(shed.id).startsWith("legacy-"))
+        return;
+      const { error } = await supabase
+        .from("farmer_sheds")
+        .update(stockUpdates)
+        .eq("id", shed.id);
+      if (error) throw error;
+    } catch {
+      // farmer_sheds table/column not created yet — legacy totals cover it.
+    }
+  }
+
+  // The Add/Edit Farmer modal edits the FIRST shed through farmerForm; extra
+  // sheds live in formSheds. Merge them into save-ready sheds: first shed
+  // keeps an empty shed_name (shown as the farmer name), extra sheds get
+  // "Farmer Name - Shed N" when no label was typed.
+  function syncFormShedsWithFarmerForm(): any[] {
+    const base =
+      formSheds && formSheds.length > 0
+        ? formSheds
+        : [{ ...EMPTY_SHED_FORM }];
+    const farmerName = farmerForm.farmer_name.trim() || "Farmer";
+    return base.map((s: any, i: number) => {
+      const shed: any = { ...s };
+      if (i === 0) {
+        shed.shed_name = "";
+        shed.farm_category = farmerForm.farm_category || "";
+        shed.latitude = farmerForm.latitude || "";
+        shed.longitude = farmerForm.longitude || "";
+        shed.feed_type = farmerForm.feed_type || "";
+        shed.status = farmerForm.status || "Active";
+        SHED_STOCK_FIELDS.forEach((field) => {
+          shed[field] = Number((farmerForm as any)[field] || 0);
+        });
+      } else {
+        shed.farm_category =
+          shed.farm_category || farmerForm.farm_category || "";
+        shed.shed_name =
+          String(shed.shed_name || "").trim() ||
+          `${farmerName} - Shed ${i + 1}`;
+        if (shed.latitude === undefined) shed.latitude = "";
+        if (shed.longitude === undefined) shed.longitude = "";
+        SHED_STOCK_FIELDS.forEach((field) => {
+          shed[field] = Number(shed[field] || 0);
+        });
+      }
+      return shed;
+    });
+  }
+
+  function updateFormShedField(index: number, field: string, value: any) {
+    setFormSheds((prev: any[]) =>
+      prev.map((s: any, i: number) => (i === index ? { ...s, [field]: value } : s))
+    );
+  }
+
+  function addFormShed() {
+    setFormSheds((prev: any[]) => [
+      ...prev,
+      {
+        ...EMPTY_SHED_FORM,
+        shed_name: "",
+        farm_category: farmerForm.farm_category || "Poultry",
+      },
+    ]);
+  }
+
+  function removeFormShed(index: number) {
+    setFormSheds((prev: any[]) =>
+      prev.length <= 1 ? prev : prev.filter((_: any, i: number) => i !== index)
+    );
+  }
+
+
   async function loadVetVisits(
     uUpa = assignedUpazilas,
     uDist = assignedDistricts
@@ -939,6 +1290,28 @@ export default function VetVisitsPage() {
       const agentsList = agentsData || [];
       let farmersList = farmersData || [];
 
+      // Multi-shed: attach farmer_sheds rows when the table exists; the
+      // legacy fallback in getShedsForFarmer() covers farmers without rows.
+      try {
+        const { data: shedData, error: shedError } = await supabase
+          .from("farmer_sheds")
+          .select("*");
+        if (!shedError && shedData) {
+          const shedsByFarmer: Record<string, any[]> = {};
+          shedData.forEach((s: any) => {
+            const k = String(s.farmer_id);
+            if (!shedsByFarmer[k]) shedsByFarmer[k] = [];
+            shedsByFarmer[k].push(s);
+          });
+          farmersList.forEach((f: any) => {
+            if (shedsByFarmer[String(f.id)])
+              f.farmer_sheds = shedsByFarmer[String(f.id)];
+          });
+        }
+      } catch {
+        // farmer_sheds table not created yet — legacy fallback applies.
+      }
+
       if (!isFullAccess) {
         farmersList = farmersList.filter((f: any) => {
           const matchUpa = uUpa.length === 0 || uUpa.includes(f.upazila);
@@ -947,23 +1320,37 @@ export default function VetVisitsPage() {
         });
       }
 
-      const enrich = (v: any) => ({
-        ...v,
-        agents:
-          agentsList.find((a: any) => String(a.id) === String(v.agent_id)) || {
-            agent_name: "Unknown Agent",
-            upazila: "",
-          },
-        farmers:
-          farmersList.find(
-            (f: any) => String(f.id) === String(v.farmer_id)
-          ) || {
+      const enrich = (v: any) => {
+        const vFarmer = farmersList.find(
+          (f: any) => String(f.id) === String(v.farmer_id)
+        );
+        const vSheds = vFarmer ? getShedsForFarmer(vFarmer) : [];
+        const vShed = getShedForVisit(v, vFarmer);
+        return {
+          ...v,
+          agents:
+            agentsList.find((a: any) => String(a.id) === String(v.agent_id)) ||
+            {
+              agent_name: "Unknown Agent",
+              upazila: "",
+            },
+          farmers: vFarmer || {
             farmer_name: "Unknown Farmer",
             mobile: "-",
             village: "-",
             upazila: "-",
           },
-      });
+          shed: vShed,
+          shedDisplayName: vShed
+            ? getShedDisplayName(
+                vFarmer,
+                vShed,
+                vSheds.indexOf(vShed),
+                vSheds.length
+              )
+            : vFarmer?.farmer_name || "Unknown Farmer",
+        };
+      };
 
       const processed = farmersList.map((f: any) => {
         const fv = allVisits
@@ -1486,7 +1873,8 @@ export default function VetVisitsPage() {
       `${catName} Farm visit Observation Report`
     );
 
-    const actualFarmerName = farmer.farmer_name || visit.batch_label || "-";
+    const actualFarmerName =
+      getVisitShedDisplayName(visit, farmer) || visit.batch_label || "-";
 
     const weightSection = hasStd
       ? `Body Weight - ${actualWt} gm/bird.\nStd - ${stdWt} gm/bird.`
@@ -1579,7 +1967,8 @@ ${currentUserProfile.region}`;
       "Layer farm visit report"
     );
 
-    const actualFarmerName = farmer.farmer_name || visit.batch_label || "-";
+    const actualFarmerName =
+      getVisitShedDisplayName(visit, farmer) || visit.batch_label || "-";
 
     const mortVal = Number(rep.mortality ?? rep.mortality_pcs ?? 0);
     const baseBirds = Number(visit.t_birds || 0);
@@ -1691,7 +2080,8 @@ ${currentUserProfile.region}`;
       prevFeedName.trim().toLowerCase() !==
         chosenFeedCompanyName.trim().toLowerCase()
     ) {
-      await supabase.from("farmer_feed_logs").insert([
+      await insertWithOptionalShedId(
+        "farmer_feed_logs",
         {
           farmer_id: String(visit.farmer_id),
           from_company: prevFeedName,
@@ -1699,7 +2089,8 @@ ${currentUserProfile.region}`;
           conversion_type: convType || "Feed Switch",
           change_date: visitDateStr,
         },
-      ]);
+        visit.shed_id
+      );
     }
 
     if (newCompObj && String(newCompObj.id) !== String(visit.company_id)) {
@@ -2014,9 +2405,11 @@ ${currentUserProfile.region}`;
           agent_id: String(transferAgentId || activeReportVisit.agent_id),
           company_id: String(activeReportVisit.company_id),
         };
-        const { error } = await supabase
-          .from("before_sale_reports")
-          .insert([insertPayload]);
+        const { error } = await insertWithOptionalShedId(
+          "before_sale_reports",
+          insertPayload,
+          activeReportVisit.shed_id
+        );
         if (error) throw error;
         alert("Before Sale Report saved!");
       }
@@ -2120,15 +2513,19 @@ ${currentUserProfile.region}`;
           company_id: String(activeReportVisit.company_id),
         };
 
-        const { error } = await supabase
-          .from("after_sale_reports")
-          .insert([insertPayload]);
+        const { error } = await insertWithOptionalShedId(
+          "after_sale_reports",
+          insertPayload,
+          activeReportVisit.shed_id
+        );
 
         if (error) {
           delete insertPayload.feed_gm_b;
-          const { error: retryErr } = await supabase
-            .from("after_sale_reports")
-            .insert([insertPayload]);
+          const { error: retryErr } = await insertWithOptionalShedId(
+            "after_sale_reports",
+            insertPayload,
+            activeReportVisit.shed_id
+          );
           if (retryErr) throw retryErr;
         }
 
@@ -2299,16 +2696,20 @@ ${currentUserProfile.region}`;
             company_id: String(activeReportVisit.company_id),
           };
 
-          const { error } = await supabase
-            .from("layer_reports")
-            .insert([insertPayload]);
+          const { error } = await insertWithOptionalShedId(
+            "layer_reports",
+            insertPayload,
+            activeReportVisit.shed_id
+          );
 
           if (error) {
             delete insertPayload.feed_total_kg;
             delete insertPayload.mortality;
-            const { error: retryErr } = await supabase
-              .from("layer_reports")
-              .insert([insertPayload]);
+            const { error: retryErr } = await insertWithOptionalShedId(
+              "layer_reports",
+              insertPayload,
+              activeReportVisit.shed_id
+            );
             if (retryErr) throw retryErr;
           }
         }
@@ -2334,7 +2735,29 @@ ${currentUserProfile.region}`;
           (f) => String(f.id) === String(activeReportVisit.farmer_id)
         );
         const currentLayerStock = Number(targetFarmerObj?.layer || prevBirds);
-        const newLayerStock = Math.max(0, currentLayerStock - mortNum);
+        let newLayerStock = Math.max(0, currentLayerStock - mortNum);
+        // Multi-shed: mortality belongs to this visit's shed. Update that
+        // shed's layer stock and recompute the farmer-row legacy total as
+        // the sum across sheds, so old reports keep working.
+        const mortShed = getShedForVisit(activeReportVisit, targetFarmerObj);
+        if (mortShed && !String(mortShed.id).startsWith("legacy-")) {
+          const shedLayer = Math.max(
+            0,
+            Number(mortShed.layer || 0) - mortNum
+          );
+          const mortSheds = getShedsForFarmer(targetFarmerObj);
+          newLayerStock = mortSheds.reduce(
+            (sum: number, s: any) =>
+              sum +
+              (String(s.id) === String(mortShed.id)
+                ? shedLayer
+                : Number(s.layer || 0)),
+            0
+          );
+          await updateFarmerShedStock(targetFarmerObj, mortShed, {
+            layer: shedLayer,
+          });
+        }
 
         await supabase
           .from("farmers")
@@ -2452,6 +2875,7 @@ ${currentUserProfile.region}`;
       upazila: defUpa,
       farm_category: "Poultry",
     });
+    setFormSheds([{ ...EMPTY_SHED_FORM }]);
     setShowFarmerFormModal(true);
   }
 
@@ -2507,6 +2931,30 @@ ${currentUserProfile.region}`;
       remarks: f.remarks || "",
     });
 
+    // Multi-shed: load this farmer's sheds (first shed = the farmer-form
+    // values above; extra sheds keep their own values).
+    setFormSheds(
+      getShedsForFarmer(f).map((s: any, sIdx: number) => {
+        const base: any = { ...EMPTY_SHED_FORM, ...s };
+        if (sIdx === 0) {
+          base.farm_category = f.farm_category || "Poultry";
+          base.latitude =
+            f.latitude !== null && f.latitude !== undefined
+              ? String(f.latitude)
+              : "";
+          base.longitude =
+            f.longitude !== null && f.longitude !== undefined
+              ? String(f.longitude)
+              : "";
+          base.feed_type = f.feed_type || "";
+          SHED_STOCK_FIELDS.forEach((field) => {
+            base[field] = String((f as any)[field] ?? "");
+          });
+        }
+        return base;
+      })
+    );
+
     if (v) {
       setBatchEditSubForm({
         hatch_date: v.hatch_date || "",
@@ -2553,12 +3001,29 @@ ${currentUserProfile.region}`;
         payload[field] = Number((farmerForm as any)[field] || 0);
       });
 
+      // Multi-shed: first shed = farmer form (empty shed_name, shown as the
+      // farmer name); extra sheds from formSheds. Farmer-row stock stays
+      // the SUM across sheds so old reports keep working.
+      const shedsToSave = syncFormShedsWithFarmerForm();
+      [...POULTRY_FIELDS, ...CATTLE_FIELDS, ...FISH_FIELDS].forEach((field) => {
+        payload[field] = shedsToSave.reduce(
+          (sum: number, s: any) => sum + Number(s[field] || 0),
+          0
+        );
+      });
+
       if (editingFarmerId) {
         const { error: fErr } = await supabase
           .from("farmers")
           .update(payload)
           .eq("id", editingFarmerId);
         if (fErr) throw fErr;
+
+        await saveShedsForFarmer(
+          editingFarmerId,
+          farmerForm.farmer_name,
+          shedsToSave
+        );
 
         if (editingBatchVisit) {
           const visitUpd: Record<string, any> = {
@@ -2573,24 +3038,56 @@ ${currentUserProfile.region}`;
             category: batchEditSubForm.category,
             batch_label: batchEditSubForm.batch_label,
           };
-          const { error: vErr } = await supabase
-            .from("vet_visits")
-            .update(visitUpd)
-            .eq("id", editingBatchVisit.id);
+          const { error: vErr } = await updateWithOptionalShedId(
+            "vet_visits",
+            visitUpd,
+            editingBatchVisit.shed_id,
+            "id",
+            editingBatchVisit.id
+          );
           if (vErr) {
             delete visitUpd.batch_label;
-            await supabase
-              .from("vet_visits")
-              .update(visitUpd)
-              .eq("id", editingBatchVisit.id);
+            await updateWithOptionalShedId(
+              "vet_visits",
+              visitUpd,
+              editingBatchVisit.shed_id,
+              "id",
+              editingBatchVisit.id
+            );
           }
         }
         alert("Farmer & Batch details updated!");
       } else {
-        const { error: insErr } = await supabase
+        const { data: insData, error: insErr } = await supabase
           .from("farmers")
-          .insert([payload]);
+          .insert([payload])
+          .select("id");
         if (insErr) throw insErr;
+        // Resolve the new farmer id so its first shed can be saved to
+        // farmer_sheds (same name+mobile lookup FarmersPage uses when the
+        // insert does not return the row).
+        let newFarmerId: number | null = (insData as any)?.[0]?.id || null;
+        if (!newFarmerId) {
+          try {
+            const { data: found } = await supabase
+              .from("farmers")
+              .select("id")
+              .eq("farmer_name", farmerForm.farmer_name.trim())
+              .eq("mobile", farmerForm.mobile || "")
+              .order("created_at", { ascending: false })
+              .limit(1);
+            newFarmerId = (found as any)?.[0]?.id || null;
+          } catch {
+            newFarmerId = null;
+          }
+        }
+        if (newFarmerId) {
+          await saveShedsForFarmer(
+            newFarmerId,
+            farmerForm.farmer_name,
+            shedsToSave
+          );
+        }
         alert("New Farmer saved!");
       }
 
@@ -2907,6 +3404,10 @@ ${currentUserProfile.region}`;
 
   async function exportVisitHistoryExcel() {
     if (!selectedHistoryVisit) return;
+    const historyShedName =
+      selectedHistoryVisit.shedDisplayName ||
+      selectedHistoryVisit.farmers?.farmer_name ||
+      "-";
     const workbook = new ExcelJS.Workbook();
     const isLayer =
       (selectedHistoryVisit.category || "").toLowerCase() === "layer";
@@ -2914,6 +3415,7 @@ ${currentUserProfile.region}`;
     if (isLayer) {
       const s = workbook.addWorksheet("Layer History");
       const headers = [
+        "Shed",
         "Visit Date",
         "Hatchery",
         "H.Date",
@@ -2948,6 +3450,7 @@ ${currentUserProfile.region}`;
         const std = getLayerStdForVisit(breedVal, wks);
 
         s.addRow([
+          historyShedName,
           r.visit_date || "-",
           hatcheryVal,
           selectedHistoryVisit.hatch_date || "-",
@@ -2978,6 +3481,7 @@ ${currentUserProfile.region}`;
     } else {
       const b = workbook.addWorksheet("Before Sale");
       b.addRow([
+        "Shed",
         "Visit Date",
         "Hatchery",
         "H.Date",
@@ -3009,6 +3513,7 @@ ${currentUserProfile.region}`;
         const d = getAgeDays(selectedHistoryVisit.hatch_date, r.visit_date);
         const std = getMeatStdForVisit(selectedHistoryVisit.category, d);
         b.addRow([
+          historyShedName,
           r.visit_date || "-",
           selectedHistoryVisit.hatchery || "-",
           selectedHistoryVisit.hatch_date || "-",
@@ -3040,6 +3545,7 @@ ${currentUserProfile.region}`;
 
       const a = workbook.addWorksheet("After Sale");
       a.addRow([
+        "Shed",
         "Sale Date",
         "Hatchery",
         "H.Date",
@@ -3071,6 +3577,7 @@ ${currentUserProfile.region}`;
             : "-");
 
         a.addRow([
+          historyShedName,
           r.visit_date || "-",
           selectedHistoryVisit.hatchery || "-",
           selectedHistoryVisit.hatch_date || "-",
@@ -3288,7 +3795,15 @@ ${currentUserProfile.region}`;
           f.mobile?.toLowerCase().includes(q) ||
           f.village?.toLowerCase().includes(q) ||
           f.agentName?.toLowerCase().includes(q) ||
-          String(r.visit?.batch_label || "").toLowerCase().includes(q);
+          String(r.visit?.batch_label || "").toLowerCase().includes(q) ||
+          String(r.visit?.shedDisplayName || "")
+            .toLowerCase()
+            .includes(q) ||
+          getShedsForFarmer(f).some((s: any, si: number) =>
+            getShedDisplayName(f, s, si, getShedsForFarmer(f).length)
+              .toLowerCase()
+              .includes(q)
+          );
         if (!match) return false;
       }
       return true;
@@ -3337,6 +3852,7 @@ ${currentUserProfile.region}`;
       "";
     setActivateBulk(false);
     setActivateFarmer(farmer);
+    setActivateShedId("");
     setActivateMode("add");
     setActivateForm({
       category: defaultCat,
@@ -3389,6 +3905,9 @@ ${currentUserProfile.region}`;
     !activatePrevCats.some(
       (c) => c.toLowerCase() === activateForm.category.toLowerCase()
     );
+  const activateSheds: any[] = activateFarmer
+    ? getShedsForFarmer(activateFarmer)
+    : [];
 
   async function handleActivateSubmit() {
     if (!activateForm.hatch_date || !activateForm.t_birds) {
@@ -3417,6 +3936,12 @@ ${currentUserProfile.region}`;
         const mode: "add" | "replace" =
           !activateBulk && activateNeedsChoice ? activateMode : "add";
 
+        const targetSheds = getShedsForFarmer(target);
+        const chosenShed =
+          targetSheds.find(
+            (s: any) => String(s.id) === String(activateShedId)
+          ) || targetSheds[0] || null;
+
         const manual = (!activateBulk && activateForm.batch_mark.trim()) || "";
         const autoNumberedName = `${baseName} Batch ${nextSeqNum}`;
         const batchLabel = manual
@@ -3437,6 +3962,20 @@ ${currentUserProfile.region}`;
             POULTRY_STOCK_KEYS.forEach((k) => {
               if (k !== stockKey) farmerUpdate[k] = 0;
             });
+          }
+          // Multi-shed: the same stock change applies to the chosen shed's
+          // farmer_sheds row (farmer-row totals above stay as legacy sums).
+          if (chosenShed) {
+            const shedStockUpdate: Record<string, any> = {};
+            const shedCur = Number(chosenShed[stockKey] || 0);
+            shedStockUpdate[stockKey] =
+              sameCat.length > 0 ? shedCur + qty : qty;
+            if (mode === "replace") {
+              POULTRY_STOCK_KEYS.forEach((k) => {
+                if (k !== stockKey) shedStockUpdate[k] = 0;
+              });
+            }
+            await updateFarmerShedStock(target, chosenShed, shedStockUpdate);
           }
         }
         const selectedCompObj = companies.find(
@@ -3474,14 +4013,18 @@ ${currentUserProfile.region}`;
           status: "Activated",
           batch_label: batchLabel,
         };
-        const { error: visitErr } = await supabase
-          .from("vet_visits")
-          .insert([insertPayload]);
+        const { error: visitErr } = await insertWithOptionalShedId(
+          "vet_visits",
+          insertPayload,
+          chosenShed?.id
+        );
         if (visitErr) {
           delete insertPayload.batch_label;
-          const { error: retryErr } = await supabase
-            .from("vet_visits")
-            .insert([insertPayload]);
+          const { error: retryErr } = await insertWithOptionalShedId(
+            "vet_visits",
+            insertPayload,
+            chosenShed?.id
+          );
           if (retryErr) throw retryErr;
         }
       }
@@ -3523,7 +4066,7 @@ ${currentUserProfile.region}`;
           r.kind === "batch" ? v?.hatch_date || "-" : f.statusDate || "-",
           r.category,
           f.agentName,
-          v?.displayBatchName || f.farmer_name,
+          v?.shedDisplayName || v?.displayBatchName || f.farmer_name,
           f.mobile || "-",
           [f.village, f.upazila].filter(Boolean).join(", "),
           v?.hatchery || "-",
@@ -3908,6 +4451,9 @@ ${currentUserProfile.region}`;
                             farmer.farmer_name
                           )
                         : "";
+                      const shedName = isBatch
+                        ? getVisitShedDisplayName(visit, farmer)
+                        : farmer.farmer_name || "N/A";
                       const isFocused =
                         isBatch && focusVisitId === String(visit.id);
                       const days = farmer.daysSinceSale;
@@ -4015,7 +4561,7 @@ ${currentUserProfile.region}`;
 
                           {/* 4. FARMER */}
                           <td className="border border-slate-300 px-2 py-1 font-bold text-slate-800 whitespace-nowrap">
-                            <div>{farmer.farmer_name || "N/A"}</div>
+                            <div>{shedName}</div>
                             {tag && (
                               <div className="text-[10px] font-semibold text-emerald-700">
                                 {tag}
@@ -4589,6 +5135,143 @@ ${currentUserProfile.region}`;
               </div>
             </div>
 
+            {/* Sheds: the first shed is the farmer (shown as the farmer name);
+                extra sheds get their own label, category and location. */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 mb-3 space-y-2.5 text-xs">
+              <div className="flex items-center justify-between">
+                <div className="font-bold text-slate-800">
+                  Sheds ({formSheds.length})
+                </div>
+                <button
+                  type="button"
+                  onClick={addFormShed}
+                  className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+                >
+                  + Add Shed
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                The first shed is shown as the farmer name — no “Shed 1”
+                label. A second shed is named “Farmer Name - Shed 2” unless
+                you give it its own label.
+              </p>
+              {formSheds.map((shed: any, sIdx: number) => (
+                <div
+                  key={sIdx}
+                  className="border border-slate-200 bg-white rounded-lg p-2.5 space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-slate-700">
+                      {sIdx === 0
+                        ? farmerForm.farmer_name || "Farmer"
+                        : getShedDisplayName(
+                            { farmer_name: farmerForm.farmer_name } as any,
+                            shed,
+                            sIdx,
+                            formSheds.length
+                          )}
+                    </span>
+                    {formSheds.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => removeFormShed(sIdx)}
+                        className="text-red-600 font-bold"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  {sIdx > 0 && (
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <div>
+                        <label className="block font-semibold text-slate-600 mb-0.5">
+                          Shed Label
+                        </label>
+                        <input
+                          type="text"
+                          placeholder={`${
+                            farmerForm.farmer_name || "Farmer"
+                          } - Shed ${sIdx + 1}`}
+                          value={shed.shed_name || ""}
+                          onChange={(e: any) =>
+                            updateFormShedField(
+                              sIdx,
+                              "shed_name",
+                              e.target.value
+                            )
+                          }
+                          className="w-full rounded border border-slate-300 px-2 py-1"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-semibold text-slate-600 mb-0.5">
+                          Farm Category
+                        </label>
+                        <select
+                          value={
+                            shed.farm_category ||
+                            farmerForm.farm_category ||
+                            ""
+                          }
+                          onChange={(e: any) =>
+                            updateFormShedField(
+                              sIdx,
+                              "farm_category",
+                              e.target.value
+                            )
+                          }
+                          className="w-full rounded border border-slate-300 bg-white px-2 py-1"
+                        >
+                          <option value="Poultry">🐔 Poultry</option>
+                          <option value="Cattle">🐄 Cattle</option>
+                          <option value="Fish">🐟 Fish</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block font-semibold text-slate-600 mb-0.5">
+                          Location (lat, lng)
+                        </label>
+                        <div className="flex gap-1">
+                          <input
+                            type="text"
+                            placeholder="Latitude"
+                            value={shed.latitude || ""}
+                            onChange={(e: any) =>
+                              updateFormShedField(
+                                sIdx,
+                                "latitude",
+                                e.target.value
+                              )
+                            }
+                            className="w-full rounded border border-slate-300 px-2 py-1"
+                          />
+                          <input
+                            type="text"
+                            placeholder="Longitude"
+                            value={shed.longitude || ""}
+                            onChange={(e: any) =>
+                              updateFormShedField(
+                                sIdx,
+                                "longitude",
+                                e.target.value
+                              )
+                            }
+                            className="w-full rounded border border-slate-300 px-2 py-1"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {sIdx === 0 && (
+                    <p className="text-[11px] text-slate-500">
+                      Location, category and stock for this shed are the
+                      farmer details above.
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+
             {editingBatchVisit && (
               <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-3 mb-3 space-y-2.5 text-xs">
                 <div className="font-bold text-emerald-900 border-b border-emerald-200 pb-1">
@@ -4899,6 +5582,55 @@ ${currentUserProfile.region}`;
       options={CATEGORIES.map((cat) => ({ value: cat, label: cat }))}
     />
   </div>
+
+  {activateFarmer && !activateBulk && activateSheds.length > 1 && (
+    <div>
+      <label className="block font-bold text-slate-600 mb-1">
+        Shed *
+      </label>
+      <select
+        value={activateShedId || String(activateSheds[0]?.id || "")}
+        onChange={(e: any) => setActivateShedId(e.target.value)}
+        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none"
+      >
+        {activateSheds.map((s: any, sIdx: number) => (
+          <option key={String(s.id)} value={String(s.id)}>
+            {getShedDisplayName(
+              activateFarmer,
+              s,
+              sIdx,
+              activateSheds.length
+            )}
+          </option>
+        ))}
+      </select>
+    </div>
+  )}
+
+  {activateFarmer && !activateBulk && activateSheds.length <= 1 && (
+    <div>
+      <label className="block font-bold text-slate-600 mb-1">Shed</label>
+      <div className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-slate-700 font-semibold">
+        {activateSheds.length > 0
+          ? getShedDisplayName(
+              activateFarmer,
+              activateSheds[0],
+              0,
+              activateSheds.length
+            )
+          : activateFarmer.farmer_name}
+      </div>
+      <p className="text-[11px] text-slate-500 mt-1">
+        Single shed — used automatically for this batch.
+      </p>
+    </div>
+  )}
+
+  {activateBulk && (
+    <p className="text-[11px] text-slate-500">
+      Bulk run: each farm uses its first shed.
+    </p>
+  )}
 
   {activateNeedsChoice && (
     <div className="border border-amber-300 bg-amber-50 rounded-xl p-3 space-y-2">
@@ -6664,6 +7396,14 @@ ${currentUserProfile.region}`;
                   )
                 </span>
 
+                {selectedHistoryVisit.shedDisplayName &&
+                  selectedHistoryVisit.shedDisplayName !==
+                    (selectedHistoryVisit.farmers?.farmer_name || "") && (
+                    <span className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-300 text-slate-700 text-xs font-bold">
+                      {selectedHistoryVisit.shedDisplayName}
+                    </span>
+                  )}
+
                 {otherHistoryBatches.length > 0 && (
                   <select
                     value=""
@@ -6680,6 +7420,10 @@ ${currentUserProfile.region}`;
                     </option>
                     {otherHistoryBatches.map((b: any) => (
                       <option key={b.id} value={String(b.id)}>
+                        {b.shedDisplayName &&
+                        b.shedDisplayName !== (b.farmers?.farmer_name || "")
+                          ? `${b.shedDisplayName} • `
+                          : ""}
                         {b.displayBatchName || b.batch_label} — {b.category} (
                         {b.status === "Activated" ? "Running" : b.status} •{" "}
                         {b.hatch_date})

@@ -155,6 +155,25 @@ const EMPTY_FORM = {
   remarks: "",
 };
 
+const STOCK_FIELDS = [
+  "broiler","layer","sonali","duck","quail","deshi_chicken",
+  "dairy_cow","bull","calf_heifer",
+  "pangus","tilapia","koi","shing","pabda","gulsha","magur","carp","golda","bagda","tengra",
+];
+
+const EMPTY_SHED_FORM: any = {
+  id: undefined,
+  shed_name: "",
+  farm_category: "",
+  broiler: "", layer: "", sonali: "", duck: "", quail: "", deshi_chicken: "",
+  dairy_cow: "", bull: "", calf_heifer: "",
+  pangus: "", tilapia: "", koi: "", shing: "", pabda: "", gulsha: "",
+  magur: "", carp: "", golda: "", bagda: "", tengra: "",
+  feed_type: "",
+  latitude: "", longitude: "",
+  status: "Active",
+};
+
 const POULTRY_FIELDS = [
   "broiler",
   "layer",
@@ -195,7 +214,12 @@ function parseList(val: any): string[] {
   return [];
 }
 
-function getFarmerBadgeInfo(farmer: any) {
+function getFarmerBadgeInfo(farmerOrCategory: any) {
+  // Backward compat: accepts a farmer/shed object OR a category string.
+  const farmer =
+    typeof farmerOrCategory === "string"
+      ? { farm_category: farmerOrCategory }
+      : farmerOrCategory || {};
   if (farmer.farm_category === "Poultry") {
     if (Number(farmer.layer || 0) > 0 && Number(farmer.broiler || 0) === 0) {
       return { emoji: "🥚", label: "Layer", bg: "#d97706", border: "#b45309" };
@@ -220,14 +244,29 @@ function getFarmerBadgeInfo(farmer: any) {
 // Clean Marker without circular background; auto-scales horizontal vs square/round logos
 function buildCustomFarmMarker(
   farmer: any,
-  highlight = false,
-  distText?: string
+  shed: any = null,
+  highlight: any = false,
+  distText?: string,
+  shedIndex: number = 0,
+  totalSheds: number = 1
 ) {
-  const { emoji, border } = getFarmerBadgeInfo(farmer);
+  // Backward compat: old calls passed (farmer, highlight, distText).
+  if (typeof shed === "boolean") {
+    distText = typeof highlight === "string" ? highlight : distText;
+    highlight = shed;
+    shed = null;
+  }
+  if (typeof highlight === "string") {
+    distText = highlight;
+    highlight = false;
+  }
+  const badgeSource = shed || farmer;
+  const { emoji, border } = getFarmerBadgeInfo(badgeSource);
   const logoUrl = farmer.companies?.logo_url;
-  const safeName = (farmer.farmer_name || "Farmer")
-    .replace(/</g, "&lt;")
-    .slice(0, 16);
+  const labelText = shed
+    ? getShedDisplayName(farmer, shed, shedIndex, totalSheds)
+    : farmer.farmer_name || "Farmer";
+  const safeName = String(labelText).replace(/</g, "&lt;").slice(0, 20);
 
   const ring = highlight
     ? "0 0 0 3px rgba(16,185,129,0.45)"
@@ -278,6 +317,108 @@ function getStockBreakdownList(farmer: any): { label: string; qty: number }[] {
   return list;
 }
 
+// ---------- Multi-shed helpers ----------
+function getShedsForFarmer(farmer: any): any[] {
+  const list = farmer?.farmer_sheds || farmer?.sheds || [];
+  if (Array.isArray(list) && list.length > 0) return list;
+  // Legacy fallback: synthesise ONE shed from the farmer's own fields.
+  // shed_name stays EMPTY so the display logic shows just the farmer name
+  // (single shed = farmer name only, never a bare "Shed 1").
+  const shed: any = {
+    id: `legacy-${farmer?.id}`,
+    farmer_id: farmer?.id,
+    shed_name: "",
+    farm_category: farmer?.farm_category || "",
+    latitude: farmer?.latitude ?? null,
+    longitude: farmer?.longitude ?? null,
+    feed_type: farmer?.feed_type || "",
+    status: farmer?.status || "Active",
+  };
+  STOCK_FIELDS.forEach((k) => { shed[k] = Number(farmer?.[k] || 0); });
+  return [shed];
+}
+
+// Shed naming rule (single source of truth for every shed label):
+// - Stored shed_name is exactly what the user typed (or "" when left blank).
+// - Raw already starting with the farmer name (e.g. "Raju Ahmed - Shed 2",
+//   "Raju Ahmed - Bridge par", "Raju Shed 1") or containing " - " with a
+//   name part before it is shown as-is.
+// - A bare label (e.g. "Bridge par", "Shed 2") is shown as
+//   "Farmer Name - <label>" so the map/table never show a bare "Shed 2".
+// - Empty raw: single shed -> just the farmer name; 2nd+ shed ->
+//   "Farmer Name - Shed N".
+function getShedDisplayName(
+  farmer: any,
+  shed: any,
+  index: number = 0,
+  totalSheds: number = 1
+): string {
+  const farmerName = String(farmer?.farmer_name || "").trim() || "Farmer";
+  const raw = String(shed?.shed_name || "").trim();
+  if (raw) {
+    const lowerRaw = raw.toLowerCase();
+    const lowerFarmer = farmerName.toLowerCase();
+    const firstName = lowerFarmer.split(/\s+/)[0] || "";
+    const startsWithFarmer =
+      lowerRaw.startsWith(lowerFarmer) ||
+      (firstName.length > 0 && lowerRaw.startsWith(firstName));
+    const dashIdx = raw.indexOf(" - ");
+    const namePart =
+      dashIdx > 0 ? raw.slice(0, dashIdx).trim() : "";
+    // A "name part" is a real label before the dash, not a bare "Shed N".
+    const hasNamePart =
+      namePart.length > 0 && !/^shed\s*\d+$/i.test(namePart);
+    if (startsWithFarmer || hasNamePart) return raw;
+    return `${farmerName} - ${raw}`;
+  }
+  if ((totalSheds ?? 1) <= 1) return farmerName;
+  return `${farmerName} - Shed ${index + 1}`;
+}
+
+function getFarmerCategories(farmer: any): string[] {
+  const seen: string[] = [];
+  getShedsForFarmer(farmer).forEach((s: any) => {
+    if (s?.farm_category && !seen.includes(s.farm_category)) seen.push(s.farm_category);
+  });
+  return seen;
+}
+
+function getShedStockBreakdown(shed: any): { label: string; qty: number }[] {
+  const list: { label: string; qty: number }[] = [];
+  STOCK_FIELDS.forEach((k) => {
+    const val = Number(shed?.[k] || 0);
+    if (val > 0) {
+      const label = k.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      list.push({ label, qty: val });
+    }
+  });
+  return list;
+}
+
+function getFarmerShedsCount(farmer: any): number {
+  return getShedsForFarmer(farmer).length;
+}
+
+function getTotalSheds(list: any[]): number {
+  return (list || []).reduce((sum, f) => sum + getFarmerShedsCount(f), 0);
+}
+
+
+
+function shedFormToDb(shed: any, farmerId: number, _farmerName: string, _index: number): any {
+  const db: any = {
+    farmer_id: farmerId,
+    shed_name: String(shed?.shed_name || "").trim(),
+    farm_category: shed?.farm_category || "",
+    latitude: shed?.latitude === "" || shed?.latitude == null ? null : Number(shed.latitude),
+    longitude: shed?.longitude === "" || shed?.longitude == null ? null : Number(shed.longitude),
+    feed_type: shed?.feed_type || "",
+    status: shed?.status || "Active",
+  };
+  STOCK_FIELDS.forEach((k) => { db[k] = Number(shed?.[k] || 0); });
+  return db;
+}
+
 export default function FarmersPage() {
   const { role } = useAuth();
   const mapSectionRef = useRef<HTMLDivElement | null>(null);
@@ -305,6 +446,9 @@ export default function FarmersPage() {
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
   const [form, setForm] = useState({ ...EMPTY_FORM });
+  const [formSheds, setFormSheds] = useState<any[]>([{ ...EMPTY_SHED_FORM }]);
+  const [pickingShedIndex, setPickingShedIndex] = useState<number | null>(null);
+  const [_selectedShed, setSelectedShed] = useState<any>(null);
 
   const [pickerCenterOverride, setPickerCenterOverride] = useState<
     [number, number] | null
@@ -337,7 +481,7 @@ export default function FarmersPage() {
     [number, number] | null
   >(null);
   const [myPosition, setMyPosition] = useState<[number, number] | null>(null);
-  const farmerMarkerRefs = useRef<Record<number, L.Marker | null>>({});
+  const farmerMarkerRefs = useRef<Record<string, L.Marker | null>>({});
   const myLocationMarkerRef = useRef<L.Marker | null>(null);
 
   const [allUsers, setAllUsers] = useState<any[]>([]);
@@ -402,6 +546,26 @@ export default function FarmersPage() {
     ]);
 
     const allFarmers = farmerData || [];
+    // Attach sheds from farmer_sheds when the table exists; otherwise
+    // getShedsForFarmer() synthesises one legacy shed per farmer.
+    try {
+      const { data: shedData, error: shedError } = await supabase
+        .from("farmer_sheds")
+        .select("*");
+      if (!shedError && shedData) {
+        const shedsByFarmer: Record<string, any[]> = {};
+        shedData.forEach((s: any) => {
+          const k = String(s.farmer_id);
+          if (!shedsByFarmer[k]) shedsByFarmer[k] = [];
+          shedsByFarmer[k].push(s);
+        });
+        allFarmers.forEach((f: any) => {
+          if (shedsByFarmer[String(f.id)]) f.farmer_sheds = shedsByFarmer[String(f.id)];
+        });
+      }
+    } catch {
+      // farmer_sheds table not created yet — legacy fallback applies.
+    }
     const allowedFarmers = isFullAccess
       ? allFarmers
       : allFarmers.filter((f: any) => {
@@ -533,23 +697,26 @@ export default function FarmersPage() {
     }
   }
 
-  // ✅ Map বাটনে ক্লিক করলে শুধু ওই ফার্মে জুম করবে (নিজে থেকে পপআপ ওপেন হবে না)
-  function handleViewFarmerOnMap(farmer: any) {
-    if (!farmer.latitude || !farmer.longitude) {
-      alert("No map coordinates saved for this farmer.");
+  // Map button: zoom to a specific shed when given, else the first shed with coords.
+  function handleViewFarmerOnMap(farmer: any, shed?: any) {
+    const targetShed =
+      shed ||
+      getShedsForFarmer(farmer).find(
+        (s: any) => s.latitude && s.longitude
+      );
+    if (!targetShed || !targetShed.latitude || !targetShed.longitude) {
+      alert("No map coordinates saved for this shed.");
       return;
     }
-    const lat = Number(farmer.latitude);
-    const lng = Number(farmer.longitude);
+    const lat = Number(targetShed.latitude);
+    const lng = Number(targetShed.longitude);
     setShowSummary(false);
     setShowFarmerMap(true);
     setMyLocationMode(false);
     setSelectedFarmerPosition([lat, lng]);
+    setSelectedShed(targetShed);
     loadFarmerNotes(farmer.id);
-
-    // যদি আগে কোনো পপআপ খোলা থাকে, তা বন্ধ করে দেবে যাতে ম্যাপ পরিষ্কার দেখা যায়
     Object.values(farmerMarkerRefs.current).forEach((m) => m?.closePopup());
-
     setTimeout(() => {
       mapSectionRef.current?.scrollIntoView({
         behavior: "smooth",
@@ -714,50 +881,248 @@ export default function FarmersPage() {
     return true;
   });
 
+  function updateShedField(index: number, field: string, value: any) {
+    setFormSheds((prev) =>
+      prev.map((s, i) => (i === index ? { ...s, [field]: value } : s))
+    );
+  }
+
+  function addShed() {
+    // Prefill the new (2nd+) shed as "Farmer Name - Shed N" when the farmer
+    // name is known; leave empty when it is not. Never prefill "Shed 1".
+    const farmerName = String(form.farmer_name || "").trim();
+    setFormSheds((prev) => {
+      const newCount = prev.length + 1;
+      return [
+        ...prev,
+        {
+          ...EMPTY_SHED_FORM,
+          shed_name: farmerName ? `${farmerName} - Shed ${newCount}` : "",
+        },
+      ];
+    });
+  }
+
+  function removeShed(index: number) {
+    setFormSheds((prev) => (prev.length <= 1 ? prev : prev.filter((_, i) => i !== index)));
+  }
+
+  async function handleLocateMeForShed(index: number) {
+    setLocatingInPicker(true);
+    try {
+      const { lat, lng } = await getDeviceCoordinates();
+      setPickerCenterOverride([lat, lng]);
+      setFormSheds((prev) =>
+        prev.map((s, i) =>
+          i === index ? { ...s, latitude: lat.toFixed(6), longitude: lng.toFixed(6) } : s
+        )
+      );
+    } catch (err: any) {
+      alert(err?.message || "Unable to retrieve your location. Please allow GPS access.");
+    } finally {
+      setLocatingInPicker(false);
+    }
+  }
+
   async function handleSave() {
     if (
       !form.company_id ||
       !form.agent_id ||
       !form.farmer_name.trim() ||
-      !form.farm_category ||
       !form.district ||
       !form.upazila
     ) {
-      alert(
-        "Company, District, Upazila, Agent, Farmer Name and Farm Category are required"
-      );
+      alert("Company, District, Upazila, Agent and Farmer Name are required");
       return;
     }
+    const sheds = formSheds && formSheds.length > 0 ? formSheds : [{ ...EMPTY_SHED_FORM }];
+    if (sheds.some((s: any) => !s.farm_category)) {
+      alert("Every shed must have a Farm Category.");
+      return;
+    }
+    // Empty shed names stay empty in storage — the display logic computes
+    // the shown name (farmer name only for a single shed, otherwise
+    // "Farmer Name - Shed N"). Never auto-fill "Shed N" here.
+    const shedsWithNames = sheds;
+    const firstShed = shedsWithNames[0];
+    // Legacy farmer payload: first shed's category/location, stock SUMMED across sheds.
+    const summedStock: Record<string, number> = {};
+    STOCK_FIELDS.forEach((k) => {
+      summedStock[k] = shedsWithNames.reduce((sum, s: any) => sum + Number(s[k] || 0), 0);
+    });
 
     const payload: any = {
       ...form,
       company_id: Number(form.company_id),
       agent_id: Number(form.agent_id),
-      latitude: form.latitude === "" ? null : Number(form.latitude),
-      longitude: form.longitude === "" ? null : Number(form.longitude),
+      farm_category: firstShed.farm_category,
+      latitude:
+        firstShed.latitude === "" || firstShed.latitude == null
+          ? null
+          : Number(firstShed.latitude),
+      longitude:
+        firstShed.longitude === "" || firstShed.longitude == null
+          ? null
+          : Number(firstShed.longitude),
+      feed_type: firstShed.feed_type || "",
+      ...summedStock,
     };
 
-    [...POULTRY_FIELDS, ...CATTLE_FIELDS, ...FISH_FIELDS].forEach((field) => {
-      payload[field] = Number((form as any)[field] || 0);
-    });
-
-    if (editingId) {
-      await updateFarmer(editingId, payload);
-      alert("Farmer Updated");
-    } else {
-      await createFarmer(payload);
-      alert("Farmer Saved");
+    let savedFarmer: any = null;
+    try {
+      if (editingId) {
+        savedFarmer = await updateFarmer(editingId, payload);
+      } else {
+        savedFarmer = await createFarmer(payload);
+      }
+    } catch (err: any) {
+      alert(err?.message || "Failed to save farmer.");
+      return;
     }
 
+    // Resolve the farmer id (farmerService may or may not return the row).
+    let farmerId: number | null =
+      editingId ||
+      savedFarmer?.id ||
+      savedFarmer?.data?.id ||
+      savedFarmer?.[0]?.id ||
+      null;
+    if (!farmerId) {
+      try {
+        const { data } = await supabase
+          .from("farmers")
+          .select("id")
+          .eq("farmer_name", form.farmer_name.trim())
+          .eq("mobile", form.mobile || "")
+          .order("created_at", { ascending: false })
+          .limit(1);
+        farmerId = data?.[0]?.id || null;
+      } catch {
+        farmerId = null;
+      }
+    }
+
+    // Save sheds (child table). Farmer save is NOT lost if this fails.
+    if (farmerId) {
+      try {
+        const { data: existingSheds, error: existingErr } = await supabase
+          .from("farmer_sheds")
+          .select("id")
+          .eq("farmer_id", farmerId);
+        if (existingErr) throw existingErr;
+        const keepIds = new Set(
+          shedsWithNames
+            .map((s: any) => s.id)
+            .filter((id: any) => id != null && !String(id).startsWith("legacy-"))
+            .map((id: any) => Number(id))
+        );
+        const staleIds = (existingSheds || [])
+          .map((s: any) => Number(s.id))
+          .filter((id: number) => !keepIds.has(id));
+        if (staleIds.length > 0) {
+          await supabase.from("farmer_sheds").delete().in("id", staleIds);
+        }
+        for (let i = 0; i < shedsWithNames.length; i++) {
+          const s = shedsWithNames[i];
+          const db = shedFormToDb(s, farmerId, form.farmer_name, i);
+          const numericId =
+            s.id != null && !String(s.id).startsWith("legacy-") ? Number(s.id) : null;
+          if (numericId) {
+            const { error } = await supabase
+              .from("farmer_sheds")
+              .update(db)
+              .eq("id", numericId);
+            if (error) throw error;
+          } else {
+            const { error } = await supabase.from("farmer_sheds").insert([db]);
+            if (error) throw error;
+          }
+        }
+      } catch (shedErr: any) {
+        alert(
+          "Farmer saved, but sheds could not be saved. Please run farmer_sheds-migration.sql in Supabase first, then edit the farmer again to add sheds."
+        );
+      }
+    }
+
+    alert(editingId ? "Farmer Updated" : "Farmer Saved");
     setEditingId(null);
     setForm({ ...EMPTY_FORM });
+    setFormSheds([{ ...EMPTY_SHED_FORM }]);
+    setPickingShedIndex(null);
     setShowForm(false);
     loadData();
   }
 
   async function handleDelete(id: number) {
-    if (!confirm("Delete Farmer?")) return;
+    if (!confirm("Delete Farmer? This will delete the farmer and all of their sheds.")) return;
     await deleteFarmer(id);
+    setSelectedFarmer(null);
+    loadData();
+  }
+
+  // Per-shed delete from a table row: deletes ONLY that shed, unless it is
+  // the farmer's last (or only) shed — then the farmer goes too.
+  async function handleDeleteShed(farmer: any, shed: any) {
+    const sheds = getShedsForFarmer(farmer);
+    const shedIndex = Math.max(
+      0,
+      sheds.findIndex((s: any) => String(s.id) === String(shed?.id))
+    );
+    const displayName = getShedDisplayName(
+      farmer,
+      shed,
+      shedIndex,
+      sheds.length
+    );
+    const isLegacy = String(shed?.id || "").startsWith("legacy-");
+    if (isLegacy) {
+      // No real farmer_sheds row exists — the only thing to delete is the farmer.
+      if (
+        !confirm(
+          `This farmer has no separate shed record — delete the whole farmer "${farmer?.farmer_name}"?`
+        )
+      )
+        return;
+      await deleteFarmer(farmer.id);
+      loadData();
+      return;
+    }
+    const realSheds = sheds.filter(
+      (s: any) => !String(s?.id || "").startsWith("legacy-")
+    );
+    const isLastRealShed = realSheds.length <= 1;
+    if (isLastRealShed) {
+      if (
+        !confirm(
+          `Deleting the last shed "${displayName}" will also delete farmer "${farmer?.farmer_name}". Continue?`
+        )
+      )
+        return;
+      // Delete the shed, then the farmer (CASCADE would remove the shed
+      // anyway if the farmer were deleted first).
+      const { error: shedErr } = await supabase
+        .from("farmer_sheds")
+        .delete()
+        .eq("id", shed.id);
+      if (shedErr) {
+        alert(shedErr.message || "Failed to delete shed.");
+        return;
+      }
+      await deleteFarmer(farmer.id);
+      loadData();
+      return;
+    }
+    if (!confirm(`Delete shed "${displayName}"? Other sheds will stay.`))
+      return;
+    const { error } = await supabase
+      .from("farmer_sheds")
+      .delete()
+      .eq("id", shed.id);
+    if (error) {
+      alert(error.message || "Failed to delete shed.");
+      return;
+    }
     loadData();
   }
 
@@ -808,15 +1173,18 @@ export default function FarmersPage() {
   }
 
   async function handleLocateMeInPicker() {
+    const targetIndex = pickingShedIndex ?? 0;
     setLocatingInPicker(true);
     try {
       const { lat, lng } = await getDeviceCoordinates();
       setPickerCenterOverride([lat, lng]);
-      setForm((prev) => ({
-        ...prev,
-        latitude: lat.toFixed(6),
-        longitude: lng.toFixed(6),
-      }));
+      setFormSheds((prev) =>
+        prev.map((s, i) =>
+          i === targetIndex
+            ? { ...s, latitude: lat.toFixed(6), longitude: lng.toFixed(6) }
+            : s
+        )
+      );
     } catch (err: any) {
       alert(
         err?.message ||
@@ -848,7 +1216,12 @@ export default function FarmersPage() {
         !q ||
         f.farmer_name?.toLowerCase().includes(q) ||
         f.mobile?.toLowerCase().includes(q) ||
-        f.village?.toLowerCase().includes(q);
+        f.village?.toLowerCase().includes(q) ||
+        getShedsForFarmer(f).some((s: any, si: number) =>
+          getShedDisplayName(f, s, si, getShedsForFarmer(f).length)
+            .toLowerCase()
+            .includes(q)
+        );
       const matchCompany =
         companyFilter === "" || String(f.company_id) === companyFilter;
       const matchAgent =
@@ -859,7 +1232,10 @@ export default function FarmersPage() {
         upazilaFilter === "" || f.upazila === upazilaFilter;
       const matchUnion = unionFilter === "" || f.union_name === unionFilter;
       const matchCategory =
-        farmCategoryFilter === "" || f.farm_category === farmCategoryFilter;
+        farmCategoryFilter === "" ||
+        getShedsForFarmer(f).some(
+          (s: any) => s.farm_category === farmCategoryFilter
+        );
 
       return (
         matchSearch &&
@@ -898,26 +1274,38 @@ export default function FarmersPage() {
 
   const nearestFarmers = myPosition
     ? filteredFarmers
-        .filter(
-          (f) =>
-            f.latitude &&
-            f.longitude &&
-            !isNaN(Number(f.latitude)) &&
-            !isNaN(Number(f.longitude))
+        .flatMap((f: any) =>
+          getShedsForFarmer(f)
+            .filter(
+              (s: any) =>
+                s.latitude &&
+                s.longitude &&
+                !isNaN(Number(s.latitude)) &&
+                !isNaN(Number(s.longitude))
+            )
+            .map((s: any, sIdx: number) => {
+              const km = calcDistanceKm(
+                myPosition[0],
+                myPosition[1],
+                Number(s.latitude),
+                Number(s.longitude)
+              );
+              return {
+                ...f,
+                shed: s,
+                shedDisplayName: getShedDisplayName(
+                  f,
+                  s,
+                  sIdx,
+                  getShedsForFarmer(f).length
+                ),
+                latitude: s.latitude,
+                longitude: s.longitude,
+                distanceKm: km,
+                distanceText: formatDistance(km),
+              };
+            })
         )
-        .map((f) => {
-          const km = calcDistanceKm(
-            myPosition[0],
-            myPosition[1],
-            Number(f.latitude),
-            Number(f.longitude)
-          );
-          return {
-            ...f,
-            distanceKm: km,
-            distanceText: formatDistance(km),
-          };
-        })
         .sort((a, b) => a.distanceKm - b.distanceKm)
         .slice(0, 10)
     : [];
@@ -992,48 +1380,43 @@ export default function FarmersPage() {
 
       const c = acc[company];
       c.totalFarmers++;
-
-      if (Number(farmer.broiler || 0) > 0) c.broilerFarmers++;
-      if (Number(farmer.layer || 0) > 0) c.layerFarmers++;
-      if (Number(farmer.sonali || 0) > 0) c.sonaliFarmers++;
-      if (Number(farmer.duck || 0) > 0) c.duckFarmers++;
-      if (Number(farmer.quail || 0) > 0) c.quailFarmers++;
-      if (Number(farmer.deshi_chicken || 0) > 0) c.deshiFarmers++;
-
-      if (farmer.farm_category === "Poultry") {
-        c.poultryFarmers++;
-        c.broiler += Number(farmer.broiler || 0);
-        c.layer += Number(farmer.layer || 0);
-        c.sonali += Number(farmer.sonali || 0);
-        c.duck += Number(farmer.duck || 0);
-        c.quail += Number(farmer.quail || 0);
-        c.deshiChicken += Number(farmer.deshi_chicken || 0);
-        c.totalPoultry =
-          c.broiler + c.layer + c.sonali + c.duck + c.quail + c.deshiChicken;
-      }
-
-      if (Number(farmer.dairy_cow || 0) > 0) c.dairyCowFarmers++;
-      if (Number(farmer.bull || 0) > 0) c.bullFarmers++;
-      if (Number(farmer.calf_heifer || 0) > 0) c.calfHeiferFarmers++;
-
-      if (farmer.farm_category === "Cattle") {
-        c.cattleFarmers++;
-        c.dairyCow += Number(farmer.dairy_cow || 0);
-        c.bull += Number(farmer.bull || 0);
-        c.calfHeifer += Number(farmer.calf_heifer || 0);
-        c.totalCattle = c.dairyCow + c.bull + c.calfHeifer;
-      }
-
-      if (farmer.farm_category === "Fish") {
-        c.fishFarmers++;
-        FISH_FIELDS.forEach((f) => {
-          const val = Number(farmer[f] || 0);
-          c[f] += val;
-          if (val > 0) c[`${f}Farmers`]++;
+      const shedFieldCounts: Record<string, string> = {
+        broiler: "broilerFarmers", layer: "layerFarmers", sonali: "sonaliFarmers",
+        duck: "duckFarmers", quail: "quailFarmers", deshi_chicken: "deshiFarmers",
+        dairy_cow: "dairyCowFarmers", bull: "bullFarmers", calf_heifer: "calfHeiferFarmers",
+      };
+      getShedsForFarmer(farmer).forEach((shed: any) => {
+        [...POULTRY_FIELDS, ...CATTLE_FIELDS].forEach((k) => {
+          if (Number(shed[k] || 0) > 0) c[shedFieldCounts[k]]++;
         });
-        c.totalFish = FISH_FIELDS.reduce((sum, f) => sum + c[f], 0);
-      }
-
+        if (shed.farm_category === "Poultry") {
+          c.poultryFarmers++;
+          c.broiler += Number(shed.broiler || 0);
+          c.layer += Number(shed.layer || 0);
+          c.sonali += Number(shed.sonali || 0);
+          c.duck += Number(shed.duck || 0);
+          c.quail += Number(shed.quail || 0);
+          c.deshiChicken += Number(shed.deshi_chicken || 0);
+          c.totalPoultry =
+            c.broiler + c.layer + c.sonali + c.duck + c.quail + c.deshiChicken;
+        }
+        if (shed.farm_category === "Cattle") {
+          c.cattleFarmers++;
+          c.dairyCow += Number(shed.dairy_cow || 0);
+          c.bull += Number(shed.bull || 0);
+          c.calfHeifer += Number(shed.calf_heifer || 0);
+          c.totalCattle = c.dairyCow + c.bull + c.calfHeifer;
+        }
+        if (shed.farm_category === "Fish") {
+          c.fishFarmers++;
+          FISH_FIELDS.forEach((f) => {
+            const val = Number(shed[f] || 0);
+            c[f] += val;
+            if (val > 0) c[`${f}Farmers`]++;
+          });
+          c.totalFish = FISH_FIELDS.reduce((sum, f) => sum + c[f], 0);
+        }
+      });
       return acc;
     }, {})
   );
@@ -1171,6 +1554,7 @@ export default function FarmersPage() {
         "Company",
         "Agent",
         "Farmer",
+        "Shed",
         "Mobile",
         "Village",
         "Union",
@@ -1184,20 +1568,20 @@ export default function FarmersPage() {
         worksheet.getCell(1, col).value = h;
       });
 
-      worksheet.mergeCells("J1:O1");
-      worksheet.getCell("J1").value = "POULTRY";
+      worksheet.mergeCells("K1:P1");
+      worksheet.getCell("K1").value = "POULTRY";
       ["Broiler", "Layer", "Sonali", "Duck", "Quail", "Deshi Chicken"].forEach(
-        (v, i) => (worksheet.getCell(2, 10 + i).value = v)
+        (v, i) => (worksheet.getCell(2, 11 + i).value = v)
       );
 
-      worksheet.mergeCells("P1:R1");
-      worksheet.getCell("P1").value = "CATTLE";
+      worksheet.mergeCells("Q1:S1");
+      worksheet.getCell("Q1").value = "CATTLE";
       ["Dairy Cow", "Bull", "Calf / Heifer"].forEach(
-        (v, i) => (worksheet.getCell(2, 16 + i).value = v)
+        (v, i) => (worksheet.getCell(2, 17 + i).value = v)
       );
 
-      worksheet.mergeCells("S1:AC1");
-      worksheet.getCell("S1").value = "FISH";
+      worksheet.mergeCells("T1:AD1");
+      worksheet.getCell("T1").value = "FISH";
       [
         "Pangus",
         "Tilapia",
@@ -1210,15 +1594,15 @@ export default function FarmersPage() {
         "Golda",
         "Bagda",
         "Tengra",
-      ].forEach((v, i) => (worksheet.getCell(2, 19 + i).value = v));
+      ].forEach((v, i) => (worksheet.getCell(2, 20 + i).value = v));
 
-      worksheet.mergeCells("AD1:AD2");
-      worksheet.getCell("AD1").value = "Feed Type";
       worksheet.mergeCells("AE1:AE2");
-      worksheet.getCell("AE1").value = "Status";
+      worksheet.getCell("AE1").value = "Feed Type";
+      worksheet.mergeCells("AF1:AF2");
+      worksheet.getCell("AF1").value = "Status";
 
-      for (let col = 1; col <= 31; col++) {
-        if (col <= 9 || col >= 30) {
+      for (let col = 1; col <= 32; col++) {
+        if (col <= 10 || col >= 31) {
           const c = worksheet.getCell(1, col);
           c.fill = {
             type: "pattern",
@@ -1266,12 +1650,12 @@ export default function FarmersPage() {
         }
       };
 
-      styleGroup("J1", "D97706", 10, 15, "FEF3C7", "92400E");
-      styleGroup("P1", "15803D", 16, 18, "DCFCE7", "166534");
-      styleGroup("S1", "0284C7", 19, 29, "E0F2FE", "075985");
+      styleGroup("K1", "D97706", 11, 16, "FEF3C7", "92400E");
+      styleGroup("Q1", "15803D", 17, 19, "DCFCE7", "166534");
+      styleGroup("T1", "0284C7", 20, 30, "E0F2FE", "075985");
 
       for (let r = 1; r <= 2; r++) {
-        for (let c = 1; c <= 31; c++) {
+        for (let c = 1; c <= 32; c++) {
           worksheet.getCell(r, c).border = {
             top: { style: "thin", color: { argb: "CBD5E1" } },
             left: { style: "thin", color: { argb: "CBD5E1" } },
@@ -1281,21 +1665,32 @@ export default function FarmersPage() {
         }
       }
 
-      filteredFarmers.forEach((f: any) => {
+      filteredFarmers
+        .flatMap((f: any) => {
+          const sheds = getShedsForFarmer(f);
+          return sheds.map((shed: any, sIdx: number) => ({
+            f,
+            shed,
+            sIdx,
+            totalSheds: sheds.length,
+          }));
+        })
+        .forEach(({ f, shed, sIdx, totalSheds }: any) => {
         const row = worksheet.addRow([
           f.companies?.company_name || "",
           f.agents?.agent_name || "",
           f.farmer_name || "",
+          getShedDisplayName(f, shed, sIdx, totalSheds),
           f.mobile || "",
           f.village || "",
           f.union_name || "",
           f.upazila || "",
           f.district || "",
-          f.farm_category || "",
-          ...POULTRY_FIELDS.map((k) => Number(f[k] || 0)),
-          ...CATTLE_FIELDS.map((k) => Number(f[k] || 0)),
-          ...FISH_FIELDS.map((k) => Number(f[k] || 0)),
-          f.feed_type || "",
+          shed.farm_category || "",
+          ...POULTRY_FIELDS.map((k) => Number(shed[k] || 0)),
+          ...CATTLE_FIELDS.map((k) => Number(shed[k] || 0)),
+          ...FISH_FIELDS.map((k) => Number(shed[k] || 0)),
+          shed.feed_type || "",
           f.status || "",
         ]);
         row.eachCell((cell) => {
@@ -1312,11 +1707,11 @@ export default function FarmersPage() {
       worksheet.getRow(1).height = 26;
       worksheet.getRow(2).height = 30;
       const widths = [
-        22, 20, 22, 15, 18, 18, 18, 18, 18, 12, 12, 12, 12, 12, 16, 14, 12, 16,
-        12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 18, 12,
+        22, 20, 22, 20, 15, 18, 18, 18, 18, 18, 12, 12, 12, 12, 12, 16, 14, 12,
+        16, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 18, 12,
       ];
       widths.forEach((w, i) => (worksheet.getColumn(i + 1).width = w));
-      worksheet.autoFilter = { from: "A2", to: "AE2" };
+      worksheet.autoFilter = { from: "A2", to: "AF2" };
 
       await saveWorkbook(
         workbook,
@@ -1332,12 +1727,23 @@ export default function FarmersPage() {
     try {
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet("Poultry Farmers");
-      const list = filteredFarmers.filter((f) => f.farm_category === "Poultry");
+      const list = filteredFarmers.flatMap((f: any) => {
+        const sheds = getShedsForFarmer(f);
+        return sheds
+          .map((shed: any, sIdx: number) => ({
+            f,
+            shed,
+            sIdx,
+            totalSheds: sheds.length,
+          }))
+          .filter((x: any) => x.shed.farm_category === "Poultry");
+      });
 
       worksheet.addRow([
         "Company",
         "Agent",
         "Farmer",
+        "Shed",
         "Mobile",
         "Village",
         "Union",
@@ -1357,21 +1763,22 @@ export default function FarmersPage() {
         "Remarks",
       ]);
 
-      list.forEach((f) => {
+      list.forEach(({ f, shed, sIdx, totalSheds }: any) => {
         worksheet.addRow([
           f.companies?.company_name || "",
           f.agents?.agent_name || "",
           f.farmer_name || "",
+          getShedDisplayName(f, shed, sIdx, totalSheds),
           f.mobile || "",
           f.village || "",
           f.union_name || "",
           f.upazila || "",
           f.district || "",
-          f.farm_category || "",
-          ...POULTRY_FIELDS.map((k) => Number(f[k] || 0)),
-          f.feed_type || "",
-          f.latitude ?? "",
-          f.longitude ?? "",
+          shed.farm_category || "",
+          ...POULTRY_FIELDS.map((k) => Number(shed[k] || 0)),
+          shed.feed_type || "",
+          shed.latitude ?? "",
+          shed.longitude ?? "",
           f.status || "",
           f.remarks || "",
         ]);
@@ -1381,8 +1788,8 @@ export default function FarmersPage() {
         worksheet,
         "D97706",
         [
-          25, 22, 25, 16, 20, 20, 18, 18, 16, 12, 12, 12, 12, 12, 18, 18, 14,
-          14, 12, 30,
+          25, 22, 25, 20, 16, 20, 20, 18, 18, 16, 12, 12, 12, 12, 12, 18, 18,
+          14, 14, 12, 30,
         ]
       );
       await saveWorkbook(
@@ -1399,12 +1806,23 @@ export default function FarmersPage() {
     try {
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet("Cattle Farmers");
-      const list = filteredFarmers.filter((f) => f.farm_category === "Cattle");
+      const list = filteredFarmers.flatMap((f: any) => {
+        const sheds = getShedsForFarmer(f);
+        return sheds
+          .map((shed: any, sIdx: number) => ({
+            f,
+            shed,
+            sIdx,
+            totalSheds: sheds.length,
+          }))
+          .filter((x: any) => x.shed.farm_category === "Cattle");
+      });
 
       worksheet.addRow([
         "Company",
         "Agent",
         "Farmer",
+        "Shed",
         "Mobile",
         "Village",
         "Union",
@@ -1422,27 +1840,28 @@ export default function FarmersPage() {
         "Remarks",
       ]);
 
-      list.forEach((f) => {
-        const dc = Number(f.dairy_cow || 0);
-        const bl = Number(f.bull || 0);
-        const ch = Number(f.calf_heifer || 0);
+      list.forEach(({ f, shed, sIdx, totalSheds }: any) => {
+        const dc = Number(shed.dairy_cow || 0);
+        const bl = Number(shed.bull || 0);
+        const ch = Number(shed.calf_heifer || 0);
         worksheet.addRow([
           f.companies?.company_name || "",
           f.agents?.agent_name || "",
           f.farmer_name || "",
+          getShedDisplayName(f, shed, sIdx, totalSheds),
           f.mobile || "",
           f.village || "",
           f.union_name || "",
           f.upazila || "",
           f.district || "",
-          f.farm_category || "",
+          shed.farm_category || "",
           dc,
           bl,
           ch,
           dc + bl + ch,
-          f.feed_type || "",
-          f.latitude ?? "",
-          f.longitude ?? "",
+          shed.feed_type || "",
+          shed.latitude ?? "",
+          shed.longitude ?? "",
           f.status || "",
           f.remarks || "",
         ]);
@@ -1452,8 +1871,8 @@ export default function FarmersPage() {
         worksheet,
         "15803D",
         [
-          25, 22, 25, 16, 20, 20, 18, 18, 16, 15, 12, 18, 18, 18, 14, 14, 12,
-          30,
+          25, 22, 25, 20, 16, 20, 20, 18, 18, 16, 15, 12, 18, 18, 18, 14, 14,
+          12, 30,
         ]
       );
       await saveWorkbook(
@@ -1470,12 +1889,23 @@ export default function FarmersPage() {
     try {
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet("Fish Farmers");
-      const list = filteredFarmers.filter((f) => f.farm_category === "Fish");
+      const list = filteredFarmers.flatMap((f: any) => {
+        const sheds = getShedsForFarmer(f);
+        return sheds
+          .map((shed: any, sIdx: number) => ({
+            f,
+            shed,
+            sIdx,
+            totalSheds: sheds.length,
+          }))
+          .filter((x: any) => x.shed.farm_category === "Fish");
+      });
 
       worksheet.addRow([
         "Company",
         "Agent",
         "Farmer",
+        "Shed",
         "Mobile",
         "Village",
         "Union",
@@ -1501,24 +1931,25 @@ export default function FarmersPage() {
         "Remarks",
       ]);
 
-      list.forEach((f) => {
-        const vals = FISH_FIELDS.map((k) => Number(f[k] || 0));
+      list.forEach(({ f, shed, sIdx, totalSheds }: any) => {
+        const vals = FISH_FIELDS.map((k) => Number(shed[k] || 0));
         const total = vals.reduce((a, b) => a + b, 0);
         worksheet.addRow([
           f.companies?.company_name || "",
           f.agents?.agent_name || "",
           f.farmer_name || "",
+          getShedDisplayName(f, shed, sIdx, totalSheds),
           f.mobile || "",
           f.village || "",
           f.union_name || "",
           f.upazila || "",
           f.district || "",
-          f.farm_category || "",
+          shed.farm_category || "",
           ...vals,
           total,
-          f.feed_type || "",
-          f.latitude ?? "",
-          f.longitude ?? "",
+          shed.feed_type || "",
+          shed.latitude ?? "",
+          shed.longitude ?? "",
           f.status || "",
           f.remarks || "",
         ]);
@@ -1528,8 +1959,8 @@ export default function FarmersPage() {
         worksheet,
         "0284C7",
         [
-          25, 22, 25, 16, 20, 20, 18, 18, 16, 12, 12, 12, 12, 12, 12, 12, 12,
-          12, 12, 12, 15, 18, 14, 14, 12, 30,
+          25, 22, 25, 20, 16, 20, 20, 18, 18, 16, 12, 12, 12, 12, 12, 12, 12,
+          12, 12, 12, 12, 15, 18, 14, 14, 12, 30,
         ]
       );
       await saveWorkbook(
@@ -1787,6 +2218,22 @@ export default function FarmersPage() {
       status: farmer.status || "Active",
       remarks: farmer.remarks || "",
     });
+    setFormSheds(
+      getShedsForFarmer(farmer).map((shed: any) => {
+        const row: any = {
+          id: String(shed.id).startsWith("legacy-") ? undefined : shed.id,
+          shed_name: shed.shed_name || "",
+          farm_category: shed.farm_category || "",
+          feed_type: shed.feed_type || "",
+          latitude: shed.latitude != null ? String(shed.latitude) : "",
+          longitude: shed.longitude != null ? String(shed.longitude) : "",
+          status: shed.status || "Active",
+        };
+        STOCK_FIELDS.forEach((k) => { row[k] = String(shed[k] || ""); });
+        return row;
+      })
+    );
+    setPickingShedIndex(null);
     setShowForm(true);
   }
 
@@ -1802,7 +2249,7 @@ export default function FarmersPage() {
             />
             <input
               type="text"
-              placeholder="Search farmer, mobile, village..."
+              placeholder="Search farmer, shed, mobile, village..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full rounded-lg border border-slate-300 pl-8 pr-2.5 py-1.5 text-xs outline-none focus:border-blue-500"
@@ -1921,6 +2368,8 @@ export default function FarmersPage() {
                 district: defDist,
                 upazila: defUpa,
               });
+              setFormSheds([{ ...EMPTY_SHED_FORM }]);
+              setPickingShedIndex(null);
               setShowForm(true);
             }}
             className="inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition"
@@ -2013,6 +2462,8 @@ export default function FarmersPage() {
         <div className="text-xs font-semibold text-slate-600">
           Total Farmers:{" "}
           <span className="text-slate-900">{filteredFarmers.length}</span>
+          {"  •  "}Total Sheds:{" "}
+          <span className="text-slate-900">{getTotalSheds(filteredFarmers)}</span>
         </div>
       </div>
 
@@ -2051,12 +2502,14 @@ export default function FarmersPage() {
             >
               <FitBounds
                 skip={Boolean(selectedFarmerPosition || myPosition)}
-                locations={filteredFarmers
-                  .filter((f) => f.latitude && f.longitude)
-                  .map((f) => ({
-                    lat: Number(f.latitude),
-                    lng: Number(f.longitude),
-                  }))}
+                locations={filteredFarmers.flatMap((f: any) =>
+                  getShedsForFarmer(f)
+                    .filter((s: any) => s.latitude && s.longitude)
+                    .map((s: any) => ({
+                      lat: Number(s.latitude),
+                      lng: Number(s.longitude),
+                    }))
+                )}
               />
               <MapLayers />
 
@@ -2098,7 +2551,7 @@ export default function FarmersPage() {
                         <div>No nearby farmers found.</div>
                       ) : (
                         nearestFarmers.map((farmer, index) => (
-                          <div key={farmer.id} className="border-b pb-1">
+                          <div key={`${farmer.id}-${index}`} className="border-b pb-1">
                             <button
                               type="button"
                               onClick={() => {
@@ -2108,13 +2561,14 @@ export default function FarmersPage() {
                                 ];
                                 setMyLocationMode(false);
                                 setSelectedFarmerPosition(targetPos);
+                                setSelectedShed(farmer.shed || null);
                                 setNewNoteText("");
                                 loadFarmerNotes(farmer.id);
                                 myLocationMarkerRef.current?.closePopup();
                               }}
                               className="text-blue-600 font-bold hover:underline text-left"
                             >
-                              {index + 1}. {farmer.farmer_name}
+                              {index + 1}. {farmer.shedDisplayName || farmer.farmer_name}
                             </button>
                             <div className="text-slate-500">
                               {farmer.distanceText} away
@@ -2140,12 +2594,31 @@ export default function FarmersPage() {
               )}
 
               {filteredFarmers
-                .filter((f) => f.latitude && f.longitude)
-                .map((farmer) => {
-                  const badge = getFarmerBadgeInfo(farmer);
-                  const breakdown = getStockBreakdownList(farmer);
-                  const fLat = Number(farmer.latitude);
-                  const fLng = Number(farmer.longitude);
+                .flatMap((farmer: any) => {
+                  const sheds = getShedsForFarmer(farmer);
+                  return sheds
+                    .map((shed: any, sIdx: number) => ({
+                      farmer,
+                      shed,
+                      sIdx,
+                      totalSheds: sheds.length,
+                    }))
+                    .filter((x: any) => x.shed.latitude && x.shed.longitude);
+                })
+                .map(({ farmer, shed, sIdx, totalSheds }: any) => {
+                  const shedKey = shed.id
+                    ? `shed-${shed.id}`
+                    : `${farmer.id}-${sIdx}`;
+                  const shedDisplayName = getShedDisplayName(
+                    farmer,
+                    shed,
+                    sIdx,
+                    totalSheds
+                  );
+                  const badge = getFarmerBadgeInfo(shed);
+                  const breakdown = getShedStockBreakdown(shed);
+                  const fLat = Number(shed.latitude);
+                  const fLng = Number(shed.longitude);
                   const isHighlighted =
                     selectedFarmerPosition !== null &&
                     selectedFarmerPosition[0] === fLat &&
@@ -2165,19 +2638,23 @@ export default function FarmersPage() {
 
                   return (
                     <Marker
-                      key={farmer.id}
+                      key={shedKey}
                       ref={(ref) => {
-                        farmerMarkerRefs.current[farmer.id] = ref;
+                        farmerMarkerRefs.current[shedKey] = ref;
                       }}
                       position={[fLat, fLng]}
                       icon={buildCustomFarmMarker(
                         farmer,
+                        shed,
                         isHighlighted,
-                        distFromMe ? `${distFromMe} away` : undefined
+                        distFromMe ? `${distFromMe} away` : undefined,
+                        sIdx,
+                        totalSheds
                       )}
                       eventHandlers={{
                         click: () => {
                           setSelectedFarmerPosition([fLat, fLng]);
+                          setSelectedShed(shed);
                           setNewNoteText("");
                           loadFarmerNotes(farmer.id);
                         },
@@ -2194,9 +2671,10 @@ export default function FarmersPage() {
                             )}
                             <div>
                               <h3 className="font-bold text-sm text-slate-800 leading-tight">
-                                {badge.emoji} {farmer.farmer_name}
+                                {badge.emoji} {shedDisplayName}
                               </h3>
                               <p className="text-[11px] text-slate-500">
+                                {farmer.farmer_name} •{" "}
                                 {farmer.companies?.company_name} •{" "}
                                 {farmer.agents?.agent_name}
                               </p>
@@ -2311,7 +2789,7 @@ export default function FarmersPage() {
                                   Category
                                 </td>
                                 <td className="border px-2 py-1 font-bold">
-                                  {farmer.farm_category}
+                                  {shed.farm_category}
                                 </td>
                               </tr>
                               <tr>
@@ -2326,13 +2804,13 @@ export default function FarmersPage() {
                                         .join(", ")}
                                 </td>
                               </tr>
-                              {farmer.feed_type && (
+                              {shed.feed_type && (
                                 <tr>
                                   <td className="border px-2 py-1 font-semibold bg-slate-50">
                                     Feed
                                   </td>
                                   <td className="border px-2 py-1">
-                                    {farmer.feed_type}
+                                    {shed.feed_type}
                                   </td>
                                 </tr>
                               )}
@@ -2399,7 +2877,8 @@ export default function FarmersPage() {
                   </span>
                 </div>
                 <span className="text-xs font-semibold bg-white border border-slate-300 px-2 py-0.5 rounded text-slate-700">
-                  Farmers: {group.farmers.length}
+                  Farmers: {group.farmers.length}  •  Sheds:{" "}
+                  {getTotalSheds(group.farmers)}
                 </span>
               </div>
 
@@ -2412,6 +2891,9 @@ export default function FarmersPage() {
                       </th>
                       <th className="border border-slate-300 px-2 py-1.5 text-left">
                         Farmer
+                      </th>
+                      <th className="border border-slate-300 px-2 py-1.5 text-left">
+                        Shed
                       </th>
                       <th className="border border-slate-300 px-2 py-1.5 text-left">
                         Mobile
@@ -2440,70 +2922,132 @@ export default function FarmersPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {group.farmers.map((farmer: any, idx: number) => {
-                      const breakdown = getStockBreakdownList(farmer);
-                      return (
-                        <tr key={farmer.id} className="hover:bg-slate-50">
-                          <td className="border border-slate-300 px-2 py-1">
-                            {idx + 1}
-                          </td>
-                          <td className="border border-slate-300 px-2 py-1 font-semibold text-slate-800">
-                            {farmer.farmer_name}
-                          </td>
-                          <td className="border border-slate-300 px-2 py-1">
-                            {farmer.mobile || "-"}
-                          </td>
-                          <td className="border border-slate-300 px-2 py-1">
-                            {farmer.village || "-"}
-                          </td>
-                          <td className="border border-slate-300 px-2 py-1">
-                            {farmer.union_name || "-"}
-                          </td>
-                          <td className="border border-slate-300 px-2 py-1">
-                            {farmer.upazila || "-"}
-                          </td>
-                          <td className="border border-slate-300 px-2 py-1 font-medium">
-                            {farmer.farm_category}
-                          </td>
-                          <td className="border border-slate-300 px-2 py-1">
-                            {breakdown.length === 0
-                              ? "-"
-                              : breakdown
-                                  .map((b) => `${b.label}: ${b.qty}`)
-                                  .join(", ")}
-                          </td>
-                          <td className="border border-slate-300 px-2 py-1">
-                            {farmer.status}
-                          </td>
-                          <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap space-x-1">
-                            <button
-                              onClick={() => setSelectedFarmer(farmer)}
-                              className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-0.5 rounded text-[11px]"
-                            >
-                              View
-                            </button>
-                            <button
-                              onClick={() => handleViewFarmerOnMap(farmer)}
-                              className="inline-flex items-center gap-1 bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded text-[11px]"
-                            >
-                              <MapPin size={10} className="shrink-0" />
-                              <span>Map</span>
-                            </button>
-                            <button
-                              onClick={() => openEditForm(farmer)}
-                              className="bg-yellow-500 hover:bg-yellow-600 text-white px-2 py-0.5 rounded text-[11px]"
-                            >
-                              Edit
-                            </button>
-                            <button
-                              onClick={() => handleDelete(farmer.id)}
-                              className="bg-red-600 hover:bg-red-700 text-white px-2 py-0.5 rounded text-[11px]"
-                            >
-                              Delete
-                            </button>
-                          </td>
-                        </tr>
-                      );
+                    {group.farmers.flatMap((farmer: any, idx: number) => {
+                      const sheds = getShedsForFarmer(farmer);
+                      const rowSpan = sheds.length;
+                      return sheds.map((shed: any, sIdx: number) => {
+                        const breakdown = getShedStockBreakdown(shed);
+                        const shedDisplayName = getShedDisplayName(
+                          farmer,
+                          shed,
+                          sIdx,
+                          rowSpan
+                        );
+                        const shedKey = shed.id
+                          ? `shed-${shed.id}`
+                          : `${farmer.id}-${sIdx}`;
+                        return (
+                          <tr key={shedKey} className="hover:bg-slate-50">
+                            {sIdx === 0 && (
+                              <td
+                                rowSpan={rowSpan}
+                                className="border border-slate-300 px-2 py-1 align-top"
+                              >
+                                {idx + 1}
+                              </td>
+                            )}
+                            {sIdx === 0 && (
+                              <td
+                                rowSpan={rowSpan}
+                                className="border border-slate-300 px-2 py-1 font-semibold text-slate-800 align-top"
+                              >
+                                {farmer.farmer_name}
+                                {rowSpan > 1 && (
+                                  <span className="block text-[10px] font-semibold text-slate-500">
+                                    {rowSpan} sheds
+                                  </span>
+                                )}
+                              </td>
+                            )}
+                            <td className="border border-slate-300 px-2 py-1 font-medium">
+                              {shedDisplayName}
+                              
+                            </td>
+                            {sIdx === 0 && (
+                              <td
+                                rowSpan={rowSpan}
+                                className="border border-slate-300 px-2 py-1 align-top"
+                              >
+                                {farmer.mobile || "-"}
+                              </td>
+                            )}
+                            {sIdx === 0 && (
+                              <td
+                                rowSpan={rowSpan}
+                                className="border border-slate-300 px-2 py-1 align-top"
+                              >
+                                {farmer.village || "-"}
+                              </td>
+                            )}
+                            {sIdx === 0 && (
+                              <td
+                                rowSpan={rowSpan}
+                                className="border border-slate-300 px-2 py-1 align-top"
+                              >
+                                {farmer.union_name || "-"}
+                              </td>
+                            )}
+                            {sIdx === 0 && (
+                              <td
+                                rowSpan={rowSpan}
+                                className="border border-slate-300 px-2 py-1 align-top"
+                              >
+                                {farmer.upazila || "-"}
+                              </td>
+                            )}
+                            <td className="border border-slate-300 px-2 py-1 font-medium">
+                              {shed.farm_category || "-"}
+                            </td>
+                            <td className="border border-slate-300 px-2 py-1">
+                              {breakdown.length === 0
+                                ? "-"
+                                : breakdown
+                                    .map((b) => `${b.label}: ${b.qty}`)
+                                    .join(", ")}
+                            </td>
+                            {sIdx === 0 && (
+                              <td
+                                rowSpan={rowSpan}
+                                className="border border-slate-300 px-2 py-1 align-top"
+                              >
+                                {farmer.status}
+                              </td>
+                            )}
+                            {/* Actions: NO rowSpan — every shed row has its own
+                                View / Map / Edit / Delete for that shed only. */}
+                            <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap space-x-1 align-top">
+                              <button
+                                onClick={() => setSelectedFarmer(farmer)}
+                                className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-0.5 rounded text-[11px]"
+                              >
+                                View
+                              </button>
+                              <button
+                                onClick={() =>
+                                  handleViewFarmerOnMap(farmer, shed)
+                                }
+                                className="bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded text-[11px]"
+                              >
+                                Map
+                              </button>
+                              <button
+                                onClick={() => openEditForm(farmer)}
+                                className="bg-yellow-500 hover:bg-yellow-600 text-white px-2 py-0.5 rounded text-[11px]"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                onClick={() =>
+                                  handleDeleteShed(farmer, shed)
+                                }
+                                className="bg-red-600 hover:bg-red-700 text-white px-2 py-0.5 rounded text-[11px]"
+                              >
+                                Delete
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      });
                     })}
                   </tbody>
                 </table>
@@ -2669,7 +3213,8 @@ export default function FarmersPage() {
                       Farm Category
                     </td>
                     <td className="border border-slate-300 px-3 py-1.5 font-semibold">
-                      {selectedFarmer.farm_category}
+                      {getFarmerCategories(selectedFarmer).join(", ") ||
+                        selectedFarmer.farm_category}
                     </td>
                   </tr>
                   <tr>
@@ -2720,6 +3265,60 @@ export default function FarmersPage() {
                   </tr>
                 </tbody>
               </table>
+
+              <div>
+                <h3 className="text-xs font-bold text-slate-700 mb-1.5">
+                  Sheds ({getFarmerShedsCount(selectedFarmer)})
+                </h3>
+                <table className="w-full border-collapse border border-slate-300 text-xs">
+                  <thead className="bg-slate-50">
+                    <tr>
+                      <th className="border border-slate-300 px-2 py-1 text-left">Shed</th>
+                      <th className="border border-slate-300 px-2 py-1 text-left">Category</th>
+                      <th className="border border-slate-300 px-2 py-1 text-left">Location</th>
+                      <th className="border border-slate-300 px-2 py-1 text-left">Stock</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {getShedsForFarmer(selectedFarmer).map((shed: any, sIdx: number) => {
+                      const b = getShedStockBreakdown(shed);
+                      return (
+                        <tr key={shed.id || sIdx}>
+                          <td className="border border-slate-300 px-2 py-1 font-semibold">
+                            {getShedDisplayName(
+                              selectedFarmer,
+                              shed,
+                              sIdx,
+                              getShedsForFarmer(selectedFarmer).length
+                            )}
+                          </td>
+                          <td className="border border-slate-300 px-2 py-1">
+                            {shed.farm_category || "-"}
+                          </td>
+                          <td className="border border-slate-300 px-2 py-1">
+                            {shed.latitude && shed.longitude
+                              ? `${Number(shed.latitude).toFixed(5)}, ${Number(shed.longitude).toFixed(5)}`
+                              : "-"}
+                          </td>
+                          <td className="border border-slate-300 px-2 py-1 font-semibold text-blue-700">
+                            {b.length === 0 ? "-" : b.map((x) => `${x.label}: ${x.qty}`).join(", ")}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Whole-farmer delete lives ONLY here in the View modal. */}
+              <div className="flex justify-end pt-1">
+                <button
+                  onClick={() => handleDelete(selectedFarmer.id)}
+                  className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded text-xs font-semibold"
+                >
+                  Delete Farmer
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2873,120 +3472,192 @@ export default function FarmersPage() {
               </div>
             </div>
 
-            <div className="mb-3 flex flex-wrap items-center gap-2 bg-slate-50 border border-slate-200 rounded p-2.5">
+            {/* Sheds — one farmer, multiple sheds, each with its own location/category/stock */}
+            <div className="mb-3">
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-xs font-bold text-slate-600">
+                  Sheds * ({formSheds.length})
+                </label>
+                <span className="text-[11px] text-slate-500">
+                  Each shed can be in a different place with its own category.
+                </span>
+              </div>
+
+              {formSheds.map((shed: any, sIdx: number) => (
+                <div
+                  key={shed.id || sIdx}
+                  className="border border-slate-300 rounded-lg p-3 mb-2 bg-slate-50"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-bold text-slate-700">
+                      Shed {sIdx + 1}
+                      {shed.shed_name ? ` — ${shed.shed_name}` : ""}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeShed(sIdx)}
+                      disabled={formSheds.length === 1}
+                      className="text-red-600 hover:text-red-800 disabled:opacity-40 text-[11px] font-semibold"
+                    >
+                      Remove Shed
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                        Shed Name
+                      </label>
+                      <input
+                        placeholder="Bridge par — khali rakhle auto naam hobe"
+                        value={shed.shed_name || ""}
+                        onChange={(e) =>
+                          updateShedField(sIdx, "shed_name", e.target.value)
+                        }
+                        className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                      />
+                      <p className="mt-1 text-[11px] leading-snug text-slate-500">
+                        Khali rakhle: 1 ta shed hole sudhu farmer-er naam
+                        dekhabe; 2nd shed theke auto &ldquo;Farmer Name -
+                        Shed N&rdquo; hobe. Nijer label (jemon Bridge par)
+                        dile setao cholbe.
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                        Farm Category *
+                      </label>
+                      <SearchableSelect
+                        searchable={false}
+                        value={shed.farm_category || ""}
+                        onChange={(v) => updateShedField(sIdx, "farm_category", v)}
+                        placeholder="Select Category"
+                        options={[
+                          { value: "Poultry", label: "🐔 Poultry" },
+                          { value: "Cattle", label: "🐄 Cattle" },
+                          { value: "Fish", label: "🐟 Fish" },
+                        ]}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mb-2 flex flex-wrap items-center gap-2 bg-white border border-slate-200 rounded p-2.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPickingShedIndex(sIdx);
+                        setPickerCenterOverride(null);
+                        setShowMap(true);
+                      }}
+                      className="inline-flex items-center gap-1.5 bg-blue-600 text-white px-3 py-1.5 rounded text-xs font-semibold"
+                    >
+                      <MapPin size={13} /> Select Location from Map
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleLocateMeForShed(sIdx)}
+                      disabled={locatingInPicker}
+                      className="inline-flex items-center gap-1.5 bg-slate-600 text-white px-3 py-1.5 rounded text-xs font-semibold disabled:opacity-50"
+                    >
+                      <Navigation size={13} /> Locate Me
+                    </button>
+                    {shed.latitude && shed.longitude && (
+                      <span className="text-emerald-700 text-xs font-semibold">
+                        📍 Selected ({Number(shed.latitude).toFixed(4)},{" "}
+                        {Number(shed.longitude).toFixed(4)})
+                      </span>
+                    )}
+                  </div>
+
+                  {shed.farm_category === "Poultry" && (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-2 bg-amber-50 border border-amber-200 rounded p-2.5">
+                      {POULTRY_FIELDS.map((item) => (
+                        <div key={item}>
+                          <label className="block text-[11px] font-semibold capitalize">
+                            {item.replace("_", " ")}
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            value={shed[item] || ""}
+                            onChange={(e) =>
+                              updateShedField(sIdx, item, e.target.value)
+                            }
+                            className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {shed.farm_category === "Cattle" && (
+                    <div className="grid grid-cols-3 gap-2 mb-2 bg-emerald-50 border border-emerald-200 rounded p-2.5">
+                      {CATTLE_FIELDS.map((item) => (
+                        <div key={item}>
+                          <label className="block text-[11px] font-semibold capitalize">
+                            {item.replace("_", " ")}
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            value={shed[item] || ""}
+                            onChange={(e) =>
+                              updateShedField(sIdx, item, e.target.value)
+                            }
+                            className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {shed.farm_category === "Fish" && (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2 bg-sky-50 border border-sky-200 rounded p-2.5">
+                      {FISH_FIELDS.map((item) => (
+                        <div key={item}>
+                          <label className="block text-[11px] font-semibold capitalize">
+                            {item}
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            value={shed[item] || ""}
+                            onChange={(e) =>
+                              updateShedField(sIdx, item, e.target.value)
+                            }
+                            className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                      Feed Type
+                    </label>
+                    <input
+                      placeholder="Feed Type"
+                      value={shed.feed_type || ""}
+                      onChange={(e) =>
+                        updateShedField(sIdx, "feed_type", e.target.value)
+                      }
+                      className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                    />
+                  </div>
+                </div>
+              ))}
+
               <button
                 type="button"
-                onClick={() => {
-                  setPickerCenterOverride(null);
-                  setShowMap(true);
-                }}
-                className="inline-flex items-center gap-1.5 bg-blue-600 text-white px-3 py-1.5 rounded text-xs font-semibold"
+                onClick={addShed}
+                className="inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold"
               >
-                <MapPin size={13} /> Select Location from Map
+                <Plus size={13} /> Add Shed
               </button>
-
-              {form.latitude && form.longitude && (
-                <span className="text-emerald-700 text-xs font-semibold">
-                  📍 Selected ({Number(form.latitude).toFixed(4)},{" "}
-                  {Number(form.longitude).toFixed(4)})
-                </span>
-              )}
             </div>
 
-            <div className="mb-3">
-              <label className="block text-xs font-bold text-slate-600 mb-1">
-                Farm Category *
-              </label>
-              <SearchableSelect
-                searchable={false}
-                value={form.farm_category || ""}
-                onChange={(v) => setForm({ ...form, farm_category: v })}
-                placeholder="Select Category"
-                options={[
-                  { value: "Poultry", label: "🐔 Poultry" },
-                  { value: "Cattle", label: "🐄 Cattle" },
-                  { value: "Fish", label: "🐟 Fish" },
-                ]}
-              />
-            </div>
-
-            {form.farm_category === "Poultry" && (
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3 bg-amber-50 border border-amber-200 rounded p-2.5">
-                {POULTRY_FIELDS.map((item) => (
-                  <div key={item}>
-                    <label className="block text-[11px] font-semibold capitalize">
-                      {item.replace("_", " ")}
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={(form as any)[item] || ""}
-                      onChange={(e) =>
-                        setForm({ ...form, [item]: e.target.value })
-                      }
-                      className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {form.farm_category === "Cattle" && (
-              <div className="grid grid-cols-3 gap-2 mb-3 bg-emerald-50 border border-emerald-200 rounded p-2.5">
-                {CATTLE_FIELDS.map((item) => (
-                  <div key={item}>
-                    <label className="block text-[11px] font-semibold capitalize">
-                      {item.replace("_", " ")}
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={(form as any)[item] || ""}
-                      onChange={(e) =>
-                        setForm({ ...form, [item]: e.target.value })
-                      }
-                      className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {form.farm_category === "Fish" && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3 bg-sky-50 border border-sky-200 rounded p-2.5">
-                {FISH_FIELDS.map((item) => (
-                  <div key={item}>
-                    <label className="block text-[11px] font-semibold capitalize">
-                      {item}
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={(form as any)[item] || ""}
-                      onChange={(e) =>
-                        setForm({ ...form, [item]: e.target.value })
-                      }
-                      className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">
-                  Feed Type
-                </label>
-                <input
-                  placeholder="Feed Type"
-                  value={form.feed_type}
-                  onChange={(e) =>
-                    setForm({ ...form, feed_type: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-xs"
-                />
-              </div>
+            <div className="grid grid-cols-1 gap-3 mb-4">
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   Remarks
@@ -3026,7 +3697,10 @@ export default function FarmersPage() {
           <div className="bg-white p-3 sm:p-4 rounded-xl w-full max-w-4xl shadow-2xl space-y-2.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="font-bold text-sm sm:text-base">
-                Select Farm Location
+                Select Shed Location
+                {pickingShedIndex != null
+                  ? ` — Shed ${pickingShedIndex + 1}`
+                  : ""}
               </h2>
               <div className="flex items-center gap-2">
                 <button
@@ -3039,15 +3713,17 @@ export default function FarmersPage() {
                   {locatingInPicker ? "Locating..." : "Locate Me"}
                 </button>
 
-                {form.latitude && form.longitude && (
-                  <button
-                    type="button"
-                    onClick={() => setShowMap(false)}
-                    className="inline-flex items-center gap-1 bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-xs font-semibold"
-                  >
-                    <CheckCircle2 size={13} /> Use Selected Location
-                  </button>
-                )}
+                {pickingShedIndex != null &&
+                  formSheds[pickingShedIndex]?.latitude &&
+                  formSheds[pickingShedIndex]?.longitude && (
+                    <button
+                      type="button"
+                      onClick={() => setShowMap(false)}
+                      className="inline-flex items-center gap-1 bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-xs font-semibold"
+                    >
+                      <CheckCircle2 size={13} /> Use Selected Location
+                    </button>
+                  )}
 
                 <button onClick={() => setShowMap(false)}>
                   <X size={18} />
@@ -3083,32 +3759,58 @@ export default function FarmersPage() {
                   : 7
               }
               selectedPosition={
-                form.latitude && form.longitude
-                  ? [Number(form.latitude), Number(form.longitude)]
+                pickingShedIndex != null &&
+                formSheds[pickingShedIndex]?.latitude &&
+                formSheds[pickingShedIndex]?.longitude
+                  ? [
+                      Number(formSheds[pickingShedIndex].latitude),
+                      Number(formSheds[pickingShedIndex].longitude),
+                    ]
                   : null
               }
               onSelect={(lat, lng) => {
-                setForm({
-                  ...form,
-                  latitude: lat.toString(),
-                  longitude: lng.toString(),
-                });
+                const targetIndex = pickingShedIndex ?? 0;
+                setFormSheds((prev) =>
+                  prev.map((s, i) =>
+                    i === targetIndex
+                      ? { ...s, latitude: lat.toString(), longitude: lng.toString() }
+                      : s
+                  )
+                );
                 setShowMap(false);
               }}
               markers={
                 <>
-                  {farmers
-                    .filter((f) => f.latitude && f.longitude)
-                    .map((farmer) => (
-                      <Marker
-                        key={farmer.id}
-                        position={[
-                          Number(farmer.latitude),
-                          Number(farmer.longitude),
-                        ]}
-                        icon={buildCustomFarmMarker(farmer)}
-                      />
-                    ))}
+                  {farmers.flatMap((farmer: any) => {
+                    const sheds = getShedsForFarmer(farmer);
+                    return sheds
+                      .map((shed: any, sIdx: number) => ({
+                        farmer,
+                        shed,
+                        sIdx,
+                        totalSheds: sheds.length,
+                      }))
+                      .filter((x: any) => x.shed.latitude && x.shed.longitude)
+                      .map(({ farmer: f2, shed, sIdx, totalSheds }: any) => (
+                        <Marker
+                          key={
+                            shed.id ? `shed-${shed.id}` : `${f2.id}-${sIdx}`
+                          }
+                          position={[
+                            Number(shed.latitude),
+                            Number(shed.longitude),
+                          ]}
+                          icon={buildCustomFarmMarker(
+                            f2,
+                            shed,
+                            false,
+                            undefined,
+                            sIdx,
+                            totalSheds
+                          )}
+                        />
+                      ));
+                  })}
                 </>
               }
             />

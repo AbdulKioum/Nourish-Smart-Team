@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import ExcelJS from "exceljs";
+import SearchableSelect from "../../components/common/SearchableSelect";
 
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
@@ -35,6 +36,116 @@ function getRemarkText(rep: any): string {
   return String(r || "").trim();
 }
 
+function formatDmy(dateStr?: string) {
+  if (!dateStr) return "-";
+  const parts = String(dateStr).slice(0, 10).split("-");
+  if (parts.length !== 3) return dateStr;
+  return `${parts[2]}/${parts[1]}/${parts[0]}`;
+}
+
+const STOCK_FIELDS = [
+  "broiler","layer","sonali","duck","quail","deshi_chicken",
+  "dairy_cow","bull","calf_heifer",
+  "pangus","tilapia","koi","shing","pabda","gulsha","magur","carp","golda","bagda","tengra",
+];
+
+// ---------- Multi-shed helpers ----------
+function getShedsForFarmer(farmer: any): any[] {
+  const list = farmer?.farmer_sheds || farmer?.sheds || [];
+  if (Array.isArray(list) && list.length > 0) return list;
+  // Legacy fallback: synthesise ONE shed from the farmer's own fields.
+  // shed_name stays EMPTY — a single shed has no name, so the shared
+  // short-name logic returns "" and the full name is just the farmer name.
+  const shed: any = {
+    id: `legacy-${farmer?.id}`,
+    farmer_id: farmer?.id,
+    shed_name: "",
+    farm_category: farmer?.farm_category || "",
+    latitude: farmer?.latitude ?? null,
+    longitude: farmer?.longitude ?? null,
+    feed_type: farmer?.feed_type || "",
+    status: farmer?.status || "Active",
+  };
+  STOCK_FIELDS.forEach((k) => { shed[k] = Number(farmer?.[k] || 0); });
+  return [shed];
+}
+
+// Shed naming — single source of truth, identical in Farmers/Visits/Doc:
+// - Stored shed_name is the SHORT label only ("Shed 1", "Shed 2", "Bridge par").
+// - A farmer with a single shed (no shed explicitly added) has NO shed name:
+//   the Shed column is blank and the full name is just the farmer name.
+// - getShedShortName() normalises any legacy stored value: empty, or exactly
+//   the farmer name, or an auto "Shed N" label, is blank for a single shed
+//   and "Shed N" once a 2nd shed exists; a value starting with the farmer
+//   name (full name or first name, e.g. "Raju Ahmed - Shed 1" or "Raju Shed 1")
+//   has that prefix stripped; "Shed-1" normalises to "Shed 1"; a bare custom
+//   label ("Bridge par") is kept as-is.
+// - getShedDisplayName() is just the farmer name for a single unnamed shed,
+//   otherwise "Farmer Name - Short Name". The ONLY place showing the short
+//   name alone is the farmer table Shed column (and the form Shed Name input).
+function getShedShortName(
+  farmer: any,
+  shed: any,
+  index: number = 0,
+  totalSheds: number = 1
+): string {
+  const farmerName = String(farmer?.farmer_name || "").trim() || "Farmer";
+  const raw = String(shed?.shed_name || "").trim();
+  const lowerRaw = raw.toLowerCase();
+  const lowerFarmer = farmerName.toLowerCase();
+  const firstName = lowerFarmer.split(/\s+/)[0] || "";
+  let rest = raw;
+  const stripPrefix = (prefix: string): boolean => {
+    if (prefix && lowerRaw.startsWith(prefix)) {
+      const next = raw.charAt(prefix.length);
+      if (next === " " || next === "-") {
+        rest = raw.slice(prefix.length).replace(/^[\s-]+/, "").trim();
+        return true;
+      }
+    }
+    return false;
+  };
+  if (rest && rest.toLowerCase() !== lowerFarmer) {
+    if (!stripPrefix(lowerFarmer) && firstName) stripPrefix(firstName);
+  } else {
+    rest = "";
+  }
+  // Auto-generated labels ("Shed 1", "Shed-1") carry no real name.
+  const autoMatch = rest.match(/^shed\s*-?\s*(\d+)$/i);
+  if ((totalSheds ?? 1) <= 1) {
+    if (!rest || autoMatch) return "";
+    return rest;
+  }
+  if (!rest) return `Shed ${index + 1}`;
+  if (autoMatch) return `Shed ${autoMatch[1]}`;
+  return rest;
+}
+
+function getShedDisplayName(
+  farmer: any,
+  shed: any,
+  index: number = 0,
+  totalSheds: number = 1
+): string {
+  const farmerName = String(farmer?.farmer_name || "").trim() || "Farmer";
+  const short = getShedShortName(farmer, shed, index, totalSheds);
+  return short ? `${farmerName} - ${short}` : farmerName;
+}
+
+// The shed a visit belongs to: its stored shed_id when it matches one of
+// the farmer's sheds; the only shed when the farmer has exactly one; null
+// when the farmer has several sheds and the visit names none (do not guess).
+function getShedForVisit(visit: any, farmer: any): any | null {
+  if (!farmer) return null;
+  const sheds = getShedsForFarmer(farmer);
+  if (sheds.length === 0) return null;
+  const sid = visit?.shed_id;
+  if (sid !== null && sid !== undefined && String(sid) !== "") {
+    return sheds.find((s: any) => String(s.id) === String(sid)) || null;
+  }
+  return sheds.length === 1 ? sheds[0] : null;
+}
+
 export default function ReportsPage() {
   const [selectedCategory, setSelectedCategory] = useState<
     "all" | "Broiler" | "Layer" | "Sonali"
@@ -49,6 +160,7 @@ export default function ReportsPage() {
 
   const [agents, setAgents] = useState<any[]>([]);
   const [farmers, setFarmers] = useState<any[]>([]);
+  const [subAgents, setSubAgents] = useState<any[]>([]);
   const [visitsMap, setVisitsMap] = useState<Record<string, any>>({});
   const [beforeReports, setBeforeReports] = useState<any[]>([]);
   const [afterReports, setAfterReports] = useState<any[]>([]);
@@ -149,7 +261,36 @@ export default function ReportsPage() {
       setSonaliStds({});
     }
 
-    const allFarmers = frmData || [];
+    // Sheds + sub-agents: try/catch so the page keeps working
+    // pre-migration (missing table/column) — getShedsForFarmer then
+    // falls back to the legacy synthesised shed.
+    let shedRows: any[] = [];
+    try {
+      const { data: shData } = await supabase
+        .from("farmer_sheds")
+        .select("*");
+      shedRows = shData || [];
+    } catch {
+      shedRows = [];
+    }
+
+    let subAgentRows: any[] = [];
+    try {
+      const { data: saData } = await supabase
+        .from("sub_agents")
+        .select("id, sub_agent_name, agent_id");
+      subAgentRows = saData || [];
+    } catch {
+      subAgentRows = [];
+    }
+    setSubAgents(subAgentRows);
+
+    const allFarmers = (frmData || []).map((f: any) => ({
+      ...f,
+      farmer_sheds: shedRows.filter(
+        (s: any) => String(s.farmer_id) === String(f.id)
+      ),
+    }));
     const allowedFarmers = fullAccess
       ? allFarmers
       : allFarmers.filter((f: any) => {
@@ -325,6 +466,33 @@ export default function ReportsPage() {
 
   const allowedFarmerIds = new Set(farmers.map((f) => String(f.id)));
 
+  // Batch numbers count per SHED, not per farmer (same rule as
+  // VisitsPage): each shed's batches start again at 1. A visit without
+  // a shed_id on a multi-shed farmer counts in its own "none" group.
+  const visitSeqMap: Record<string, number> = {};
+  {
+    const visitsByFarmer: Record<string, any[]> = {};
+    Object.values(visitsMap).forEach((v: any) => {
+      const k = String(v.farmer_id);
+      (visitsByFarmer[k] = visitsByFarmer[k] || []).push(v);
+    });
+    Object.values(visitsByFarmer).forEach((list: any[]) => {
+      const sorted = [...list].sort((a: any, b: any) =>
+        String(a.created_at || "").localeCompare(String(b.created_at || ""))
+      );
+      const perShedCount: Record<string, number> = {};
+      sorted.forEach((v: any) => {
+        const vFarmer =
+          farmers.find((f: any) => String(f.id) === String(v.farmer_id)) ||
+          {};
+        const vShed = getShedForVisit(v, vFarmer);
+        const shedKey = String(vShed?.id || "none");
+        perShedCount[shedKey] = (perShedCount[shedKey] || 0) + 1;
+        visitSeqMap[String(v.id)] = perShedCount[shedKey];
+      });
+    });
+  }
+
   // Enrich and Filter Reports
   const filteredReports = rawCombinedReports
     .map((r) => {
@@ -343,6 +511,21 @@ export default function ReportsPage() {
         farmer.upazila || agent.upazila || agent.upazila_name || "";
       const hatchery = r.hatchery || visit.hatchery || "-";
       const breed = r.breed || visit.breed || "-";
+      const sheds = getShedsForFarmer(farmer);
+      const shed = getShedForVisit(visit, farmer);
+      const shedIndex = shed ? sheds.indexOf(shed) : 0;
+      const shedShort = shed
+        ? getShedShortName(farmer, shed, shedIndex, sheds.length)
+        : "";
+      const shedDisplayName = shed
+        ? getShedDisplayName(farmer, shed, shedIndex, sheds.length)
+        : String(farmer?.farmer_name || "Unknown Farmer");
+      const subAgent = subAgents.find(
+        (sa: any) => String(sa.id) === String(farmer?.sub_agent_id)
+      );
+      const subAgentName = subAgent?.sub_agent_name || "";
+      const seq = visitSeqMap[String(r.vet_visit_id)] || 1;
+      const batchLabel = visit.batch_label || `Batch ${seq}`;
 
       return {
         ...r,
@@ -353,9 +536,12 @@ export default function ReportsPage() {
         hatchery,
         breed,
         category: cat,
-        batchKey: `${r._repKind}_${String(r.vet_visit_id || r.farmer_id)}`,
-        batchTitle:
-          visit.batch_label || farmer.farmer_name || "Unknown Farmer",
+        shed,
+        shedShort,
+        shedDisplayName,
+        subAgentName,
+        batchSeq: seq,
+        batchLabel,
       };
     })
     .filter((item) => {
@@ -390,7 +576,22 @@ export default function ReportsPage() {
       if (fromDate && vDate < fromDate) return false;
       if (toDate && vDate > toDate) return false;
       return true;
-    });
+    })
+    .sort((a, b) =>
+      String(b.visit_date || "").localeCompare(String(a.visit_date || ""))
+    );
+
+  // Egg columns only when a Layer report is actually shown: a Broiler /
+  // Sonali selection has no layer rows, so the two egg columns hide.
+  const showEggColumns = filteredReports.some(
+    (r: any) => r._repKind === "layer"
+  );
+
+  // Same rule, other way round: the two FCR columns only when a meat
+  // (Before/After Sale) report is shown — a Layer-only selection hides them.
+  const showFcrColumns = filteredReports.some(
+    (r: any) => r._repKind === "before_sale" || r._repKind === "after_sale"
+  );
 
   // Collect Available Months from all reports
   const allMonths = Array.from(
@@ -402,32 +603,6 @@ export default function ReportsPage() {
   )
     .sort()
     .reverse();
-
-  // Group by Batch + Report Kind
-  const groupedBatches = Object.values(
-    filteredReports.reduce((acc: Record<string, any>, rep: any) => {
-      const key = rep.batchKey;
-      if (!acc[key]) {
-        acc[key] = {
-          batchKey: key,
-          repKind: rep._repKind,
-          category: rep.category,
-          batchTitle: rep.batchTitle,
-          agentName: rep.agent?.agent_name || "-",
-          upazila: rep.upazila || "-",
-          farmerName: rep.farmer?.farmer_name || "-",
-          hatchery: rep.hatchery || "-",
-          hatchDate: rep.visit?.hatch_date || "-",
-          breed: rep.breed || "-",
-          tBirds: rep.visit?.t_birds || 0,
-          status: rep.visit?.status || "-",
-          reports: [],
-        };
-      }
-      acc[key].reports.push(rep);
-      return acc;
-    }, {})
-  );
 
   // Professional Excel Worksheet Formatter
   function formatExcelSheet(
@@ -581,7 +756,10 @@ async function saveBufferOrBlob(
         "Category",
         "Upazila",
         "Agent",
-        "Farmer / Batch",
+        "Farmer",
+        "Shed",
+        "Batch",
+        "Sub Agent",
         "Hatchery",
         "Breed",
         "H.Date",
@@ -598,6 +776,8 @@ async function saveBufferOrBlob(
         "FCR (With M)",
         "Feed Company",
         "Feed Type",
+        "MFG",
+        "Batch No.",
         "Remarks",
       ]);
 
@@ -609,7 +789,10 @@ async function saveBufferOrBlob(
           r.category || "-",
           r.upazila || "-",
           r.agent?.agent_name || "-",
-          r.batchTitle,
+          r.farmer?.farmer_name || "-",
+          r.shedShort || "",
+          r.batchLabel,
+          r.subAgentName || "",
           r.hatchery || "-",
           r.breed || "-",
           r.visit?.hatch_date || "-",
@@ -626,6 +809,8 @@ async function saveBufferOrBlob(
           r.fcr_with_m || "-",
           r.feed_company || "-",
           r.feed_type || "-",
+          r.pro_date ? formatDmy(r.pro_date) : "-",
+          r.batch_no || "-",
           getRemarkText(r) || "-",
         ]);
       });
@@ -633,7 +818,7 @@ async function saveBufferOrBlob(
       formatExcelSheet(
         s,
         "FF059669",
-        [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
       );
     }
 
@@ -644,7 +829,10 @@ async function saveBufferOrBlob(
         "Category",
         "Upazila",
         "Agent",
-        "Farmer / Batch",
+        "Farmer",
+        "Shed",
+        "Batch",
+        "Sub Agent",
         "Hatchery",
         "Breed",
         "H.Date",
@@ -661,6 +849,8 @@ async function saveBufferOrBlob(
         "FCR (With M)",
         "Feed Company",
         "Last Feed",
+        "MFG",
+        "Batch No.",
         "Remarks",
       ]);
 
@@ -678,7 +868,10 @@ async function saveBufferOrBlob(
           r.category || "-",
           r.upazila || "-",
           r.agent?.agent_name || "-",
-          r.batchTitle,
+          r.farmer?.farmer_name || "-",
+          r.shedShort || "",
+          r.batchLabel,
+          r.subAgentName || "",
           r.hatchery || "-",
           r.breed || "-",
           r.visit?.hatch_date || "-",
@@ -695,6 +888,8 @@ async function saveBufferOrBlob(
           r.fcr_with_m || "-",
           r.feed_mill || "-",
           r.feed || "-",
+          r.pro_date ? formatDmy(r.pro_date) : "-",
+          r.batch_no || "-",
           getRemarkText(r) || "-",
         ]);
       });
@@ -702,7 +897,7 @@ async function saveBufferOrBlob(
       formatExcelSheet(
         s,
         "FFDC2626",
-        [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
       );
     }
 
@@ -712,7 +907,10 @@ async function saveBufferOrBlob(
         "Visit Date",
         "Upazila",
         "Agent",
-        "Farmer / Batch",
+        "Farmer",
+        "Shed",
+        "Batch",
+        "Sub Agent",
         "Hatchery",
         "Breed",
         "H.Date",
@@ -729,6 +927,8 @@ async function saveBufferOrBlob(
         "Std Egg Wt (g)",
         "Feed Company",
         "Feed Type",
+        "MFG",
+        "Batch No.",
         "Disease / Vaccine",
         "Remarks",
       ]);
@@ -743,7 +943,10 @@ async function saveBufferOrBlob(
           r.visit_date || "-",
           r.upazila || "-",
           r.agent?.agent_name || "-",
-          r.batchTitle,
+          r.farmer?.farmer_name || "-",
+          r.shedShort || "",
+          r.batchLabel,
+          r.subAgentName || "",
           r.hatchery || "-",
           r.breed || "-",
           r.visit?.hatch_date || "-",
@@ -760,6 +963,8 @@ async function saveBufferOrBlob(
           std?.egg_weight || "-",
           r.feed_company || "-",
           r.feed_type || "-",
+          r.pro_date ? formatDmy(r.pro_date) : "-",
+          r.batch_no || "-",
           [r.disease, r.vaccine].filter(Boolean).join(" / ") || "-",
           getRemarkText(r) || "-",
         ]);
@@ -768,7 +973,7 @@ async function saveBufferOrBlob(
       formatExcelSheet(
         s,
         "FF4F46E5",
-        [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+        [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
       );
     }
 
@@ -777,7 +982,7 @@ async function saveBufferOrBlob(
 
     try {
       const excelBuffer = await workbook.xlsx.writeBuffer();
-      // DOC Tracking বা Farmer পেজে তৈরি করা common saveBufferOrBlob ফাংশনটি এখানে কল করা হলো
+      // Shared saveBufferOrBlob helper (same as DocTracking / Farmers pages)
       await saveBufferOrBlob(excelBuffer, fileName);
     } catch (err: any) {
       console.error("Filtered reports export error:", err);
@@ -865,67 +1070,67 @@ async function saveBufferOrBlob(
           } gap-2 items-center text-xs`}
         >
           {/* Assigned Upazila Dropdown */}
-          <select
+          <SearchableSelect
             value={upazilaFilter}
-            onChange={(e) => {
-              setUpazilaFilter(e.target.value);
+            onChange={(v) => {
+              setUpazilaFilter(v);
               setAgentFilter("all");
               setFarmerFilter("all");
             }}
-            className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 outline-none"
-          >
-            <option value="all">All Upazilas</option>
-            {upazilaOptions.map((u) => (
-              <option key={u} value={u}>
-                {u}
-              </option>
-            ))}
-          </select>
+            placeholder="All Upazilas"
+            options={[
+              { value: "all", label: "All Upazilas" },
+              ...upazilaOptions.map((u) => ({ value: u, label: u })),
+            ]}
+          />
 
           {/* Agent Dropdown */}
-          <select
+          <SearchableSelect
             value={agentFilter}
-            onChange={(e) => {
-              setAgentFilter(e.target.value);
+            onChange={(v) => {
+              setAgentFilter(v);
               setFarmerFilter("all");
             }}
-            className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 outline-none"
-          >
-            <option value="all">All Agents ({availableAgents.length})</option>
-            {availableAgents.map((a) => (
-              <option key={a.id} value={String(a.id)}>
-                {a.agent_name}
-              </option>
-            ))}
-          </select>
+            placeholder="All Agents"
+            options={[
+              {
+                value: "all",
+                label: `All Agents (${availableAgents.length})`,
+              },
+              ...availableAgents.map((a) => ({
+                value: String(a.id),
+                label: a.agent_name,
+              })),
+            ]}
+          />
 
           {/* Farmer Dropdown */}
-          <select
+          <SearchableSelect
             value={farmerFilter}
-            onChange={(e) => setFarmerFilter(e.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 outline-none font-semibold"
-          >
-            <option value="all">All Farmers ({availableFarmers.length})</option>
-            {availableFarmers.map((f) => (
-              <option key={f.id} value={String(f.id)}>
-                {f.farmer_name} ({f.village})
-              </option>
-            ))}
-          </select>
+            onChange={setFarmerFilter}
+            placeholder="All Farmers"
+            options={[
+              {
+                value: "all",
+                label: `All Farmers (${availableFarmers.length})`,
+              },
+              ...availableFarmers.map((f) => ({
+                value: String(f.id),
+                label: `${f.farmer_name} (${f.village})`,
+              })),
+            ]}
+          />
 
           {/* Month Filter */}
-          <select
+          <SearchableSelect
             value={monthFilter}
-            onChange={(e) => handleMonthSelect(e.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 outline-none"
-          >
-            <option value="">All Months</option>
-            {allMonths.map((m) => (
-              <option key={m} value={m}>
-                Month: {m}
-              </option>
-            ))}
-          </select>
+            onChange={handleMonthSelect}
+            placeholder="All Months"
+            options={[
+              { value: "", label: "All Months" },
+              ...allMonths.map((m) => ({ value: m, label: `Month: ${m}` })),
+            ]}
+          />
 
           {/* Single Date OR Multi (From - To) Date Selector */}
           <div
@@ -1031,317 +1236,252 @@ async function saveBufferOrBlob(
         </div>
       </div>
 
-      {/* Batch-wise Grouped Tables (Single-line rows with Hatchery in batch info bar) */}
+      {/* Flat Reports Table (newest first) */}
       {loading ? (
         <div className="bg-white border border-slate-300 rounded-xl p-8 text-center text-xs text-slate-500">
           Loading reports...
         </div>
-      ) : groupedBatches.length === 0 ? (
+      ) : filteredReports.length === 0 ? (
         <div className="bg-white border border-slate-300 rounded-xl p-8 text-center text-xs text-slate-400">
           No reports found for the selected filters.
         </div>
       ) : (
-        <div className="space-y-3.5">
-          {groupedBatches.map((batch: any) => (
-            <div
-              key={batch.batchKey}
-              className="bg-white border border-slate-300 rounded-xl overflow-hidden shadow-sm"
-            >
-              {/* Farmer / Batch Info Header (Includes Hatchery) */}
-              <div className="bg-slate-100 border-b border-slate-300 px-3.5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="font-bold text-slate-800 text-sm">
-                    {batch.batchTitle}
-                  </span>
-                  <span className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px] font-bold">
-                    {batch.category} •{" "}
-                    {batch.repKind === "layer"
-                      ? "Layer Report"
-                      : batch.repKind === "after_sale"
-                      ? "After Sale"
-                      : "Before Sale"}
-                  </span>
-                  <span className="text-slate-500">
-                    • Agent: <b>{batch.agentName}</b> ({batch.upazila})
-                  </span>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="bg-white border border-slate-300 px-2 py-0.5 rounded">
-                    Hatchery: <b className="text-emerald-800">{batch.hatchery}</b>
-                  </span>
-                  <span className="bg-white border border-slate-300 px-2 py-0.5 rounded">
-                    H.Date: <b>{batch.hatchDate}</b>
-                  </span>
-                  <span className="bg-white border border-slate-300 px-2 py-0.5 rounded">
-                    Birds: <b>{batch.tBirds}</b>
-                  </span>
-                  <span className="bg-white border border-slate-300 px-2 py-0.5 rounded">
-                    Breed: <b>{batch.breed}</b>
-                  </span>
-                  <span className="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-bold">
-                    {batch.status === "Activated" ? "Running" : batch.status}
-                  </span>
-                </div>
-              </div>
-
-              <div className="overflow-x-auto">
-                {batch.repKind === "layer" ? (
-                  <table className="w-full border-collapse text-xs whitespace-nowrap">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-left">
-                          Visit Date
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          Age (Wks)
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          Mort.
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          Wt / Std (g)
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          Feed / Std (g/b/d)
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          Egg% / Std%
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          Egg Wt / Std (g)
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-left">
-                          Feed & Type
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-left">
-                          Disease / Vaccine
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-left">
-                          Remarks
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {batch.reports.map((r: any, i: number) => {
-                        const wks = Math.max(
-                          1,
-                          Math.floor(
-                            calcAgeDays(batch.hatchDate, r.visit_date) / 7
-                          )
-                        );
-                        const std = getLayerStd(r.breed || batch.breed, wks);
-                        return (
-                          <tr key={i} className="hover:bg-slate-50 leading-tight">
-                            <td className="border border-slate-300 px-2.5 py-1">
-                              {r.visit_date}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center font-bold">
-                              {wks}w
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center">
-                              {r.mortality ?? 0}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center">
-                              <b>{r.b_weight_g}</b> / {std?.weight || "-"}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center">
-                              <b>{r.feed_intake_g}</b> /{" "}
-                              {std?.feed_bird_day || "-"}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center font-bold text-indigo-700">
-                              {r.egg_production}% / {std?.egg_production || "-"}
-                              %
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center">
-                              <b>{r.egg_weight}</b> / {std?.egg_weight || "-"}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1">
-                              {r.feed_company || "-"}{" "}
-                              {r.feed_type ? `(${r.feed_type})` : ""}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1">
-                              {[r.disease, r.vaccine]
+        <div className="bg-white border border-slate-300 rounded-xl overflow-hidden shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-xs whitespace-nowrap">
+              <thead className="bg-slate-50">
+                <tr>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-left">Sl</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-left">Visit Date</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-left">Agent</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-left">Farmer</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-center">Status</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-left">Category</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-left">Type</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-left">Hatchery</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-left">H.Date</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-left">Breed</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-center">Birds</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-center">Age</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-center">Mort.</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-center">Wt / Std (g)</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-center">Feed (Kg)</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-center">Feed/B / Std (g)</th>
+                  {showFcrColumns && (
+                    <>
+                      <th className="border border-slate-300 px-2.5 py-1.5 text-center">FCR (w/o) / Std</th>
+                      <th className="border border-slate-300 px-2.5 py-1.5 text-center">FCR (With)</th>
+                    </>
+                  )}
+                  {showEggColumns && (
+                    <>
+                      <th className="border border-slate-300 px-2.5 py-1.5 text-center">Egg% / Std%</th>
+                      <th className="border border-slate-300 px-2.5 py-1.5 text-center">Egg Wt / Std (g)</th>
+                    </>
+                  )}
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-left">Feed &amp; Type</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-left">MFG</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-left">Batch No.</th>
+                  {showEggColumns && (
+                    <th className="border border-slate-300 px-2.5 py-1.5 text-left">Disease / Vaccine</th>
+                  )}
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-left">Remarks</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredReports.map((r: any, idx: number) => {
+                  const isLayer = r._repKind === "layer";
+                  const isBefore = r._repKind === "before_sale";
+                  const d = calcAgeDays(r.visit?.hatch_date, r.visit_date);
+                  const wks = Math.max(1, Math.floor(d / 7));
+                  const std = isLayer
+                    ? getLayerStd(r.breed, wks)
+                    : getMeatStd(r.category, d);
+                  const tB = Number(r.visit?.t_birds || 0);
+                  const fGm =
+                    r.feed_gm_b ||
+                    (tB > 0
+                      ? (
+                          (Number(r.feed_consumption_kg || 0) * 1000) /
+                          tB
+                        ).toFixed(1)
+                      : "-");
+                  return (
+                    <tr
+                      key={`${r._repKind}_${r.id ?? idx}`}
+                      className="hover:bg-slate-50 leading-tight"
+                    >
+                      <td className="border border-slate-300 px-2.5 py-1 text-center">
+                        {idx + 1}
+                      </td>
+                      <td className="border border-slate-300 px-2.5 py-1">
+                        {formatDmy(r.visit_date)}
+                      </td>
+                      <td className="border border-slate-300 px-2.5 py-1">
+                        {r.subAgentName ? (
+                          <>
+                            {r.subAgentName}{" "}
+                            <span className="text-[10px] text-slate-400">
+                              sub-ag
+                            </span>
+                          </>
+                        ) : (
+                          r.agent?.agent_name || "-"
+                        )}
+                      </td>
+                      <td
+                        className="border border-slate-300 px-2.5 py-1 font-semibold"
+                        title={r.shedDisplayName}
+                      >
+                        <div>{r.farmer?.farmer_name || "-"}</div>
+                        {r.shedShort && (
+                          <div className="text-[10px] font-normal text-slate-500 leading-tight">
+                            {r.shedShort}
+                          </div>
+                        )}
+                      </td>
+                      <td className="border border-slate-300 px-2.5 py-1 text-center">
+                        <span className="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-bold">
+                          {r.visit?.status === "Activated"
+                            ? "Running"
+                            : r.visit?.status || "-"}
+                        </span>
+                      </td>
+                      <td className="border border-slate-300 px-2.5 py-1">
+                        {r.category}
+                      </td>
+                      <td className="border border-slate-300 px-2.5 py-1">
+                        {isLayer
+                          ? "Layer"
+                          : isBefore
+                          ? "Before Sale"
+                          : "After Sale"}
+                      </td>
+                      <td className="border border-slate-300 px-2.5 py-1">
+                        {r.hatchery || "-"}
+                      </td>
+                      <td className="border border-slate-300 px-2.5 py-1">
+                        {formatDmy(r.visit?.hatch_date)}
+                      </td>
+                      <td className="border border-slate-300 px-2.5 py-1">
+                        {r.breed || "-"}
+                      </td>
+                      <td className="border border-slate-300 px-2.5 py-1 text-center">
+                        {tB}
+                      </td>
+                      <td className="border border-slate-300 px-2.5 py-1 text-center font-bold">
+                        {isLayer ? `${wks}w` : `${d}d`}
+                      </td>
+                      <td className="border border-slate-300 px-2.5 py-1 text-center">
+                        {isLayer
+                          ? r.mortality ?? 0
+                          : isBefore
+                          ? r.mortality_pcs
+                          : r.mortality}
+                      </td>
+                      <td className="border border-slate-300 px-2.5 py-1 text-center">
+                        {isLayer ? (
+                          <>
+                            <b>{r.b_weight_g}</b> / {std?.weight || "-"}
+                          </>
+                        ) : isBefore ? (
+                          <>
+                            <b>{r.weight_gm_b}</b> / {std?.weight || "-"}
+                          </>
+                        ) : (
+                          <>
+                            <b>{r.weight}</b> / {std?.weight || "-"}
+                          </>
+                        )}
+                      </td>
+                      <td className="border border-slate-300 px-2.5 py-1 text-center">
+                        {isLayer
+                          ? r.feed_total_kg
+                          : isBefore
+                          ? r.feed_t_kg
+                          : r.feed_consumption_kg}
+                      </td>
+                      <td className="border border-slate-300 px-2.5 py-1 text-center">
+                        {isLayer ? (
+                          <>
+                            <b>{r.feed_intake_g}</b> /{" "}
+                            {std?.feed_bird_day || "-"}
+                          </>
+                        ) : isBefore ? (
+                          <>
+                            <b>{r.feed_gm_b}</b> / {std?.feed_intake || "-"}
+                          </>
+                        ) : (
+                          <>
+                            <b>{fGm}</b> / {std?.feed_intake || "-"}
+                          </>
+                        )}
+                      </td>
+                      {showFcrColumns && (
+                        <>
+                          <td className="border border-slate-300 px-2.5 py-1 text-center font-bold">
+                            {isLayer ? "-" : `${r.fcr_w_out_m} / ${std?.fcr || "-"}`}
+                          </td>
+                          <td className="border border-slate-300 px-2.5 py-1 text-center">
+                            {isLayer ? "-" : r.fcr_with_m}
+                          </td>
+                        </>
+                      )}
+                      {showEggColumns && (
+                        <>
+                          <td className="border border-slate-300 px-2.5 py-1 text-center font-bold text-indigo-700">
+                            {isLayer
+                              ? `${r.egg_production}% / ${std?.egg_production || "-"}%`
+                              : "-"}
+                          </td>
+                          <td className="border border-slate-300 px-2.5 py-1 text-center">
+                            {isLayer ? (
+                              <>
+                                <b>{r.egg_weight}</b> / {std?.egg_weight || "-"}
+                              </>
+                            ) : (
+                              "-"
+                            )}
+                          </td>
+                        </>
+                      )}
+                      <td className="border border-slate-300 px-2.5 py-1">
+                        {isBefore || isLayer ? (
+                          <>
+                            {r.feed_company || "-"}{" "}
+                            {r.feed_type ? `(${r.feed_type})` : ""}
+                          </>
+                        ) : (
+                          <>
+                            {r.feed_mill || "-"}{" "}
+                            {r.feed ? `(Last Feed: ${r.feed})` : ""}
+                          </>
+                        )}
+                      </td>
+                      <td className="border border-slate-300 px-2.5 py-1">
+                        {r.pro_date ? formatDmy(r.pro_date) : "-"}
+                      </td>
+                      <td className="border border-slate-300 px-2.5 py-1">
+                        {r.batch_no || "-"}
+                      </td>
+                      {showEggColumns && (
+                        <td className="border border-slate-300 px-2.5 py-1">
+                          {isLayer
+                            ? [r.disease, r.vaccine]
                                 .filter(Boolean)
-                                .join(" / ") || "-"}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1">
-                              {getRemarkText(r) || "-"}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                ) : batch.repKind === "before_sale" ? (
-                  <table className="w-full border-collapse text-xs whitespace-nowrap">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-left">
-                          Visit Date
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          Age
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          Mort.
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          Wt / Std (g)
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          Feed (Kg)
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          Feed/B / Std (g)
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          FCR(w/o) / Std
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          FCR(With)
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-left">
-                          Feed & Type
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-left">
-                          Remarks
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {batch.reports.map((r: any, i: number) => {
-                        const d = calcAgeDays(batch.hatchDate, r.visit_date);
-                        const std = getMeatStd(batch.category, d);
-                        return (
-                          <tr key={i} className="hover:bg-slate-50 leading-tight">
-                            <td className="border border-slate-300 px-2.5 py-1">
-                              {r.visit_date}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center font-bold">
-                              {d}d
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center">
-                              {r.mortality_pcs}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center">
-                              <b>{r.weight_gm_b}</b> / {std?.weight || "-"}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center">
-                              {r.feed_t_kg}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center">
-                              <b>{r.feed_gm_b}</b> / {std?.feed_intake || "-"}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center font-bold text-emerald-700">
-                              {r.fcr_w_out_m} / {std?.fcr || "-"}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center">
-                              {r.fcr_with_m}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1">
-                              {r.feed_company || "-"}{" "}
-                              {r.feed_type ? `(${r.feed_type})` : ""}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1">
-                              {getRemarkText(r) || "-"}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                ) : (
-                  <table className="w-full border-collapse text-xs whitespace-nowrap">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-left">
-                          Sale Date
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          Age
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          Mort.
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          Wt / Std (g)
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          Total Feed (Kg)
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          Feed/B / Std (g)
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          FCR(w/o) / Std
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                          FCR(With)
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-left">
-                          Feed Company & Last Feed
-                        </th>
-                        <th className="border border-slate-300 px-2.5 py-1.5 text-left">
-                          Remarks
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {batch.reports.map((r: any, i: number) => {
-                        const d = calcAgeDays(batch.hatchDate, r.visit_date);
-                        const std = getMeatStd(batch.category, d);
-                        const tB = Number(batch.tBirds || 0);
-                        const fGm =
-                          r.feed_gm_b ||
-                          (tB > 0
-                            ? (
-                                (Number(r.feed_consumption_kg || 0) * 1000) /
-                                tB
-                              ).toFixed(1)
-                            : "-");
-                        return (
-                          <tr key={i} className="hover:bg-slate-50 leading-tight">
-                            <td className="border border-slate-300 px-2.5 py-1">
-                              {r.visit_date}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center font-bold">
-                              {d}d
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center">
-                              {r.mortality}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center">
-                              <b>{r.weight}</b> / {std?.weight || "-"}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center">
-                              {r.feed_consumption_kg}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center">
-                              <b>{fGm}</b> / {std?.feed_intake || "-"}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center font-bold text-blue-700">
-                              {r.fcr_w_out_m} / {std?.fcr || "-"}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1 text-center">
-                              {r.fcr_with_m}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1">
-                              {r.feed_mill || "-"}{" "}
-                              {r.feed ? `(Last Feed: ${r.feed})` : ""}
-                            </td>
-                            <td className="border border-slate-300 px-2.5 py-1">
-                              {getRemarkText(r) || "-"}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            </div>
-          ))}
+                                .join(" / ") || "-"
+                            : "-"}
+                        </td>
+                      )}
+                      <td className="border border-slate-300 px-2.5 py-1">
+                        {getRemarkText(r) || "-"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

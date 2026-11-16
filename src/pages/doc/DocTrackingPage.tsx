@@ -4,6 +4,7 @@ import ExcelJS from "exceljs";
 import { supabase } from "../../lib/supabase";
 import { canEditRecord, canAddReport } from "../../utils/accessControl";
 import LocationPicker from "../../components/maps/LocationPicker";
+import SearchableSelect from "../../components/common/SearchableSelect";
 import {
   FaFileUpload,
   FaFileExcel,
@@ -393,6 +394,12 @@ interface SubAgentRecord {
   id: number;
   sub_agent_name: string;
   agent_id: number;
+  latitude?: number | null;
+  longitude?: number | null;
+  // A sub-agent works in its OWN upazila/company, not necessarily its
+  // mother agent's — the "Select from others" filters use these first.
+  upazila?: string | null;
+  company_id?: number | string | null;
 }
 
 interface FarmerRecord {
@@ -433,6 +440,7 @@ let cachedPageState: {
   userName: string;
   userRole: string;
   assignedUpazilas: string[];
+  assignedCategories: string[];
   agents: DocAgent[];
   supplies: DocSupply[];
   trackings: DocTracking[];
@@ -470,7 +478,9 @@ export default function DocTrackingPage() {
   const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>(
     cachedPageState?.assignedUpazilas || []
   );
-  const [assignedCategories, setAssignedCategories] = useState<string[]>([]);
+  const [assignedCategories, setAssignedCategories] = useState<string[]>(
+    cachedPageState?.assignedCategories || []
+  );
 
   const [agents, setAgents] = useState<DocAgent[]>(
     cachedPageState?.agents || []
@@ -763,7 +773,7 @@ export default function DocTrackingPage() {
       setAssignedUpazilas(uUpazilas);
       setAssignedCategories(uCats);
 
-      await loadAllData(role, uUpazilas, uid, uName);
+      await loadAllData(role, uUpazilas, uid, uName, uCats);
     } catch (err: any) {
       setErrorMsg(err?.message || "Failed to initialize page.");
     } finally {
@@ -775,7 +785,8 @@ export default function DocTrackingPage() {
     role = userRole,
     uUpazilas = assignedUpazilas,
     uid = currentUserId,
-    uName = currentUserName
+    uName = currentUserName,
+    uCats = assignedCategories
   ) {
     const isFullAccess = role === "super_admin" || role === "manager";
 
@@ -784,7 +795,7 @@ export default function DocTrackingPage() {
       { data: faData },
       { data: frmData, error: frmErr },
       { data: compData },
-      { data: subAgData },
+      { data: subAgData, error: subAgErr },
     ] = await Promise.all([
       supabase
         .from("users")
@@ -806,7 +817,11 @@ export default function DocTrackingPage() {
         .order("company_name"),
       // sub_agents table may not exist yet (migration not run) —
       // data is null then and the list stays empty.
-      supabase.from("sub_agents").select("id, sub_agent_name, agent_id"),
+      supabase
+        .from("sub_agents")
+        .select(
+          "id, sub_agent_name, agent_id, latitude, longitude, upazila, company_id"
+        ),
     ]);
 
     // If the sub_agent_id column does not exist yet (migration not run),
@@ -828,6 +843,16 @@ export default function DocTrackingPage() {
         )
         .order("farmer_name");
       frmRows = retry.data;
+    }
+
+    // Sub-agents may not have latitude/longitude columns yet (older DB) —
+    // retry without them so the sub-agent list never breaks.
+    let subAgRows: any[] | null = subAgData;
+    if (!subAgRows && subAgErr) {
+      const retry = await supabase
+        .from("sub_agents")
+        .select("id, sub_agent_name, agent_id");
+      subAgRows = retry.data;
     }
 
     const parsedOfficers: OfficerRecord[] = (usersData || []).map((u: any) => ({
@@ -981,12 +1006,13 @@ export default function DocTrackingPage() {
       userName: uName,
       userRole: role,
       assignedUpazilas: uUpazilas,
+      assignedCategories: uCats,
       agents: loadedAgents,
       supplies: loadedSupplies,
       trackings: loadedTrackings,
       officers: parsedOfficers,
       feedAgents: (faData as any[]) || [],
-      subAgents: (subAgData as any[]) || [],
+      subAgents: (subAgRows as any[]) || [],
       farmersList: farmersWithSheds,
       companiesList: loadedComps,
       companyNames: loadedCompNames,
@@ -2190,7 +2216,7 @@ export default function DocTrackingPage() {
           const visitAgentId =
             existingFarmerRec?.agent_id ||
             (farmerEntryMode === "other_agent" && otherAgentId
-              ? Number(otherAgentId)
+              ? Number(resolveOtherAgentId())
               : shouldSaveFarmer && newFarmerForm.agent_id
               ? Number(newFarmerForm.agent_id)
               : feedAgentFromTarget);
@@ -3265,12 +3291,80 @@ export default function DocTrackingPage() {
     return true;
   });
 
-  const otherAgentFarmersList = farmersList.filter(
-    (f) => otherAgentId && String(f.agent_id) === String(otherAgentId)
-  );
+  // Sub-agents in the same dropdown: a sub-agent filters by its OWN
+  // upazila/company first — a sub-agent works in its own upazila, not
+  // necessarily its mother agent's. The parent agent is only the
+  // fallback when the sub-agent's own field is empty.
+  const otherSubAgentsOptions = subAgents.filter((s) => {
+    const parent = feedAgents.find(
+      (a) => String(a.id) === String(s.agent_id)
+    );
+    if (!parent) return false;
+    if (
+      currentCollaboratedAgentId &&
+      Number(parent.id) === Number(currentCollaboratedAgentId)
+    ) {
+      return false;
+    }
+    if (otherCompanyId) {
+      if (s.company_id) {
+        if (String(s.company_id) !== String(otherCompanyId)) return false;
+      } else {
+        const ids = getAgentCompanyIds(parent);
+        if (ids.length > 0 && !ids.includes(String(otherCompanyId))) {
+          return false;
+        }
+      }
+    }
+    const sUpazila = s.upazila || parent.upazila;
+    if (otherUpazila && sUpazila && sUpazila !== otherUpazila) {
+      return false;
+    }
+    return true;
+  });
 
-  const allFeedUpazilas = Array.from(
-    new Set(feedAgents.map((a) => a.upazila).filter(Boolean))
+  // Combined dropdown options: agents use their plain id, sub-agents use
+  // a "sub-<id>" value so the farmer list can tell them apart.
+  const otherAgentSelectOptions = [
+    ...otherAgentsOptions.map((a) => ({
+      value: String(a.id),
+      label: `${a.agent_name} (${a.upazila || "-"})`,
+    })),
+    ...otherSubAgentsOptions.map((s) => ({
+      value: `sub-${s.id}`,
+      label: getSubAgentOptionLabel(s),
+    })),
+  ];
+
+  // "sub-<id>" = a sub-agent; farmers/vet_visits keep agent_id = the
+  // sub-agent's parent agent, so resolve to the parent id.
+  function resolveOtherAgentId(): string {
+    if (!otherAgentId) return "";
+    if (!otherAgentId.startsWith("sub-")) return otherAgentId;
+    const parent = subAgentById[otherAgentId.slice(4)];
+    return parent ? String(parent.agent_id) : "";
+  }
+
+  const otherAgentFarmersList = farmersList.filter((f) => {
+    if (!otherAgentId) return false;
+    if (otherAgentId.startsWith("sub-")) {
+      return String(f.sub_agent_id) === otherAgentId.slice(4);
+    }
+    return String(f.agent_id) === String(otherAgentId);
+  });
+
+  // Upazila options: agents' upazilas + sub-agents' OWN upazilas, so a
+  // sub-agent's upazila is selectable even when no feed agent works there.
+  // Typed string[] with a type-guard filter: a sub-agent's upazila is
+  // optional (string | null), and without the guard the dropdown options
+  // would carry a possibly-null value (red mark in the editor).
+  const allFeedUpazilas: string[] = Array.from(
+    new Set(
+      [
+        ...feedAgents.map((a) => a.upazila),
+        ...subAgents.map((s) => s.upazila),
+      ].filter((u): u is string => Boolean(u))
+    )
   ).sort();
 
   function agBadge(v?: string) {
@@ -3332,14 +3426,24 @@ export default function DocTrackingPage() {
     (d) => d.name === newFarmerForm.district
   );
 
-  // Map picker centre: the farmer's (parent) agent first — in Sub Agent
-  // mode agent_id already holds the sub-agent's parent agent. Falls back
-  // to upazila/district when the agent has no lat/lon.
+  // Map picker centre: in Sub Agent mode centre on the sub-agent's
+  // lat/lon first (older sub-agents may have none — fall back to the
+  // parent agent). In Agent mode agent_id already holds the agent.
+  // Falls back to upazila/district when neither has lat/lon.
   const newFarmerAgent = newFarmerForm.agent_id
     ? feedAgents.find((a) => String(a.id) === String(newFarmerForm.agent_id))
     : null;
+  const newFarmerSubAgent =
+    newFarmerForm.assign_to === "sub" && newFarmerForm.sub_agent_id
+      ? subAgentById[String(newFarmerForm.sub_agent_id)] || null
+      : null;
   const newFarmerAgentCenter: [number, number] | null =
-    newFarmerAgent?.latitude && newFarmerAgent?.longitude
+    newFarmerSubAgent?.latitude && newFarmerSubAgent?.longitude
+      ? [
+          Number(newFarmerSubAgent.latitude),
+          Number(newFarmerSubAgent.longitude),
+        ]
+      : newFarmerAgent?.latitude && newFarmerAgent?.longitude
       ? [Number(newFarmerAgent.latitude), Number(newFarmerAgent.longitude)]
       : null;
 
@@ -4228,77 +4332,70 @@ export default function DocTrackingPage() {
                     {/* Compact Filters for "Select from others agent" */}
                     {farmerEntryMode === "other_agent" && (
                       <div className="grid grid-cols-2 gap-1.5 bg-blue-50/60 border border-blue-200 rounded-lg p-2 ml-4 text-[11px]">
-                        <select
+                        <SearchableSelect
                           value={otherCompanyId}
-                          onChange={(e) => {
-                            setOtherCompanyId(e.target.value);
+                          onChange={(v) => {
+                            setOtherCompanyId(v);
                             setOtherAgentId("");
                             setSelectedFarmerId("");
                           }}
-                          className="border border-slate-300 rounded px-1.5 py-1 bg-white outline-none"
-                        >
-                          <option value="">All Companies</option>
-                          {companiesList.map((c) => (
-                            <option key={c.id} value={String(c.id)}>
-                              {c.company_name}
-                            </option>
-                          ))}
-                        </select>
+                          placeholder="All Companies"
+                          options={companiesList.map((c) => ({
+                            value: String(c.id),
+                            label: c.company_name,
+                          }))}
+                        />
 
-                        <select
+                        <SearchableSelect
                           value={otherUpazila}
-                          onChange={(e) => {
-                            setOtherUpazila(e.target.value);
+                          onChange={(v) => {
+                            setOtherUpazila(v);
                             setOtherAgentId("");
                             setSelectedFarmerId("");
                           }}
-                          className="border border-slate-300 rounded px-1.5 py-1 bg-white outline-none"
-                        >
-                          <option value="">All Upazilas</option>
-                          {allFeedUpazilas.map((u) => (
-                            <option key={u} value={u}>
-                              {u}
-                            </option>
-                          ))}
-                        </select>
+                          placeholder="All Upazilas"
+                          options={allFeedUpazilas.map((u) => ({
+                            value: u,
+                            label: u,
+                          }))}
+                        />
 
-                        <select
+                        <SearchableSelect
+                          className="col-span-2 font-semibold"
                           value={otherAgentId}
-                          onChange={(e) => {
-                            setOtherAgentId(e.target.value);
+                          onChange={(v) => {
+                            setOtherAgentId(v);
                             setSelectedFarmerId("");
                           }}
-                          className="col-span-2 border border-slate-300 rounded px-1.5 py-1 bg-white outline-none font-semibold"
-                        >
-                          <option value="">
-                            -- Select Other Agent ({otherAgentsOptions.length}) --
-                          </option>
-                          {otherAgentsOptions.map((a) => (
-                            <option key={a.id} value={String(a.id)}>
-                              {a.agent_name} ({a.upazila || "-"})
-                            </option>
-                          ))}
-                        </select>
+                          placeholder={`-- Select Other Agent (${otherAgentSelectOptions.length}) --`}
+                          options={otherAgentSelectOptions}
+                        />
 
-                        <select
-                          value={selectedFarmerId}
-                          disabled={!otherAgentId}
-                          onChange={(e) =>
-                            handleSelectFarmerFromDropdown(e.target.value)
-                          }
-                          className="col-span-2 border border-blue-300 rounded px-1.5 py-1 bg-white outline-none font-semibold text-blue-900 disabled:bg-slate-100"
+                        {/* SearchableSelect has no disabled prop — grey out +
+                            block clicks with the wrapper when no agent is
+                            picked (same behaviour as the old disabled select). */}
+                        <div
+                          className={`col-span-2 ${
+                            !otherAgentId
+                              ? "pointer-events-none opacity-50"
+                              : ""
+                          }`}
                         >
-                          <option value="">
-                            -- Select Farmer ({otherAgentFarmersList.length}) --
-                          </option>
-                          {otherAgentFarmersList.map((f) => (
-                            <option key={f.id} value={String(f.id)}>
-                              {f.farmer_name}
-                              {f.village ? ` - ${f.village}` : ""}
-                              {f.mobile ? ` (${f.mobile})` : ""}
-                            </option>
-                          ))}
-                        </select>
+                          <SearchableSelect
+                            className="font-semibold"
+                            value={selectedFarmerId}
+                            onChange={(v) =>
+                              handleSelectFarmerFromDropdown(v)
+                            }
+                            placeholder={`-- Select Farmer (${otherAgentFarmersList.length}) --`}
+                            options={otherAgentFarmersList.map((f) => ({
+                              value: String(f.id),
+                              label: `${f.farmer_name}${
+                                f.village ? ` - ${f.village}` : ""
+                              }${f.mobile ? ` (${f.mobile})` : ""}`,
+                            }))}
+                          />
+                        </div>
                       </div>
                     )}
 

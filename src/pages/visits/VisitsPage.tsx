@@ -802,6 +802,7 @@ export default function VetVisitsPage() {
   const [statusFarmers, setStatusFarmers] = useState<any[]>([]);
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
   const [focusVisitId, setFocusVisitId] = useState<string | null>(null);
+  const [focusFarmerId, setFocusFarmerId] = useState<string | null>(null);
 
   const [visitReportMeta, setVisitReportMeta] = useState<
     Record<string, { count: number; lastDate: string }>
@@ -1025,7 +1026,8 @@ export default function VetVisitsPage() {
   useEffect(() => {
     if (companyInitRef.current || companies.length === 0) return;
     companyInitRef.current = true;
-    const hasFocus = new URLSearchParams(location.search).get("focus");
+    const focusParams = new URLSearchParams(location.search);
+    const hasFocus = focusParams.get("focus") || focusParams.get("focusFarmer");
     if (hasFocus) return;
     const nourish = companies.find((c) =>
       c.company_name?.toLowerCase().includes("nourish")
@@ -1034,9 +1036,12 @@ export default function VetVisitsPage() {
   }, [companies, location.search]);
 
   useEffect(() => {
-    const fid = new URLSearchParams(location.search).get("focus");
-    if (!fid) return;
-    setFocusVisitId(fid);
+    const focusParams = new URLSearchParams(location.search);
+    const fid = focusParams.get("focus");
+    const farmerFid = focusParams.get("focusFarmer");
+    if (!fid && !farmerFid) return;
+    if (fid) setFocusVisitId(fid);
+    if (farmerFid) setFocusFarmerId(farmerFid);
     setSelectedCompany("all");
     setSelectedUpazila("all");
     setSelectedAgent("all");
@@ -1046,15 +1051,19 @@ export default function VetVisitsPage() {
   }, [location.search]);
 
   useEffect(() => {
-    if (!focusVisitId || _loading) return;
+    if ((!focusVisitId && !focusFarmerId) || _loading) return;
     const t = setTimeout(() => {
       const el =
-        document.getElementById("after-sale-btn-" + focusVisitId) ||
-        document.getElementById("visit-row-" + focusVisitId);
+        (focusVisitId &&
+          (document.getElementById("after-sale-btn-" + focusVisitId) ||
+            document.getElementById("visit-row-" + focusVisitId))) ||
+        (focusFarmerId &&
+          document.querySelector(`[data-farmer-id="${focusFarmerId}"]`)) ||
+        null;
       el?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 400);
     return () => clearTimeout(t);
-  }, [focusVisitId, statusFarmers, _loading]);
+  }, [focusVisitId, focusFarmerId, statusFarmers, _loading]);
 
   const selectedFormDistrict = geoDistricts.find(
     (d) => d.name === farmerForm.district
@@ -1087,22 +1096,29 @@ export default function VetVisitsPage() {
     (u) => u.name === farmerForm.upazila
   );
 
-  // Map picker centre: the farmer's agent first (farmers cluster around
-  // their agent); falls back to upazila/district when the agent has no lat/lon.
+  // Map picker centre: in Sub Agent mode centre on the sub-agent
+  // (farmers cluster around their sub-agent); otherwise the parent
+  // agent; falls back to upazila/district when neither has lat/lon.
+  const subAgentById: Record<string, any> = {};
+  subAgents.forEach((s: any) => {
+    subAgentById[String(s.id)] = s;
+  });
   const formAgent = farmerForm.agent_id
     ? allAgents.find((a: any) => String(a.id) === String(farmerForm.agent_id))
     : null;
+  const formSubAgent =
+    farmerForm.assign_to === "sub" && farmerForm.sub_agent_id
+      ? subAgentById[String(farmerForm.sub_agent_id)]
+      : null;
   const formAgentCenter: [number, number] | null =
-    formAgent?.latitude && formAgent?.longitude
+    formSubAgent?.latitude && formSubAgent?.longitude
+      ? [Number(formSubAgent.latitude), Number(formSubAgent.longitude)]
+      : formAgent?.latitude && formAgent?.longitude
       ? [Number(formAgent.latitude), Number(formAgent.longitude)]
       : null;
 
   // Sub-agents: a farmer always keeps agent_id = the parent agent;
   // sub_agent_id is optional (empty = directly under the agent).
-  const subAgentById: Record<string, any> = {};
-  subAgents.forEach((s: any) => {
-    subAgentById[String(s.id)] = s;
-  });
   // Sub-agent option label: "SubAgentName (ParentAgentName)" so the
   // parent agent is visible in the all-sub-agents dropdown.
   function getSubAgentOptionLabel(s: any): string {
@@ -1671,7 +1687,9 @@ export default function VetVisitsPage() {
           .select("id, vet_visit_id, farmer_id, visit_date"),
         // sub_agents table may not exist yet (migration not run) —
         // data is null then and the list stays empty.
-        supabase.from("sub_agents").select("id, sub_agent_name, agent_id"),
+        supabase
+          .from("sub_agents")
+          .select("id, sub_agent_name, agent_id, latitude, longitude"),
       ]);
       if (visitErr) throw visitErr;
 
@@ -2331,6 +2349,16 @@ export default function VetVisitsPage() {
     return `*${hClean} ${catLabel} chick and ${fClean} ${catLabel} feed Performance Report:*`;
   }
 
+  // WhatsApp Agent line: a farmer under a sub-agent shows the sub-agent
+  // ("sub-agent : Name") instead of the mother agent; direct-agent
+  // farmers show the agent name as before. visit.farmers is the full
+  // farmer row (farmers select "*"), so sub_agent_id is available.
+  function getWhatsAppAgentLine(farmer: any, agent: any): string {
+    const subId = farmer?.sub_agent_id ? String(farmer.sub_agent_id) : "";
+    const subName = subId ? subAgentById[subId]?.sub_agent_name : "";
+    return subName ? `sub-agent : ${subName}` : agent?.agent_name || "-";
+  }
+
   function generateBroilerWhatsAppText(
     visit: any,
     rep: any,
@@ -2433,7 +2461,7 @@ export default function VetVisitsPage() {
 ${headerTitle}
 Visit Date: ${formatDmy(vDate)}
 
-Agent: ${agent.agent_name || "-"}
+Agent: ${getWhatsAppAgentLine(farmer, agent)}
 Farmer Name - ${actualFarmerName}
 Farm Address - ${[farmer.village, farmer.upazila].filter(Boolean).join(", ")}
 --------------------------------------------
@@ -2533,7 +2561,7 @@ ${currentUserProfile.region}`;
 ${headerTitle}
 Visit Date: ${formatDmy(vDate)}
 
-Agent Name: ${agent.agent_name || "-"}
+Agent Name: ${getWhatsAppAgentLine(farmer, agent)}
 Farmer: ${actualFarmerName}
 Address: ${[farmer.village, farmer.upazila].filter(Boolean).join(", ")}
 
@@ -2542,7 +2570,6 @@ Breed: ${breedName}
 H.Date: ${formatDmy(visit.hatch_date)}
 
 T.B.: ${displayBirds}
-Mortality: ${mortVal} pcs
 Age: ${ageWks} weeks
 
 Weight: ${rep.b_weight_g || 0} gm
@@ -2561,6 +2588,7 @@ Feed: ${rep.feed_company || "-"}
 Type: ${rep.feed_type || "-"}
 MFG: ${rep.pro_date ? formatDmy(rep.pro_date) : "-"}
 Batch No.: ${rep.batch_no || "-"}
+Disease: ${rep.disease || "-"}
 ${remarksLine}
 Thanks.
 ${currentUserProfile.fullName}
@@ -4194,6 +4222,59 @@ ${currentUserProfile.region}`;
     return "";
   })();
 
+  // History modal header: always show whose batch + which shed.
+  // displayBatchName can be a bare stored "Batch 1" (no farmer name),
+  // and the shed pill used to hide when the shed name equalled the
+  // farmer name, so the header showed only "Batch 1 (Broiler • Running)".
+  const histFarmerName =
+    selectedHistoryVisit?.farmers?.farmer_name ||
+    statusFarmers.find(
+      (f: any) => String(f.id) === String(selectedHistoryVisit?.farmer_id)
+    )?.farmer_name ||
+    "Unknown Farmer";
+
+  // Short batch label without the farmer-name prefix ("Raju Batch 1" ->
+  // "Batch 1"; a bare "Batch 1" stays as-is).
+  function getHistoryBatchShort(batch: any, farmerName: string): string {
+    const raw = String(
+      batch?.batch_label || batch?.displayBatchName || ""
+    ).trim();
+    if (raw && farmerName && farmerName !== "Unknown Farmer") {
+      const lowerRaw = raw.toLowerCase();
+      const lowerFarmer = farmerName.toLowerCase();
+      if (lowerRaw.startsWith(lowerFarmer)) {
+        const rest = raw
+          .slice(farmerName.length)
+          .replace(/^[\s-]+/, "")
+          .trim();
+        if (rest) return rest;
+      }
+    }
+    if (raw) return raw;
+    return batch?.seqNum ? `Batch ${batch.seqNum}` : "Batch";
+  }
+
+  const histBatchShort = selectedHistoryVisit
+    ? getHistoryBatchShort(selectedHistoryVisit, histFarmerName)
+    : "Batch";
+
+  // Short shed label ("Raju - Shed 1" -> "Shed 1"); empty for a single
+  // unnamed shed, where the farmer name itself is the shed.
+  const histShedShort = (() => {
+    const disp = String(selectedHistoryVisit?.shedDisplayName || "").trim();
+    if (!disp || disp === histFarmerName) return "";
+    const lowerDisp = disp.toLowerCase();
+    const lowerFarmer = histFarmerName.toLowerCase();
+    if (lowerFarmer && lowerDisp.startsWith(lowerFarmer)) {
+      const rest = disp
+        .slice(histFarmerName.length)
+        .replace(/^[\s-]+/, "")
+        .trim();
+      if (rest) return rest;
+    }
+    return disp;
+  })();
+
   // Native File Save & Direct Open (Tries FileOpener first so Android shows "Open with" apps instead of social Share)
   async function saveBufferOrBlob(
     bufferOrBlob: ArrayBuffer | Blob,
@@ -5565,18 +5646,20 @@ ${currentUserProfile.region}`;
                 <div className="flex items-center gap-2">
                   <h2 className="font-bold text-xs sm:text-sm text-slate-800">
                     {agentGroup.isSubAgent ? (
-                      <>
-                        Sub Agent:{" "}
-                        <span className="text-emerald-700">
-                          {agentGroup.agentName}
-                        </span>{" "}
-                        <span className="text-[10px] font-semibold bg-white border border-slate-300 px-1.5 py-0.5 rounded text-slate-600">
-                          sub-ag
-                        </span>{" "}
-                        <span className="font-normal text-slate-600">
-                          ({agentGroup.parentAgentName})
+                      <span className="leading-tight">
+                        <span className="block">
+                          Sub Agent:{" "}
+                          <span className="text-emerald-700">
+                            {agentGroup.agentName}
+                          </span>{" "}
+                          <span className="text-[10px] font-semibold bg-white border border-slate-300 px-1.5 py-0.5 rounded text-slate-600">
+                            sub-ag
+                          </span>
                         </span>
-                      </>
+                        <span className="block text-[10px] font-normal text-slate-500">
+                          Agent: {agentGroup.parentAgentName}
+                        </span>
+                      </span>
                     ) : (
                       <>
                         Agent:{" "}
@@ -5676,10 +5759,6 @@ ${currentUserProfile.region}`;
                       const shedName = isBatch
                         ? getVisitShedDisplayName(visit, farmer)
                         : row.shedDisplayName || farmer.farmer_name || "N/A";
-                      const subAgentName = farmer?.sub_agent_id
-                        ? subAgentById[String(farmer.sub_agent_id)]
-                            ?.sub_agent_name || ""
-                        : "";
                       const isFocused =
                         isBatch && focusVisitId === String(visit.id);
                       const days = row.daysSinceSale ?? farmer.daysSinceSale;
@@ -5711,6 +5790,7 @@ ${currentUserProfile.region}`;
                       return (
                         <tr
                           key={row.key}
+                          data-farmer-id={farmer.id}
                           id={isBatch ? `visit-row-${visit.id}` : undefined}
                           className={`hover:bg-slate-50 leading-tight ${
                             isFocused ? "bg-yellow-50" : ""
@@ -5782,7 +5862,6 @@ ${currentUserProfile.region}`;
                           {/* 4. FARMER */}
                           <td className="border border-slate-300 px-2 py-1 font-bold text-slate-800 whitespace-nowrap">
                             <div>{shedName}</div>
-                            {subAgentName && (<div className="text-[10px] text-slate-400 leading-tight">sub-ag • {subAgentName}</div>)}
                             {tag && (
                               <div className="text-[10px] font-semibold text-emerald-700">
                                 {tag}
@@ -8788,23 +8867,19 @@ ${currentUserProfile.region}`;
                   History:
                 </h3>
                 <span className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-xs font-bold shadow-xs">
-                  {selectedHistoryVisit.displayBatchName ||
-                    selectedHistoryVisit.batch_label ||
-                    selectedHistoryVisit.farmers?.farmer_name}{" "}
-                  ({selectedHistoryVisit.category} •{" "}
+                  {histFarmerName} • {histBatchShort} (
+                  {selectedHistoryVisit.category} •{" "}
                   {selectedHistoryVisit.status === "Activated"
                     ? "Running"
                     : selectedHistoryVisit.status}
                   )
                 </span>
 
-                {selectedHistoryVisit.shedDisplayName &&
-                  selectedHistoryVisit.shedDisplayName !==
-                    (selectedHistoryVisit.farmers?.farmer_name || "") && (
-                    <span className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-300 text-slate-700 text-xs font-bold">
-                      {selectedHistoryVisit.shedDisplayName}
-                    </span>
-                  )}
+                {histShedShort && (
+                  <span className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-300 text-slate-700 text-xs font-bold">
+                    Shed: {histShedShort}
+                  </span>
+                )}
 
                 {otherHistoryBatches.length > 0 && (
                   <select
@@ -8820,17 +8895,23 @@ ${currentUserProfile.region}`;
                     <option value="">
                       Other Batches ({otherHistoryBatches.length}) ▾
                     </option>
-                    {otherHistoryBatches.map((b: any) => (
-                      <option key={b.id} value={String(b.id)}>
-                        {b.shedDisplayName &&
-                        b.shedDisplayName !== (b.farmers?.farmer_name || "")
-                          ? `${b.shedDisplayName} • `
-                          : ""}
-                        {b.displayBatchName || b.batch_label} — {b.category} (
-                        {b.status === "Activated" ? "Running" : b.status} •{" "}
-                        {b.hatch_date})
-                      </option>
-                    ))}
+                    {otherHistoryBatches.map((b: any) => {
+                      const bFarmer =
+                        b.farmers?.farmer_name || histFarmerName;
+                      const bPrefix =
+                        b.shedDisplayName &&
+                        b.shedDisplayName !== bFarmer
+                          ? b.shedDisplayName
+                          : bFarmer;
+                      return (
+                        <option key={b.id} value={String(b.id)}>
+                          {bPrefix} • {getHistoryBatchShort(b, bFarmer)} —{" "}
+                          {b.category} (
+                          {b.status === "Activated" ? "Running" : b.status} •{" "}
+                          {b.hatch_date})
+                        </option>
+                      );
+                    })}
                   </select>
                 )}
               </div>

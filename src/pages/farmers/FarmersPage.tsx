@@ -8,6 +8,7 @@ import {
   deleteFarmer,
 } from "../../services/farmerService";
 import { useAuth } from "../../context/AuthContext";
+import { useNavigate } from "react-router-dom";
 import {
   canEditRecord,
   canAddFarmer,
@@ -37,6 +38,7 @@ import {
   X,
   CheckCircle2,
   Navigation,
+  Stethoscope,
 } from "lucide-react";
 import ExcelJS from "exceljs";
 import { Filesystem, Directory } from "@capacitor/filesystem";
@@ -545,6 +547,7 @@ function shedFormToDb(shed: any, farmerId: number, farmerName: string, index: nu
 
 export default function FarmersPage() {
   const { role } = useAuth();
+  const navigate = useNavigate();
   const mapSectionRef = useRef<HTMLDivElement | null>(null);
 
   if (role === "viewer") {
@@ -812,12 +815,24 @@ export default function FarmersPage() {
     }
 
     // Sub-agents: direct query, no service import. If the table is
-    // missing, the sub-agent select/filter stay empty.
+    // missing, the sub-agent select/filter stay empty. latitude/longitude
+    // are fetched too (map picker centre); if those columns do not exist
+    // yet, fall back to the plain select so the list still loads.
     try {
-      const { data: subAgentData, error: subAgentErr } = await supabase
-        .from("sub_agents")
-        .select("id, sub_agent_name, agent_id");
-      if (!subAgentErr && subAgentData) setSubAgents(subAgentData as any[]);
+      let subAgentData: any[] | null = null;
+      {
+        const { data, error } = await supabase
+          .from("sub_agents")
+          .select("id, sub_agent_name, agent_id, latitude, longitude");
+        if (!error && data) subAgentData = data;
+      }
+      if (!subAgentData) {
+        const retry = await supabase
+          .from("sub_agents")
+          .select("id, sub_agent_name, agent_id");
+        if (!retry.error && retry.data) subAgentData = retry.data;
+      }
+      if (subAgentData) setSubAgents(subAgentData as any[]);
     } catch {
       // sub_agents table not created yet — no sub-agent options.
     }
@@ -1003,15 +1018,27 @@ export default function FarmersPage() {
 
   const selectedUpazila = upazilas.find((u) => u.name === form.upazila);
 
-  // Map picker centre: the farmer's agent first (farmers cluster around
-  // their agent); falls back to upazila/district when the agent has no lat/lon.
+  // Map picker centre: in Sub Agent mode centre on the sub-agent first
+  // (farmers cluster around their sub-agent); falls back to the parent
+  // agent, then upazila/district when neither has lat/lon.
   const formAgent = form.agent_id
     ? agents.find((a: any) => String(a.id) === String(form.agent_id))
     : null;
-  const formAgentCenter: [number, number] | null =
-    formAgent?.latitude && formAgent?.longitude
-      ? [Number(formAgent.latitude), Number(formAgent.longitude)]
+  const formSubAgent =
+    form.assign_to === "sub" && form.sub_agent_id
+      ? subAgents.find(
+          (s: any) => String(s.id) === String(form.sub_agent_id)
+        )
       : null;
+  const formSubAgentCenter: [number, number] | null =
+    formSubAgent?.latitude && formSubAgent?.longitude
+      ? [Number(formSubAgent.latitude), Number(formSubAgent.longitude)]
+      : null;
+  const formAgentCenter: [number, number] | null =
+    formSubAgentCenter ??
+    (formAgent?.latitude && formAgent?.longitude
+      ? [Number(formAgent.latitude), Number(formAgent.longitude)]
+      : null);
 
   useEffect(() => {
     async function loadUnions() {
@@ -1217,7 +1244,18 @@ export default function FarmersPage() {
       const updated = prevNeedsName
         ? prevSheds.map((s, i) => (i === 0 ? { ...s, shed_name: prevName } : s))
         : prevSheds;
-      return [...updated, { ...EMPTY_SHED_FORM, shed_name: `Shed ${newCount}` }];
+      return [
+        ...updated,
+        {
+          ...EMPTY_SHED_FORM,
+          shed_name: `Shed ${newCount}`,
+          // Sheds are poultry-only in the farmer form, and the stock
+          // inputs gate on farm_category — stamp it so a new shed shows
+          // them in Add mode too (not just in Edit, where the DB value
+          // already carries "Poultry").
+          farm_category: form.farm_category || "Poultry",
+        },
+      ];
     });
   }
 
@@ -3589,6 +3627,16 @@ export default function FarmersPage() {
                               >
                                 <MapPin size={11} /> Map
                               </button>
+                              <button
+                                onClick={() =>
+                                  navigate(`/visits?focusFarmer=${farmer.id}`)
+                                }
+                                title="Visit"
+                                aria-label="Visit"
+                                className="bg-violet-600 hover:bg-violet-700 text-white px-2 py-0.5 rounded text-[11px] font-semibold ml-1 inline-flex items-center gap-0.5"
+                              >
+                                <Stethoscope size={11} /> Visit
+                              </button>
                             </td>
                           </tr>
                         );
@@ -4252,7 +4300,13 @@ export default function FarmersPage() {
                     )}
                   </div>
 
-                  {shed.farm_category === "Poultry" && (
+                  {/* Poultry stock: gate on the farmer-level category too —
+                      a new shed starts from EMPTY_SHED_FORM with a blank
+                      farm_category, so gating on the shed alone hid these
+                      inputs in Add mode (Edit loads "Poultry" from the DB).
+                      This whole section only renders for Poultry farmers. */}
+                  {(shed.farm_category === "Poultry" ||
+                    form.farm_category === "Poultry") && (
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-2 bg-amber-50 border border-amber-200 rounded p-2.5">
                       {POULTRY_FIELDS.map((item) => (
                         <div key={item}>

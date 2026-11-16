@@ -27,6 +27,7 @@ import MapLayers from "../../components/maps/MapLayers";
 import {
   MapPin,
   Plus,
+  UserPlus,
   Search,
   RotateCcw,
   FileSpreadsheet,
@@ -125,6 +126,10 @@ L.Icon.Default.mergeOptions({
 const EMPTY_FORM = {
   company_id: "",
   agent_id: "",
+  // How the farmer is assigned: "agent" = directly under an agent,
+  // "sub" = under a sub-agent (agent_id then holds the sub-agent's parent).
+  assign_to: "agent",
+  sub_agent_id: "",
   farmer_name: "",
   mobile: "",
   village: "",
@@ -460,10 +465,11 @@ function getShedVisitStatus(
   else if (days !== null && days <= 60) status = "Active";
   else if (days !== null) status = "Inactive";
   else
+    // No visit history at all: a stored "Running" is stale (it survives
+    // when the running batch's visit row is deleted), so only a stored
+    // Active/Inactive is trusted — otherwise the shed is Active.
     status =
-      shed?.status === "Running" ||
-      shed?.status === "Active" ||
-      shed?.status === "Inactive"
+      shed?.status === "Active" || shed?.status === "Inactive"
         ? shed.status
         : "Active";
   return {
@@ -523,7 +529,6 @@ function isAgentNonExclusive(agent: any): boolean {
 }
 
 
-
 function shedFormToDb(shed: any, farmerId: number, farmerName: string, index: number, totalSheds: number = 1): any {
   const db: any = {
     farmer_id: farmerId,
@@ -552,7 +557,6 @@ export default function FarmersPage() {
   // created_by null are editable by area officers — the save stamps the
   // creator). Farmer add is NOT category-gated (rule 5). View / Map
   // stay open to everyone.
-  
   const canAddFarmerHere = canAddFarmer(role);
   const canEditFarmer = (farmer: any) =>
     canEditRecord(role, farmer?.created_by, currentUserId);
@@ -560,7 +564,7 @@ export default function FarmersPage() {
   const [currentUserId, setCurrentUserId] = useState("");
   const [currentUserName, setCurrentUserName] = useState("User");
   const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>([]);
-  const [_assignedCategories, setAssignedCategories] = useState<string[]>([]);
+  const [, setAssignedCategories] = useState<string[]>([]);
 
   const [farmers, setFarmers] = useState<any[]>([]);
   // vet_visits rows (for per-shed status: a shed with a Running visit
@@ -568,6 +572,7 @@ export default function FarmersPage() {
   const [visitRows, setVisitRows] = useState<any[]>([]);
   const [companies, setCompanies] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
+  const [subAgents, setSubAgents] = useState<any[]>([]);
 
   const [search, setSearch] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -580,7 +585,8 @@ export default function FarmersPage() {
   const [form, setForm] = useState({ ...EMPTY_FORM });
   const [formSheds, setFormSheds] = useState<any[]>([{ ...EMPTY_SHED_FORM }]);
   const [pickingShedIndex, setPickingShedIndex] = useState<number | null>(null);
-  const [_selectedShed, setSelectedShed] = useState<any>(null);
+  const [savingFarmer, setSavingFarmer] = useState(false);
+  const [, setSelectedShed] = useState<any>(null);
 
   const [pickerCenterOverride, setPickerCenterOverride] = useState<
     [number, number] | null
@@ -597,6 +603,7 @@ export default function FarmersPage() {
 
   const [companyFilter, setCompanyFilter] = useState("");
   const [agentFilter, setAgentFilter] = useState("");
+  const [subAgentFilter, setSubAgentFilter] = useState("");
   const [districtFilter, setDistrictFilter] = useState("");
   const [upazilaFilter, setUpazilaFilter] = useState("");
   const [unionFilter, setUnionFilter] = useState("");
@@ -734,6 +741,26 @@ export default function FarmersPage() {
     } catch {
       // created_by column not added yet — old rows stay editable.
     }
+    // Sub-agent link: attach sub_agent_id when the column exists (the
+    // farmer service may not select it). A missing column must not
+    // break the list — rows without one are direct under the agent.
+    try {
+      const { data: subAgentIdData, error: subAgentIdErr } = await supabase
+        .from("farmers")
+        .select("id, sub_agent_id");
+      if (!subAgentIdErr && subAgentIdData) {
+        const subAgentById: Record<string, any> = {};
+        (subAgentIdData as any[]).forEach((r: any) => {
+          subAgentById[String(r.id)] = r.sub_agent_id;
+        });
+        allFarmers.forEach((f: any) => {
+          if (f.sub_agent_id == null && subAgentById[String(f.id)] !== undefined)
+            f.sub_agent_id = subAgentById[String(f.id)];
+        });
+      }
+    } catch {
+      // sub_agent_id column not added yet — direct under agent.
+    }
 
     const allowedFarmers = isFullAccess
       ? allFarmers
@@ -782,6 +809,17 @@ export default function FarmersPage() {
       }
     } catch {
       // agent_companies table not created yet — single company_id fallback applies.
+    }
+
+    // Sub-agents: direct query, no service import. If the table is
+    // missing, the sub-agent select/filter stay empty.
+    try {
+      const { data: subAgentData, error: subAgentErr } = await supabase
+        .from("sub_agents")
+        .select("id, sub_agent_name, agent_id");
+      if (!subAgentErr && subAgentData) setSubAgents(subAgentData as any[]);
+    } catch {
+      // sub_agents table not created yet — no sub-agent options.
     }
 
     const allowedAgents = isFullAccess
@@ -834,6 +872,7 @@ export default function FarmersPage() {
   function clearFilters() {
     setCompanyFilter("");
     setAgentFilter("");
+    setSubAgentFilter("");
     setDistrictFilter(districts.length === 1 ? districts[0].name : "");
     setUpazilaFilter(
       !isFullAccess && assignedUpazilas.length === 1 ? assignedUpazilas[0] : ""
@@ -920,7 +959,7 @@ export default function FarmersPage() {
     setSelectedFarmerPosition([lat, lng]);
     setSelectedShed(targetShed);
     loadFarmerNotes(farmer.id);
-    Object.values(farmerMarkerRefs.current).forEach((m) => m?.closePopup());
+    Object.values(farmerMarkerRefs.current).forEach((m: any) => m?.closePopup());
     setTimeout(() => {
       mapSectionRef.current?.scrollIntoView({
         behavior: "smooth",
@@ -999,6 +1038,15 @@ export default function FarmersPage() {
       .filter(Boolean);
   }
 
+  // Sub-agent display name for a farmer ("" = direct under the agent).
+  function getSubAgentName(farmer: any): string {
+    if (!farmer?.sub_agent_id) return "";
+    const sa = subAgents.find(
+      (s: any) => String(s.id) === String(farmer.sub_agent_id)
+    );
+    return sa?.sub_agent_name || "";
+  }
+
   const formAvailableAgents = agents.filter((a: any) => {
     if (
       form.company_id &&
@@ -1012,6 +1060,17 @@ export default function FarmersPage() {
     }
     return true;
   });
+
+  // Sub-agent option label: "SubAgentName (ParentAgentName)" so the
+  // parent agent is visible in the all-sub-agents dropdown.
+  function getSubAgentOptionLabel(s: any): string {
+    const parent = agents.find(
+      (a: any) => String(a.id) === String(s.agent_id)
+    );
+    return parent?.agent_name
+      ? `${s.sub_agent_name} (${parent.agent_name})`
+      : s.sub_agent_name;
+  }
 
   useEffect(() => {
     async function loadFilterUpazilas() {
@@ -1110,6 +1169,10 @@ export default function FarmersPage() {
     return true;
   });
 
+  // Filter sub-agent options: ALL sub-agents, independent of the
+  // selected agent filter (Agent + Sub Agent filters combine as AND).
+  const availableFilterSubAgents = subAgents;
+
   function updateShedField(index: number, field: string, value: any) {
     setFormSheds((prev) =>
       prev.map((s, i) => (i === index ? { ...s, [field]: value } : s))
@@ -1129,7 +1192,7 @@ export default function FarmersPage() {
     let prevName = "";
     if (prevNeedsName) {
       const answer = window.prompt(
-        "Enter name for the shed or will be shed 1:",
+        "Name the previous shed (leave empty for 'Shed 1'):",
         ""
       );
       prevName =
@@ -1180,6 +1243,9 @@ export default function FarmersPage() {
   }
 
   async function handleSave() {
+    if (savingFarmer) return;
+    setSavingFarmer(true);
+    try {
     // Permission guard (buttons are hidden too — this is the backstop
     // for the save itself). Farmer add is NOT category-gated (rule 5).
     if (editingId) {
@@ -1194,18 +1260,41 @@ export default function FarmersPage() {
       alert("You do not have permission to add farmers.");
       return;
     }
+    // Assignment: Agent mode needs an agent, Sub Agent mode needs a
+    // sub-agent (its parent agent is derived and stored in agent_id).
+    const assignOk =
+      form.assign_to === "sub" ? !!form.sub_agent_id : !!form.agent_id;
     if (
       !form.company_id ||
-      !form.agent_id ||
+      !assignOk ||
       !form.farmer_name.trim() ||
+      !form.farm_category ||
       !form.district ||
       !form.upazila
     ) {
-      alert("Company, District, Upazila, Agent and Farmer Name are required");
+      alert(
+        form.assign_to === "sub"
+          ? "Company, District, Upazila, Sub Agent, Farmer Name and Farm Category are required"
+          : "Company, District, Upazila, Agent, Farmer Name and Farm Category are required"
+      );
       return;
     }
-    const sheds = formSheds && formSheds.length > 0 ? formSheds : [{ ...EMPTY_SHED_FORM }];
-    if (sheds.some((s: any) => !s.farm_category)) {
+    // Sheds are poultry-only: Fish/Cattle farmers save without sheds
+    // (formSheds[0] still holds their location/stock for the farmer row).
+    const isPoultry = form.farm_category === "Poultry";
+    const sheds = (
+      formSheds && formSheds.length > 0
+        ? formSheds
+        : [{ ...EMPTY_SHED_FORM }]
+    ).map((s: any) => ({ ...s }));
+    if (isPoultry) {
+      sheds.forEach((s: any) => {
+        s.farm_category = "Poultry";
+      });
+    } else if (sheds[0]) {
+      sheds[0].farm_category = form.farm_category;
+    }
+    if (isPoultry && sheds.some((s: any) => !s.farm_category)) {
       alert("Every shed must have a Farm Category.");
       return;
     }
@@ -1219,6 +1308,10 @@ export default function FarmersPage() {
     STOCK_FIELDS.forEach((k) => {
       summedStock[k] = shedsWithNames.reduce((sum, s: any) => sum + Number(s[k] || 0), 0);
     });
+
+    // Sub-agent link: null = direct under the agent (no sub-agent).
+    // sub_agents.id is a bigint, same as agents.id — send a number.
+    const subAgentValue = form.sub_agent_id ? Number(form.sub_agent_id) : null;
 
     const payload: any = {
       ...form,
@@ -1236,17 +1329,39 @@ export default function FarmersPage() {
       feed_type: firstShed.feed_type || "",
       ...summedStock,
     };
+    // sub_agent_id rides separately from the base payload so a
+    // pre-migration retry can drop it cleanly (see save below).
+    delete payload.sub_agent_id;
+    const payloadWithSubAgent: any = {
+      ...payload,
+      sub_agent_id: subAgentValue,
+    };
 
     let savedFarmer: any = null;
     try {
       if (editingId) {
-        savedFarmer = await updateFarmer(editingId, payload);
+        savedFarmer = await updateFarmer(editingId, payloadWithSubAgent);
       } else {
-        savedFarmer = await createFarmer(payload);
+        savedFarmer = await createFarmer(payloadWithSubAgent);
       }
     } catch (err: any) {
-      alert(err?.message || "Failed to save farmer.");
-      return;
+      // The sub_agent_id column may not exist yet (migration not run)
+      // — save without it instead of failing the whole save.
+      if (String(err?.message || "").includes("sub_agent_id")) {
+        try {
+          if (editingId) {
+            savedFarmer = await updateFarmer(editingId, payload);
+          } else {
+            savedFarmer = await createFarmer(payload);
+          }
+        } catch (retryErr: any) {
+          alert(retryErr?.message || "Failed to save farmer.");
+          return;
+        }
+      } else {
+        alert(err?.message || "Failed to save farmer.");
+        return;
+      }
     }
 
     // Resolve the farmer id (farmerService may or may not return the row).
@@ -1300,8 +1415,24 @@ export default function FarmersPage() {
       }
     }
 
-    // Save sheds (child table). Farmer save is NOT lost if this fails.
+    // Sub-agent link (best effort): stamp sub_agent_id directly as
+    // well, in case the farmer service drops unknown fields. A
+    // missing column (migration not run yet) must not break the save.
     if (farmerId) {
+      try {
+        await supabase
+          .from("farmers")
+          .update({ sub_agent_id: subAgentValue })
+          .eq("id", farmerId);
+      } catch {
+        // sub_agent_id column not added yet.
+      }
+    }
+
+    // Save sheds (child table). Farmer save is NOT lost if this fails.
+    // Sheds are poultry-only: other categories skip this block entirely
+    // (their existing shed rows, if any, stay untouched in the DB).
+    if (farmerId && isPoultry) {
       try {
         const { data: existingSheds, error: existingErr } = await supabase
           .from("farmer_sheds")
@@ -1370,6 +1501,9 @@ export default function FarmersPage() {
     setPickingShedIndex(null);
     setShowForm(false);
     loadData();
+    } finally {
+      setSavingFarmer(false);
+    }
   }
 
   async function handleDelete(id: number) {
@@ -1383,8 +1517,6 @@ export default function FarmersPage() {
     setSelectedFarmer(null);
     loadData();
   }
-
- 
 
   // Universal Location Helper (Works on both Android Native App & Browser)
   async function getDeviceCoordinates(): Promise<{ lat: number; lng: number }> {
@@ -1487,6 +1619,9 @@ export default function FarmersPage() {
         companyFilter === "" || String(f.company_id) === companyFilter;
       const matchAgent =
         agentFilter === "" || String(f.agent_id) === agentFilter;
+      const matchSubAgent =
+        subAgentFilter === "" ||
+        String(f.sub_agent_id || "") === subAgentFilter;
       const matchDistrict =
         districtFilter === "" || f.district === districtFilter;
       const matchUpazila =
@@ -1502,6 +1637,7 @@ export default function FarmersPage() {
         matchSearch &&
         matchCompany &&
         matchAgent &&
+        matchSubAgent &&
         matchDistrict &&
         matchUpazila &&
         matchUnion &&
@@ -1518,11 +1654,25 @@ export default function FarmersPage() {
 
   const agentGroupedFarmers = Object.values(
     filteredFarmers.reduce((acc: Record<string, any>, farmer: any) => {
-      const key = String(farmer.agent_id || "unassigned");
+      // A farmer under a sub-agent forms that sub-agent's own group
+      // (key "sub-<id>"); a farmer directly under an agent stays in
+      // the agent's group (key "agent-<id>"). The Sl serial restarts
+      // per group, so it now restarts per sub-agent group too.
+      const subId = farmer.sub_agent_id ? String(farmer.sub_agent_id) : "";
+      const key = subId
+        ? `sub-${subId}`
+        : `agent-${String(farmer.agent_id || "unassigned")}`;
       if (!acc[key]) {
+        const subName = subId ? getSubAgentName(farmer) : "";
         acc[key] = {
           agentId: key,
-          agentName: farmer.agents?.agent_name || "Unassigned Agent",
+          agentName: subId
+            ? subName || "Sub Agent"
+            : farmer.agents?.agent_name || "Unassigned Agent",
+          parentAgentName: subId ? farmer.agents?.agent_name || "" : "",
+          parentAgentId: String(farmer.agent_id || ""),
+          isSubAgent: !!subId,
+          subAgentId: subId,
           companyName: farmer.companies?.company_name || "-",
           upazila: farmer.upazila || "",
           farmers: [],
@@ -1532,6 +1682,50 @@ export default function FarmersPage() {
       return acc;
     }, {})
   );
+
+  // "+" on a group header: open the add-farmer form prefilled for that
+  // group — a sub-agent group preselects the sub-agent (with its parent
+  // agent), an agent group preselects the agent directly.
+  function openAddFarmerUnderGroup(group: any) {
+    if (!canAddFarmerHere) return;
+    const first = group.farmers?.[0];
+    const nourishComp =
+      companies.find((c) =>
+        c.company_name?.toLowerCase().includes("nourish")
+      ) || companies[0];
+    const defCompId = first?.company_id
+      ? String(first.company_id)
+      : nourishComp
+        ? String(nourishComp.id)
+        : "";
+    const sortedDists = [...districts].sort((a, b) =>
+      (a.name || "").localeCompare(b.name || "")
+    );
+    const defDist =
+      first?.district ||
+      (sortedDists.length > 0 ? sortedDists[0].name : "");
+    const defUpa =
+      first?.upazila ||
+      (!isFullAccess && assignedUpazilas.length > 0
+        ? [...assignedUpazilas].sort()[0]
+        : "");
+
+    setEditingId(null);
+    setForm({
+      ...EMPTY_FORM,
+      company_id: defCompId,
+      district: defDist,
+      upazila: defUpa,
+      // Sub-agent group: Sub Agent mode with that sub-agent preselected
+      // (agent_id = its parent agent). Agent group: Agent mode.
+      assign_to: group.isSubAgent ? "sub" : "agent",
+      agent_id: group.parentAgentId || "",
+      sub_agent_id: group.isSubAgent ? group.subAgentId : "",
+    });
+    setFormSheds([{ ...EMPTY_SHED_FORM }]);
+    setPickingShedIndex(null);
+    setShowForm(true);
+  }
 
   const nearestFarmers = myPosition
     ? filteredFarmers
@@ -1814,6 +2008,7 @@ export default function FarmersPage() {
       const generalHeaders = [
         "Company",
         "Agent",
+        "Sub Agent",
         "Farmer",
         "Shed",
         "Mobile",
@@ -1829,20 +2024,20 @@ export default function FarmersPage() {
         worksheet.getCell(1, col).value = h;
       });
 
-      worksheet.mergeCells("K1:P1");
-      worksheet.getCell("K1").value = "POULTRY";
+      worksheet.mergeCells("L1:Q1");
+      worksheet.getCell("L1").value = "POULTRY";
       ["Broiler", "Layer", "Sonali", "Duck", "Quail", "Deshi Chicken"].forEach(
-        (v, i) => (worksheet.getCell(2, 11 + i).value = v)
+        (v, i) => (worksheet.getCell(2, 12 + i).value = v)
       );
 
-      worksheet.mergeCells("Q1:S1");
-      worksheet.getCell("Q1").value = "CATTLE";
+      worksheet.mergeCells("R1:T1");
+      worksheet.getCell("R1").value = "CATTLE";
       ["Dairy Cow", "Bull", "Calf / Heifer"].forEach(
-        (v, i) => (worksheet.getCell(2, 17 + i).value = v)
+        (v, i) => (worksheet.getCell(2, 18 + i).value = v)
       );
 
-      worksheet.mergeCells("T1:AD1");
-      worksheet.getCell("T1").value = "FISH";
+      worksheet.mergeCells("U1:AE1");
+      worksheet.getCell("U1").value = "FISH";
       [
         "Pangus",
         "Tilapia",
@@ -1855,15 +2050,15 @@ export default function FarmersPage() {
         "Golda",
         "Bagda",
         "Tengra",
-      ].forEach((v, i) => (worksheet.getCell(2, 20 + i).value = v));
+      ].forEach((v, i) => (worksheet.getCell(2, 21 + i).value = v));
 
-      worksheet.mergeCells("AE1:AE2");
-      worksheet.getCell("AE1").value = "Feed Type";
       worksheet.mergeCells("AF1:AF2");
-      worksheet.getCell("AF1").value = "Status";
+      worksheet.getCell("AF1").value = "Feed Type";
+      worksheet.mergeCells("AG1:AG2");
+      worksheet.getCell("AG1").value = "Status";
 
-      for (let col = 1; col <= 32; col++) {
-        if (col <= 10 || col >= 31) {
+      for (let col = 1; col <= 33; col++) {
+        if (col <= 11 || col >= 32) {
           const c = worksheet.getCell(1, col);
           c.fill = {
             type: "pattern",
@@ -1911,12 +2106,12 @@ export default function FarmersPage() {
         }
       };
 
-      styleGroup("K1", "D97706", 11, 16, "FEF3C7", "92400E");
-      styleGroup("Q1", "15803D", 17, 19, "DCFCE7", "166534");
-      styleGroup("T1", "0284C7", 20, 30, "E0F2FE", "075985");
+      styleGroup("L1", "D97706", 12, 17, "FEF3C7", "92400E");
+      styleGroup("R1", "15803D", 18, 20, "DCFCE7", "166534");
+      styleGroup("U1", "0284C7", 21, 31, "E0F2FE", "075985");
 
       for (let r = 1; r <= 2; r++) {
-        for (let c = 1; c <= 32; c++) {
+        for (let c = 1; c <= 33; c++) {
           worksheet.getCell(r, c).border = {
             top: { style: "thin", color: { argb: "CBD5E1" } },
             left: { style: "thin", color: { argb: "CBD5E1" } },
@@ -1940,6 +2135,7 @@ export default function FarmersPage() {
         const row = worksheet.addRow([
           f.companies?.company_name || "",
           f.agents?.agent_name || "",
+          getSubAgentName(f),
           f.farmer_name || "",
           getShedDisplayName(f, shed, sIdx, totalSheds),
           f.mobile || "",
@@ -1952,7 +2148,13 @@ export default function FarmersPage() {
           ...CATTLE_FIELDS.map((k) => Number(shed[k] || 0)),
           ...FISH_FIELDS.map((k) => Number(shed[k] || 0)),
           shed.feed_type || "",
-          f.status || "",
+          getShedVisitStatus(
+            f,
+            shed,
+            (visitRows || []).filter(
+              (v: any) => String(v.farmer_id) === String(f.id)
+            )
+          ).status,
         ]);
         row.eachCell((cell) => {
           cell.border = {
@@ -1968,11 +2170,11 @@ export default function FarmersPage() {
       worksheet.getRow(1).height = 26;
       worksheet.getRow(2).height = 30;
       const widths = [
-        22, 20, 22, 20, 15, 18, 18, 18, 18, 18, 12, 12, 12, 12, 12, 16, 14, 12,
+        22, 20, 20, 22, 20, 15, 18, 18, 18, 18, 18, 12, 12, 12, 12, 12, 16, 14, 12,
         16, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 18, 12,
       ];
       widths.forEach((w, i) => (worksheet.getColumn(i + 1).width = w));
-      worksheet.autoFilter = { from: "A2", to: "AF2" };
+      worksheet.autoFilter = { from: "A2", to: "AG2" };
 
       await saveWorkbook(
         workbook,
@@ -2003,6 +2205,7 @@ export default function FarmersPage() {
       worksheet.addRow([
         "Company",
         "Agent",
+        "Sub Agent",
         "Farmer",
         "Shed",
         "Mobile",
@@ -2028,6 +2231,7 @@ export default function FarmersPage() {
         worksheet.addRow([
           f.companies?.company_name || "",
           f.agents?.agent_name || "",
+          getSubAgentName(f),
           f.farmer_name || "",
           getShedDisplayName(f, shed, sIdx, totalSheds),
           f.mobile || "",
@@ -2040,7 +2244,13 @@ export default function FarmersPage() {
           shed.feed_type || "",
           shed.latitude ?? "",
           shed.longitude ?? "",
-          f.status || "",
+          getShedVisitStatus(
+            f,
+            shed,
+            (visitRows || []).filter(
+              (v: any) => String(v.farmer_id) === String(f.id)
+            )
+          ).status,
           f.remarks || "",
         ]);
       });
@@ -2049,7 +2259,7 @@ export default function FarmersPage() {
         worksheet,
         "D97706",
         [
-          25, 22, 25, 20, 16, 20, 20, 18, 18, 16, 12, 12, 12, 12, 12, 18, 18,
+          25, 22, 20, 25, 20, 16, 20, 20, 18, 18, 16, 12, 12, 12, 12, 12, 18, 18,
           14, 14, 12, 30,
         ]
       );
@@ -2082,6 +2292,7 @@ export default function FarmersPage() {
       worksheet.addRow([
         "Company",
         "Agent",
+        "Sub Agent",
         "Farmer",
         "Shed",
         "Mobile",
@@ -2108,6 +2319,7 @@ export default function FarmersPage() {
         worksheet.addRow([
           f.companies?.company_name || "",
           f.agents?.agent_name || "",
+          getSubAgentName(f),
           f.farmer_name || "",
           getShedDisplayName(f, shed, sIdx, totalSheds),
           f.mobile || "",
@@ -2123,7 +2335,13 @@ export default function FarmersPage() {
           shed.feed_type || "",
           shed.latitude ?? "",
           shed.longitude ?? "",
-          f.status || "",
+          getShedVisitStatus(
+            f,
+            shed,
+            (visitRows || []).filter(
+              (v: any) => String(v.farmer_id) === String(f.id)
+            )
+          ).status,
           f.remarks || "",
         ]);
       });
@@ -2132,7 +2350,7 @@ export default function FarmersPage() {
         worksheet,
         "15803D",
         [
-          25, 22, 25, 20, 16, 20, 20, 18, 18, 16, 15, 12, 18, 18, 18, 14, 14,
+          25, 22, 20, 25, 20, 16, 20, 20, 18, 18, 16, 15, 12, 18, 18, 18, 14, 14,
           12, 30,
         ]
       );
@@ -2165,6 +2383,7 @@ export default function FarmersPage() {
       worksheet.addRow([
         "Company",
         "Agent",
+        "Sub Agent",
         "Farmer",
         "Shed",
         "Mobile",
@@ -2198,6 +2417,7 @@ export default function FarmersPage() {
         worksheet.addRow([
           f.companies?.company_name || "",
           f.agents?.agent_name || "",
+          getSubAgentName(f),
           f.farmer_name || "",
           getShedDisplayName(f, shed, sIdx, totalSheds),
           f.mobile || "",
@@ -2211,7 +2431,13 @@ export default function FarmersPage() {
           shed.feed_type || "",
           shed.latitude ?? "",
           shed.longitude ?? "",
-          f.status || "",
+          getShedVisitStatus(
+            f,
+            shed,
+            (visitRows || []).filter(
+              (v: any) => String(v.farmer_id) === String(f.id)
+            )
+          ).status,
           f.remarks || "",
         ]);
       });
@@ -2220,7 +2446,7 @@ export default function FarmersPage() {
         worksheet,
         "0284C7",
         [
-          25, 22, 25, 20, 16, 20, 20, 18, 18, 16, 12, 12, 12, 12, 12, 12, 12,
+          25, 22, 20, 25, 20, 16, 20, 20, 18, 18, 16, 12, 12, 12, 12, 12, 12, 12,
           12, 12, 12, 12, 15, 18, 14, 14, 12, 30,
         ]
       );
@@ -2450,6 +2676,8 @@ export default function FarmersPage() {
     setForm({
       company_id: String(farmer.company_id),
       agent_id: String(farmer.agent_id),
+      assign_to: farmer.sub_agent_id ? "sub" : "agent",
+      sub_agent_id: farmer.sub_agent_id ? String(farmer.sub_agent_id) : "",
       farmer_name: farmer.farmer_name || "",
       mobile: farmer.mobile || "",
       village: farmer.village || "",
@@ -2529,6 +2757,7 @@ export default function FarmersPage() {
               setUpazilaFilter("");
               setUnionFilter("");
               setAgentFilter("");
+              setSubAgentFilter("");
             }}
             placeholder="All Districts"
             options={districts.map((d) => ({ value: d.name, label: d.name }))}
@@ -2540,6 +2769,7 @@ export default function FarmersPage() {
               setUpazilaFilter(v);
               setUnionFilter("");
               setAgentFilter("");
+              setSubAgentFilter("");
             }}
             placeholder="All Upazilas"
             options={filterUpazilas.map((u: any) => ({
@@ -2575,6 +2805,7 @@ export default function FarmersPage() {
             onChange={(v) => {
               setCompanyFilter(v);
               setAgentFilter("");
+              setSubAgentFilter("");
             }}
             placeholder="All Companies"
             options={companies.map((c) => ({
@@ -2605,6 +2836,16 @@ export default function FarmersPage() {
               <RotateCcw size={13} />
             </button>
           </div>
+
+          <SearchableSelect
+            value={subAgentFilter}
+            onChange={setSubAgentFilter}
+            placeholder="All Sub Agents"
+            options={availableFilterSubAgents.map((s: any) => ({
+              value: String(s.id),
+              label: s.sub_agent_name,
+            }))}
+          />
         </div>
       </div>
 
@@ -3139,11 +3380,47 @@ export default function FarmersPage() {
               className="bg-white border border-slate-300 rounded-lg overflow-hidden shadow-sm"
             >
               <div className="bg-slate-100 border-b border-slate-300 px-3 py-2 flex flex-wrap items-center justify-between gap-2">
-                <div className="text-xs sm:text-sm font-bold text-slate-800">
-                  Agent: {group.agentName}{" "}
-                  <span className="font-normal text-slate-600">
-                    ({group.companyName})
-                  </span>
+                <div className="flex items-center gap-2">
+                  <div className="text-xs sm:text-sm font-bold text-slate-800">
+                    {group.isSubAgent ? (
+                      <div className="leading-tight">
+                        <div>
+                          Sub Agent: {group.agentName}{" "}
+                          <span className="text-[10px] font-semibold bg-white border border-slate-300 px-1.5 py-0.5 rounded text-slate-600">
+                            sub-ag
+                          </span>
+                        </div>
+                        <div className="text-[10px] font-normal text-slate-500">
+                          Agent: {group.parentAgentName}
+                          {group.companyName && group.companyName !== "-"
+                            ? ` • ${group.companyName}`
+                            : ""}
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        Agent: {group.agentName}{" "}
+                        <span className="font-normal text-slate-600">
+                          ({group.companyName})
+                        </span>
+                      </>
+                    )}
+                  </div>
+                  {canAddFarmerHere && (
+                    <button
+                      type="button"
+                      onClick={() => openAddFarmerUnderGroup(group)}
+                      title={
+                        group.isSubAgent
+                          ? `Add new Farmer under sub-agent ${group.agentName}`
+                          : `Add new Farmer under ${group.agentName}`
+                      }
+                      className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold shadow-sm transition"
+                    >
+                      <Plus size={11} />
+                      <UserPlus size={12} />
+                    </button>
+                  )}
                 </div>
                 <span className="text-xs font-semibold bg-white border border-slate-300 px-2 py-0.5 rounded text-slate-700">
                   Farmers: {group.farmers.length}  •  Sheds:{" "}
@@ -3465,6 +3742,10 @@ export default function FarmersPage() {
                     </td>
                     <td className="border border-slate-300 px-3 py-1.5 font-bold">
                       {selectedFarmer.farmer_name}
+                      {(() => {
+                        const subAgentName = getSubAgentName(selectedFarmer);
+                        return subAgentName && (<div className="text-[10px] text-slate-400 leading-tight">sub-ag • {subAgentName}</div>);
+                      })()}
                     </td>
                   </tr>
                   <tr>
@@ -3662,7 +3943,7 @@ export default function FarmersPage() {
                 <SearchableSelect
                   value={form.company_id}
                   onChange={(companyId) =>
-                    setForm({ ...form, company_id: companyId, agent_id: "" })
+                    setForm({ ...form, company_id: companyId, agent_id: "", sub_agent_id: "" })
                   }
                   placeholder="Select Company"
                   options={companies.map((c) => ({
@@ -3686,6 +3967,7 @@ export default function FarmersPage() {
                       upazila: "",
                       union_name: "",
                       agent_id: "",
+                      sub_agent_id: "",
                     })
                   }
                   placeholder="Select District"
@@ -3708,6 +3990,7 @@ export default function FarmersPage() {
                       upazila: v,
                       union_name: "",
                       agent_id: "",
+                      sub_agent_id: "",
                     })
                   }
                   placeholder="Select Upazila"
@@ -3718,22 +4001,84 @@ export default function FarmersPage() {
                 />
               </div>
 
-              <div>
+              {/* Assign to: Agent or Sub Agent (checkboxes act like radios) */}
+              <div className="sm:col-span-2">
                 <label className="block text-xs font-bold text-slate-600 mb-1">
-                  Agent *
+                  Assign Farmer To *
                 </label>
-                <SearchableSelect
-                  value={form.agent_id}
-                  onChange={(v) => setForm({ ...form, agent_id: v })}
-                  placeholder="Select Agent"
-                  options={formAvailableAgents.map((a) => ({
-                    value: String(a.id),
-                    label:
-                      a.agent_name +
-                      (isAgentNonExclusive(a) ? " (non-ex.)" : ""),
-                  }))}
-                />
+                <div className="flex items-center gap-5">
+                  <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.assign_to === "agent"}
+                      onChange={() =>
+                        setForm({ ...form, assign_to: "agent", sub_agent_id: "" })
+                      }
+                      className="w-3.5 h-3.5 accent-indigo-600"
+                    />
+                    Agent
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.assign_to === "sub"}
+                      onChange={() =>
+                        setForm({ ...form, assign_to: "sub", sub_agent_id: "" })
+                      }
+                      className="w-3.5 h-3.5 accent-indigo-600"
+                    />
+                    Sub Agent
+                  </label>
+                </div>
               </div>
+
+              {form.assign_to === "agent" ? (
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">
+                    Agent *
+                  </label>
+                  <SearchableSelect
+                    value={form.agent_id}
+                    onChange={(v) =>
+                      setForm({ ...form, agent_id: v, sub_agent_id: "" })
+                    }
+                    placeholder="Select Agent"
+                    options={formAvailableAgents.map((a) => ({
+                      value: String(a.id),
+                      label:
+                        a.agent_name +
+                        (isAgentNonExclusive(a) ? " (non-ex.)" : ""),
+                    }))}
+                  />
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">
+                    Sub Agent *
+                  </label>
+                  <SearchableSelect
+                    value={form.sub_agent_id || ""}
+                    onChange={(v) => {
+                      // The farmer keeps agent_id = the sub-agent's parent.
+                      const parent = subAgents.find(
+                        (s: any) => String(s.id) === String(v)
+                      );
+                      setForm({
+                        ...form,
+                        sub_agent_id: v,
+                        agent_id: parent
+                          ? String(parent.agent_id)
+                          : form.agent_id,
+                      });
+                    }}
+                    placeholder="Select Sub Agent"
+                    options={subAgents.map((s: any) => ({
+                      value: String(s.id),
+                      label: getSubAgentOptionLabel(s),
+                    }))}
+                  />
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">
@@ -3791,14 +4136,40 @@ export default function FarmersPage() {
               </div>
             </div>
 
-            {/* Sheds — one farmer, multiple sheds, each with its own location/category/stock */}
+            {/* Farm Category — sheds are for poultry only */}
+            <div className="mb-3">
+              <label className="block text-xs font-bold text-slate-600 mb-1">
+                Farm Category *
+              </label>
+              <SearchableSelect
+                searchable={false}
+                value={form.farm_category || ""}
+                onChange={(v) => setForm({ ...form, farm_category: v })}
+                placeholder="Select Category"
+                options={[
+                  { value: "Poultry", label: "🐔 Poultry" },
+                  { value: "Cattle", label: "🐄 Cattle" },
+                  { value: "Fish", label: "🐟 Fish" },
+                ]}
+              />
+              {form.farm_category && form.farm_category !== "Poultry" && (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Sheds are for poultry only — this farmer will be saved
+                  without sheds.
+                </p>
+              )}
+            </div>
+
+            {/* Sheds — one farmer, multiple sheds, each with its own location/stock */}
+            {form.farm_category === "Poultry" && (
+              <>
             <div className="mb-3">
               <div className="flex items-center justify-between mb-2">
                 <label className="block text-xs font-bold text-slate-600">
                   Sheds * ({formSheds.length})
                 </label>
                 <span className="text-[11px] text-slate-500">
-                  Each shed can be in a different place with its own category.
+                  Each shed can be in a different place.
                 </span>
               </div>
 
@@ -3835,23 +4206,21 @@ export default function FarmersPage() {
                         }
                         className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
                       />
-                      
+                      <p className="mt-1 text-[11px] leading-snug text-slate-500">
+                        Write a short name — e.g. Shed 1 or Bridge par.
+                        Leave it empty for a single shed — then only the
+                        farmer name will show. The table shows only this
+                        name; on the map/popup it shows with the farmer
+                        name (Raju Ahmed - Shed 1).
+                      </p>
                     </div>
                     <div>
                       <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                        Farm Category *
+                        Farm Category
                       </label>
-                      <SearchableSelect
-                        searchable={false}
-                        value={shed.farm_category || ""}
-                        onChange={(v) => updateShedField(sIdx, "farm_category", v)}
-                        placeholder="Select Category"
-                        options={[
-                          { value: "Poultry", label: "🐔 Poultry" },
-                          { value: "Cattle", label: "🐄 Cattle" },
-                          { value: "Fish", label: "🐟 Fish" },
-                        ]}
-                      />
+                      <div className="w-full rounded border border-slate-200 bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-slate-700">
+                        🐔 Poultry
+                      </div>
                     </div>
                   </div>
 
@@ -3965,11 +4334,104 @@ export default function FarmersPage() {
               <button
                 type="button"
                 onClick={addShed}
-                className="inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold"
+                className="inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer"
               >
                 <Plus size={13} /> Add Shed
               </button>
             </div>
+              </>
+            )}
+
+            {form.farm_category && form.farm_category !== "Poultry" && (
+              <div className="mb-3 border border-slate-300 rounded-lg p-3 bg-slate-50">
+                <div className="text-xs font-bold text-slate-700 mb-2">
+                  Farm Details
+                </div>
+                <div className="mb-2 flex flex-wrap items-center gap-2 bg-white border border-slate-200 rounded p-2.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPickingShedIndex(0);
+                      setPickerCenterOverride(null);
+                      setShowMap(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-xs font-semibold cursor-pointer"
+                  >
+                    <MapPin size={13} /> Select Location from Map
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleLocateMeForShed(0)}
+                    disabled={locatingInPicker}
+                    className="inline-flex items-center gap-1.5 bg-slate-600 hover:bg-slate-700 text-white px-3 py-1.5 rounded text-xs font-semibold disabled:opacity-50 cursor-pointer"
+                  >
+                    <Navigation size={13} /> Locate Me
+                  </button>
+                  {formSheds[0]?.latitude && formSheds[0]?.longitude && (
+                    <span className="text-emerald-700 text-xs font-semibold">
+                      📍 Selected ({Number(formSheds[0].latitude).toFixed(4)},{" "}
+                      {Number(formSheds[0].longitude).toFixed(4)})
+                    </span>
+                  )}
+                </div>
+
+                {form.farm_category === "Cattle" && (
+                  <div className="grid grid-cols-3 gap-2 mb-2 bg-emerald-50 border border-emerald-200 rounded p-2.5">
+                    {CATTLE_FIELDS.map((item) => (
+                      <div key={item}>
+                        <label className="block text-[11px] font-semibold capitalize">
+                          {item.replace("_", " ")}
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={(formSheds[0] as any)?.[item] || ""}
+                          onChange={(e: any) =>
+                            updateShedField(0, item, e.target.value)
+                          }
+                          className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {form.farm_category === "Fish" && (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2 bg-sky-50 border border-sky-200 rounded p-2.5">
+                    {FISH_FIELDS.map((item) => (
+                      <div key={item}>
+                        <label className="block text-[11px] font-semibold capitalize">
+                          {item}
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={(formSheds[0] as any)?.[item] || ""}
+                          onChange={(e: any) =>
+                            updateShedField(0, item, e.target.value)
+                          }
+                          className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                    Feed Type
+                  </label>
+                  <input
+                    placeholder="Feed Type"
+                    value={(formSheds[0] as any)?.feed_type || ""}
+                    onChange={(e: any) =>
+                      updateShedField(0, "feed_type", e.target.value)
+                    }
+                    className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                  />
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 gap-3 mb-4">
               <div>
@@ -3990,15 +4452,20 @@ export default function FarmersPage() {
             <div className="flex justify-end gap-2 pt-2 border-t">
               <button
                 onClick={() => setShowForm(false)}
-                className="px-4 py-1.5 rounded border border-slate-300 text-xs font-semibold"
+                className="px-4 py-1.5 rounded border border-slate-300 text-xs font-semibold cursor-pointer hover:bg-slate-100"
               >
                 Cancel
               </button>
               <button
                 onClick={handleSave}
-                className="px-4 py-1.5 rounded bg-green-600 text-white text-xs font-semibold"
+                disabled={savingFarmer}
+                className="px-4 py-1.5 rounded bg-green-600 hover:bg-green-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
               >
-                {editingId ? "Update Farmer" : "Save Farmer"}
+                {savingFarmer
+                  ? "Saving..."
+                  : editingId
+                  ? "Update Farmer"
+                  : "Save Farmer"}
               </button>
             </div>
           </div>

@@ -165,11 +165,11 @@ function validateReportDate(
   const today = new Date().toISOString().split("T")[0];
   const cleanReport = normDate(reportDate);
   if (cleanReport && cleanReport > today) {
-    return "Agami date e report dewa jabe na.";
+    return "You cannot add a report for a future date.";
   }
   const cleanHatch = normDate(hatchDate);
   if (cleanReport && cleanHatch && cleanReport < cleanHatch) {
-    return "Hatch date er age report dewa jabe na.";
+    return "Report date cannot be before the hatch date.";
   }
   return null;
 }
@@ -291,8 +291,6 @@ function getAgentCompanyIds(agent: any): string[] {
     : [];
 }
 
-
-
 // A shed id that exists in farmer_sheds (usable as doc_trackings.shed_id),
 // or null for the synthesised legacy shed / no shed chosen.
 function shedIdForDb(shed: any): number | string | null {
@@ -387,11 +385,20 @@ interface FeedAgentRecord {
   agent_name: string;
   upazila: string;
   company_id?: number;
+  latitude?: number | null;
+  longitude?: number | null;
+}
+
+interface SubAgentRecord {
+  id: number;
+  sub_agent_name: string;
+  agent_id: number;
 }
 
 interface FarmerRecord {
   id: number;
   agent_id: number;
+  sub_agent_id?: number | null;
   company_id: number;
   farmer_name: string;
   mobile: string;
@@ -431,6 +438,7 @@ let cachedPageState: {
   trackings: DocTracking[];
   officers: OfficerRecord[];
   feedAgents: FeedAgentRecord[];
+  subAgents: SubAgentRecord[];
   farmersList: FarmerRecord[];
   companiesList: CompanyRecord[];
   companyNames: string[];
@@ -446,6 +454,7 @@ export default function DocTrackingPage() {
   const [loading, setLoading] = useState(!cachedPageState?.initialized);
   const [importing, setImporting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
@@ -480,6 +489,9 @@ export default function DocTrackingPage() {
   );
   const [farmersList, setFarmersList] = useState<FarmerRecord[]>(
     cachedPageState?.farmersList || []
+  );
+  const [subAgents, setSubAgents] = useState<SubAgentRecord[]>(
+    cachedPageState?.subAgents || []
   );
   const [companiesList, setCompaniesList] = useState<CompanyRecord[]>(
     cachedPageState?.companiesList || []
@@ -544,6 +556,10 @@ export default function DocTrackingPage() {
     district: "",
     upazila: "",
     agent_id: "",
+    // How the farmer is assigned: "agent" = directly under an agent,
+    // "sub" = under a sub-agent (agent_id then holds the sub-agent's parent).
+    assign_to: "agent",
+    sub_agent_id: "",
     union_name: "",
     village: "",
     latitude: "",
@@ -766,8 +782,9 @@ export default function DocTrackingPage() {
     const [
       { data: usersData },
       { data: faData },
-      { data: frmData },
+      { data: frmData, error: frmErr },
       { data: compData },
+      { data: subAgData },
     ] = await Promise.all([
       supabase
         .from("users")
@@ -775,19 +792,43 @@ export default function DocTrackingPage() {
         .order("full_name"),
       supabase
         .from("agents")
-        .select("id, agent_code, agent_name, upazila, company_id")
+        .select("id, agent_code, agent_name, upazila, company_id, latitude, longitude")
         .order("agent_name"),
       supabase
         .from("farmers")
         .select(
-          "id, agent_id, company_id, farmer_name, mobile, village, union_name, upazila, district, latitude, longitude, farm_type, farm_category, broiler, layer, sonali, duck, quail, companies(company_name)"
+          "id, agent_id, sub_agent_id, company_id, farmer_name, mobile, village, union_name, upazila, district, latitude, longitude, farm_type, farm_category, broiler, layer, sonali, duck, quail, companies(company_name)"
         )
         .order("farmer_name"),
       supabase
         .from("companies")
         .select("id, company_name")
         .order("company_name"),
+      // sub_agents table may not exist yet (migration not run) —
+      // data is null then and the list stays empty.
+      supabase.from("sub_agents").select("id, sub_agent_name, agent_id"),
     ]);
+
+    // If the sub_agent_id column does not exist yet (migration not run),
+    // the farmers select above fails — retry without it so the farmer
+    // list never breaks for a missing column.
+    // The retry select below has one column fewer (no sub_agent_id),
+    // so keep the type loose — otherwise the editor flags the
+    // assignment as a type mismatch.
+    let frmRows: any[] | null = frmData;
+    if (
+      !frmRows &&
+      frmErr &&
+      /sub_agent_id/i.test(String(frmErr.message || ""))
+    ) {
+      const retry = await supabase
+        .from("farmers")
+        .select(
+          "id, agent_id, company_id, farmer_name, mobile, village, union_name, upazila, district, latitude, longitude, farm_type, farm_category, broiler, layer, sonali, duck, quail, companies(company_name)"
+        )
+        .order("farmer_name");
+      frmRows = retry.data;
+    }
 
     const parsedOfficers: OfficerRecord[] = (usersData || []).map((u: any) => ({
       id: u.id,
@@ -804,7 +845,7 @@ export default function DocTrackingPage() {
 
     // Attach farmer_sheds when the table exists; otherwise
     // getShedsForFarmer() synthesises one legacy shed per farmer.
-    const farmersWithSheds: any[] = (frmData as any[]) || [];
+    const farmersWithSheds: any[] = (frmRows as any[]) || [];
     try {
       const { data: shedData, error: shedError } = await supabase
         .from("farmer_sheds")
@@ -848,6 +889,7 @@ export default function DocTrackingPage() {
     }
     setOfficers(parsedOfficers);
     setFeedAgents((faData as any[]) || []);
+    setSubAgents((subAgData as any[]) || []);
     setFarmersList(farmersWithSheds);
     setCompaniesList(loadedComps);
     setCompanyNames(loadedCompNames);
@@ -944,6 +986,7 @@ export default function DocTrackingPage() {
       trackings: loadedTrackings,
       officers: parsedOfficers,
       feedAgents: (faData as any[]) || [],
+      subAgents: (subAgData as any[]) || [],
       farmersList: farmersWithSheds,
       companiesList: loadedComps,
       companyNames: loadedCompNames,
@@ -1525,6 +1568,7 @@ export default function DocTrackingPage() {
 
   async function handleSaveTracking(e: React.FormEvent) {
     e.preventDefault();
+    if (submitting) return;
     if (!activeTarget) return;
     // Permission guard (rule 5): new DOC entries need Poultry
     // assigned. Edits are guarded again below with canModifyTracking.
@@ -1623,7 +1667,10 @@ export default function DocTrackingPage() {
         }
 
         if (updateErr) {
-          
+          delete updateData.b_qty;
+          delete updateData.category;
+          delete updateData.breed;
+          delete updateData.ag_b;
           const { error: retryErr } = await supabase
             .from("doc_trackings")
             .update(updateData)
@@ -1756,6 +1803,16 @@ export default function DocTrackingPage() {
 
         // 2. If user selected "Create farmer & Track DOC"
         if (!isOnlyTrackMode && !targetFarmerId && shouldSaveFarmer) {
+          // Assignment: Sub Agent mode needs a sub-agent (its parent
+          // agent is derived and stored in agent_id).
+          if (
+            newFarmerForm.assign_to === "sub" &&
+            !newFarmerForm.sub_agent_id
+          ) {
+            throw new Error(
+              "Please select a Sub Agent to create this farmer in the Farmers database."
+            );
+          }
           const nfAgent = Number(
             newFarmerForm.agent_id || feedAgentFromTarget || 0
           );
@@ -1770,6 +1827,9 @@ export default function DocTrackingPage() {
           const newFarmerPayload: Record<string, any> = {
             company_id: nfComp,
             agent_id: nfAgent,
+            sub_agent_id: newFarmerForm.sub_agent_id
+              ? Number(newFarmerForm.sub_agent_id)
+              : null,
             created_by: currentUserId || null,
             farmer_name: trackForm.farmer_name.trim(),
             mobile: trackForm.mobile.trim(),
@@ -1817,6 +1877,9 @@ export default function DocTrackingPage() {
             if (cErr && /created_by/i.test(cErr.message || "")) {
               delete newFarmerPayload.created_by;
             }
+            if (cErr && /sub_agent_id/i.test(cErr.message || "")) {
+              delete newFarmerPayload.sub_agent_id;
+            }
             const { data: c2, error: c2Err } = await supabase
               .from("farmers")
               .insert([newFarmerPayload])
@@ -1833,80 +1896,83 @@ export default function DocTrackingPage() {
           // so a missing farmer_sheds table must not break this save.
           if (targetFarmerId) {
             createdFarmerIdInThisSave = targetFarmerId;
-            try {
-              const broadCat = (cat: string) =>
-                cat === "Cattle" || cat === "Fish" ? cat : "Poultry";
-              const shedsToSave = (
-                newFarmerSheds.length > 0
-                  ? newFarmerSheds
-                  : [
-                      {
-                        shed_name: "",
-                        farm_category: "",
-                        latitude: "",
-                        longitude: "",
-                      },
-                    ]
-              ).map(
-                (
-                  ns: {
-                    shed_name: string;
-                    farm_category: string;
-                    latitude: string;
-                    longitude: string;
-                  },
-                  nsIdx: number
-                ) => {
-                const isFirst = nsIdx === 0;
-                const cat = ns.farm_category || finalCategory;
-                const db: Record<string, any> = {
-                  farmer_id: targetFarmerId,
-                  shed_name: getShedShortName(
-                    { farmer_name: trackForm.farmer_name },
-                    ns,
-                    nsIdx,
-                    newFarmerSheds.length > 0 ? newFarmerSheds.length : 1
-                  ),
-                  farm_category: broadCat(cat),
-                  latitude: isFirst
-                    ? newFarmerForm.latitude === ""
+            // Sheds apply to Poultry only — a Fish/Cattle farmer has no sheds.
+            if (finalCategory !== "Cattle" && finalCategory !== "Fish") {
+              try {
+                const broadCat = (cat: string) =>
+                  cat === "Cattle" || cat === "Fish" ? cat : "Poultry";
+                const shedsToSave = (
+                  newFarmerSheds.length > 0
+                    ? newFarmerSheds
+                    : [
+                        {
+                          shed_name: "",
+                          farm_category: "",
+                          latitude: "",
+                          longitude: "",
+                        },
+                      ]
+                ).map(
+                  (
+                    ns: {
+                      shed_name: string;
+                      farm_category: string;
+                      latitude: string;
+                      longitude: string;
+                    },
+                    nsIdx: number
+                  ) => {
+                  const isFirst = nsIdx === 0;
+                  const cat = ns.farm_category || finalCategory;
+                  const db: Record<string, any> = {
+                    farmer_id: targetFarmerId,
+                    shed_name: getShedShortName(
+                      { farmer_name: trackForm.farmer_name },
+                      ns,
+                      nsIdx,
+                      newFarmerSheds.length > 0 ? newFarmerSheds.length : 1
+                    ),
+                    farm_category: broadCat(cat),
+                    latitude: isFirst
+                      ? newFarmerForm.latitude === ""
+                        ? null
+                        : Number(newFarmerForm.latitude)
+                      : ns.latitude === "" || ns.latitude == null
                       ? null
-                      : Number(newFarmerForm.latitude)
-                    : ns.latitude === "" || ns.latitude == null
-                    ? null
-                    : Number(ns.latitude),
-                  longitude: isFirst
-                    ? newFarmerForm.longitude === ""
+                      : Number(ns.latitude),
+                    longitude: isFirst
+                      ? newFarmerForm.longitude === ""
+                        ? null
+                        : Number(newFarmerForm.longitude)
+                      : ns.longitude === "" || ns.longitude == null
                       ? null
-                      : Number(newFarmerForm.longitude)
-                    : ns.longitude === "" || ns.longitude == null
-                    ? null
-                    : Number(ns.longitude),
-                  feed_type: newFarmerForm.feed_type || "",
-                  status: shouldShowInVisits ? "Running" : "Active",
-                  created_by: currentUserId || null,
-                };
-                POULTRY_STOCK_KEYS.forEach((k) => (db[k] = 0));
-                if (isFirst && stockKey)
-                  db[stockKey] = effectiveBirdsForFarmAndVisit;
-                return db;
-              });
-              let { error: shedInsErr } = await supabase
-                .from("farmer_sheds")
-                .insert(shedsToSave);
-              if (shedInsErr && /created_by/i.test(shedInsErr.message || "")) {
-                const withoutCreator = shedsToSave.map((s: any) => {
-                  const { created_by, ...rest } = s;
-                  return rest;
+                      : Number(ns.longitude),
+                    feed_type: newFarmerForm.feed_type || "",
+                    status: shouldShowInVisits ? "Running" : "Active",
+                    created_by: currentUserId || null,
+                  };
+                  POULTRY_STOCK_KEYS.forEach((k) => (db[k] = 0));
+                  if (isFirst && stockKey)
+                    db[stockKey] = effectiveBirdsForFarmAndVisit;
+                  return db;
                 });
-                const retry = await supabase
+                let { error: shedInsErr } = await supabase
                   .from("farmer_sheds")
-                  .insert(withoutCreator);
-                shedInsErr = retry.error;
+                  .insert(shedsToSave);
+                if (shedInsErr && /created_by/i.test(shedInsErr.message || "")) {
+                  const withoutCreator = shedsToSave.map((s: any) => {
+                    const { created_by, ...rest } = s;
+                    return rest;
+                  });
+                  const retry = await supabase
+                    .from("farmer_sheds")
+                    .insert(withoutCreator);
+                  shedInsErr = retry.error;
+                }
+                if (shedInsErr) throw shedInsErr;
+              } catch {
+                // farmer_sheds table not created yet — farmer row already saved.
               }
-              if (shedInsErr) throw shedInsErr;
-            } catch {
-              // farmer_sheds table not created yet — farmer row already saved.
             }
           }
         }
@@ -2230,7 +2296,7 @@ export default function DocTrackingPage() {
     }
   }
 
-  const allPcdTypes = Array.from(new Set(supplies.map((s) => s.pcd))).sort();
+  const allPcdTypes = Array.from(new Set<string>(supplies.map((s) => s.pcd))).sort();
   const categoryFilteredPcdTypes = allPcdTypes.filter((p) =>
     matchesCategoryByPcd(p, categoryFilter)
   );
@@ -2245,7 +2311,7 @@ export default function DocTrackingPage() {
   ).sort();
 
   const allMonths = Array.from(
-    new Set(supplies.map((s) => s.h_date.slice(0, 7)))
+    new Set<string>(supplies.map((s) => s.h_date.slice(0, 7)))
   )
     .sort()
     .reverse();
@@ -2413,255 +2479,261 @@ export default function DocTrackingPage() {
   }
 
   async function handleExportExcel() {
+    if (exporting) return;
     if (exportSelectedTypes.length === 0) {
       alert("Please select at least one DOC Type to export.");
       return;
     }
 
-    const exportRows: Record<string, any>[] = [];
-    let grandTotalSupply = 0;
-    let grandTotalTracked = 0;
+    setExporting(true);
+    try {
+      const exportRows: Record<string, any>[] = [];
+      let grandTotalSupply = 0;
+      let grandTotalTracked = 0;
 
-    visibleAgents.forEach((agent) => {
-      const agentSupplies = filteredSupplies.filter(
-        (s) =>
-          normStr(s.doc_id) === normStr(agent.doc_id) &&
-          exportSelectedTypes.includes(normCode(s.pcd))
-      );
-
-      const groups = new Map<
-        string,
-        { h_date: string; pcd: string; qty: number; b_qty: number }
-      >();
-      agentSupplies.forEach((s) => {
-        const key = `${normDate(s.h_date)}_${normCode(s.pcd)}`;
-        const prev = groups.get(key);
-        if (prev) {
-          prev.qty += Number(s.qty) || 0;
-          prev.b_qty += Number(s.b_qty) || 0;
-        } else {
-          groups.set(key, {
-            h_date: normDate(s.h_date),
-            pcd: normCode(s.pcd),
-            qty: Number(s.qty) || 0,
-            b_qty: Number(s.b_qty) || 0,
-          });
-        }
-      });
-
-      groups.forEach((g) => {
-        grandTotalSupply += g.qty;
-        const docPerBox = g.qty > 0 && g.b_qty > 0 ? g.qty / g.b_qty : 0;
-
-        const matchingTracks = filteredTrackings.filter(
-          (t) =>
-            normStr(t.doc_id) === normStr(agent.doc_id) &&
-            normDate(t.h_date) === g.h_date &&
-            normCode(t.pcd) === g.pcd
+      visibleAgents.forEach((agent) => {
+        const agentSupplies = filteredSupplies.filter(
+          (s) =>
+            normStr(s.doc_id) === normStr(agent.doc_id) &&
+            exportSelectedTypes.includes(normCode(s.pcd))
         );
 
-        if (matchingTracks.length === 0) {
-          exportRows.push({
-            "H.Date": g.h_date,
-            "DOC.ID": agent.doc_id,
-            Agent: agent.agent_name,
-            "Agent Address": `${agent.upazila}, ${agent.district}`,
-            "DOC Qty": g.qty,
-            "DOC Type": g.pcd,
-            "AG/B+": "-",
-            Farmer: "-",
-            "Farmer Address": "-",
-            "Farmer Mobile": "-",
-            "Tracked Qty": 0,
-            "Box Qty": 0,
-            "Feed Company": "-",
-            "Tracked By": "-",
-            Remark: "Untracked",
-          });
-        } else {
-          matchingTracks.forEach((t, index) => {
-            grandTotalTracked += Number(t.qty) || 0;
-            const trBox =
-              t.b_qty !== undefined && t.b_qty !== null
-                ? Number(t.b_qty)
-                : docPerBox > 0
-                ? Math.round(Number(t.qty || 0) / docPerBox)
-                : 0;
+        const groups = new Map<
+          string,
+          { h_date: string; pcd: string; qty: number; b_qty: number }
+        >();
+        agentSupplies.forEach((s) => {
+          const key = `${normDate(s.h_date)}_${normCode(s.pcd)}`;
+          const prev = groups.get(key);
+          if (prev) {
+            prev.qty += Number(s.qty) || 0;
+            prev.b_qty += Number(s.b_qty) || 0;
+          } else {
+            groups.set(key, {
+              h_date: normDate(s.h_date),
+              pcd: normCode(s.pcd),
+              qty: Number(s.qty) || 0,
+              b_qty: Number(s.b_qty) || 0,
+            });
+          }
+        });
 
+        groups.forEach((g) => {
+          grandTotalSupply += g.qty;
+          const docPerBox = g.qty > 0 && g.b_qty > 0 ? g.qty / g.b_qty : 0;
+
+          const matchingTracks = filteredTrackings.filter(
+            (t) =>
+              normStr(t.doc_id) === normStr(agent.doc_id) &&
+              normDate(t.h_date) === g.h_date &&
+              normCode(t.pcd) === g.pcd
+          );
+
+          if (matchingTracks.length === 0) {
             exportRows.push({
               "H.Date": g.h_date,
               "DOC.ID": agent.doc_id,
               Agent: agent.agent_name,
               "Agent Address": `${agent.upazila}, ${agent.district}`,
-              "DOC Qty": index === 0 ? g.qty : "",
+              "DOC Qty": g.qty,
               "DOC Type": g.pcd,
-              "AG/B+": t.ag_b || "-",
-              Farmer: displayNameForTracking(t),
-              "Farmer Address": t.address || "-",
-              "Farmer Mobile": t.mobile || "-",
-              "Tracked Qty": Number(t.qty) || 0,
-              "Box Qty": trBox,
-              "Feed Company": t.feed_company,
-              "Tracked By": t.tracked_by_name || "-",
-              Remark: t.remark || "-",
+              "AG/B+": "-",
+              Farmer: "-",
+              "Farmer Address": "-",
+              "Farmer Mobile": "-",
+              "Tracked Qty": 0,
+              "Box Qty": 0,
+              "Feed Company": "-",
+              "Tracked By": "-",
+              Remark: "Untracked",
             });
-          });
-        }
+          } else {
+            matchingTracks.forEach((t, index) => {
+              grandTotalTracked += Number(t.qty) || 0;
+              const trBox =
+                t.b_qty !== undefined && t.b_qty !== null
+                  ? Number(t.b_qty)
+                  : docPerBox > 0
+                  ? Math.round(Number(t.qty || 0) / docPerBox)
+                  : 0;
+
+              exportRows.push({
+                "H.Date": g.h_date,
+                "DOC.ID": agent.doc_id,
+                Agent: agent.agent_name,
+                "Agent Address": `${agent.upazila}, ${agent.district}`,
+                "DOC Qty": index === 0 ? g.qty : "",
+                "DOC Type": g.pcd,
+                "AG/B+": t.ag_b || "-",
+                Farmer: displayNameForTracking(t),
+                "Farmer Address": t.address || "-",
+                "Farmer Mobile": t.mobile || "-",
+                "Tracked Qty": Number(t.qty) || 0,
+                "Box Qty": trBox,
+                "Feed Company": t.feed_company,
+                "Tracked By": t.tracked_by_name || "-",
+                Remark: t.remark || "-",
+              });
+            });
+          }
+        });
       });
-    });
 
-    if (exportRows.length === 0) {
-      alert("No tracking data found for the selected DOC Type(s).");
-      return;
-    }
+      if (exportRows.length === 0) {
+        alert("No tracking data found for the selected DOC Type(s).");
+        return;
+      }
 
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet("DOC_Tracking");
-    worksheet.views = [{ state: "frozen", ySplit: 1 }];
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet("DOC_Tracking");
+      worksheet.views = [{ state: "frozen", ySplit: 1 }];
 
-    const headers = Object.keys(exportRows[0]);
-    const headerRow = worksheet.addRow(headers);
-    headerRow.eachCell((cell) => {
-      cell.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "1E3A8A" },
-      };
-      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-      cell.alignment = {
-        horizontal: "center",
-        vertical: "middle",
-        wrapText: true,
-      };
-      cell.border = {
-        top: { style: "thin", color: { argb: "CBD5E1" } },
-        left: { style: "thin", color: { argb: "CBD5E1" } },
-        bottom: { style: "medium", color: { argb: "0F172A" } },
-        right: { style: "thin", color: { argb: "CBD5E1" } },
-      };
-    });
-    headerRow.height = 26;
-
-    exportRows.forEach((r, idx) => {
-      const rowValues = headers.map((h) => r[h]);
-      const row = worksheet.addRow(rowValues);
-      const rowBg = idx % 2 === 0 ? "FFFFFF" : "F8FAFC";
-
-      row.eachCell((cell) => {
+      const headers = Object.keys(exportRows[0]);
+      const headerRow = worksheet.addRow(headers);
+      headerRow.eachCell((cell) => {
         cell.fill = {
           type: "pattern",
           pattern: "solid",
-          fgColor: { argb: rowBg },
+          fgColor: { argb: "1E3A8A" },
         };
-        cell.font = { color: { argb: "0F172A" } };
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.alignment = {
+          horizontal: "center",
+          vertical: "middle",
+          wrapText: true,
+        };
+        cell.border = {
+          top: { style: "thin", color: { argb: "CBD5E1" } },
+          left: { style: "thin", color: { argb: "CBD5E1" } },
+          bottom: { style: "medium", color: { argb: "0F172A" } },
+          right: { style: "thin", color: { argb: "CBD5E1" } },
+        };
+      });
+      headerRow.height = 26;
+
+      exportRows.forEach((r, idx) => {
+        const rowValues = headers.map((h) => r[h]);
+        const row = worksheet.addRow(rowValues);
+        const rowBg = idx % 2 === 0 ? "FFFFFF" : "F8FAFC";
+
+        row.eachCell((cell) => {
+          cell.fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: rowBg },
+          };
+          cell.font = { color: { argb: "0F172A" } };
+          cell.alignment = { vertical: "middle", wrapText: true };
+          cell.border = {
+            top: { style: "thin", color: { argb: "E2E8F0" } },
+            left: { style: "thin", color: { argb: "E2E8F0" } },
+            bottom: { style: "thin", color: { argb: "E2E8F0" } },
+            right: { style: "thin", color: { argb: "E2E8F0" } },
+          };
+        });
+        row.height = 22;
+      });
+
+      const totalRowValues = headers.map((h) => {
+        if (h === "H.Date") return "TOTAL";
+        if (h === "DOC Qty") return grandTotalSupply;
+        if (h === "Tracked Qty") return grandTotalTracked;
+        if (h === "Remark")
+          return `Untracked: ${Math.max(0, grandTotalSupply - grandTotalTracked)}`;
+        return "";
+      });
+
+      const totalRow = worksheet.addRow(totalRowValues);
+      totalRow.eachCell((cell) => {
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FEF3C7" },
+        };
+        cell.font = { bold: true, color: { argb: "92400E" } };
         cell.alignment = { vertical: "middle", wrapText: true };
         cell.border = {
-          top: { style: "thin", color: { argb: "E2E8F0" } },
-          left: { style: "thin", color: { argb: "E2E8F0" } },
-          bottom: { style: "thin", color: { argb: "E2E8F0" } },
-          right: { style: "thin", color: { argb: "E2E8F0" } },
+          top: { style: "medium", color: { argb: "D97706" } },
+          left: { style: "thin", color: { argb: "CBD5E1" } },
+          bottom: { style: "medium", color: { argb: "D97706" } },
+          right: { style: "thin", color: { argb: "CBD5E1" } },
         };
       });
-      row.height = 22;
-    });
+      totalRow.height = 25;
 
-    const totalRowValues = headers.map((h) => {
-      if (h === "H.Date") return "TOTAL";
-      if (h === "DOC Qty") return grandTotalSupply;
-      if (h === "Tracked Qty") return grandTotalTracked;
-      if (h === "Remark")
-        return `Untracked: ${Math.max(0, grandTotalSupply - grandTotalTracked)}`;
-      return "";
-    });
-
-    const totalRow = worksheet.addRow(totalRowValues);
-    totalRow.eachCell((cell) => {
-      cell.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FEF3C7" },
-      };
-      cell.font = { bold: true, color: { argb: "92400E" } };
-      cell.alignment = { vertical: "middle", wrapText: true };
-      cell.border = {
-        top: { style: "medium", color: { argb: "D97706" } },
-        left: { style: "thin", color: { argb: "CBD5E1" } },
-        bottom: { style: "medium", color: { argb: "D97706" } },
-        right: { style: "thin", color: { argb: "CBD5E1" } },
-      };
-    });
-    totalRow.height = 25;
-
-    worksheet.columns.forEach((column, i) => {
-      let maxLen = headers[i].length;
-      exportRows.forEach((row) => {
-        const val =
-          row[headers[i]] !== undefined && row[headers[i]] !== null
-            ? String(row[headers[i]])
-            : "";
-        if (val.length > maxLen) maxLen = val.length;
+      worksheet.columns.forEach((column, i) => {
+        let maxLen = headers[i].length;
+        exportRows.forEach((row) => {
+          const val =
+            row[headers[i]] !== undefined && row[headers[i]] !== null
+              ? String(row[headers[i]])
+              : "";
+          if (val.length > maxLen) maxLen = val.length;
+        });
+        column.width = Math.max(maxLen + 5, 12);
       });
-      column.width = Math.max(maxLen + 5, 12);
-    });
 
-    worksheet.autoFilter = {
-      from: "A1",
-      to: `${String.fromCharCode(64 + headers.length)}1`,
-    };
+      worksheet.autoFilter = {
+        from: "A1",
+        to: `${String.fromCharCode(64 + headers.length)}1`,
+      };
 
-    const fileName = `DOC_Tracking_${dateRangeLabel || "Report"}_${exportSelectedTypes.join("-")}.xlsx`;
+      const fileName = `DOC_Tracking_${dateRangeLabel || "Report"}_${exportSelectedTypes.join("-")}.xlsx`;
 
-    try {
-      const excelBuffer = await workbook.xlsx.writeBuffer();
+      try {
+        const excelBuffer = await workbook.xlsx.writeBuffer();
 
-      if (Capacitor.isNativePlatform()) {
-        let binary = "";
-        const bytes = new Uint8Array(excelBuffer);
-        const chunkSize = 0x8000;
-        for (let i = 0; i < bytes.length; i += chunkSize) {
-          binary += String.fromCharCode.apply(
-            null,
-            Array.from(bytes.subarray(i, i + chunkSize))
-          );
+        if (Capacitor.isNativePlatform()) {
+          let binary = "";
+          const bytes = new Uint8Array(excelBuffer);
+          const chunkSize = 0x8000;
+          for (let i = 0; i < bytes.length; i += chunkSize) {
+            binary += String.fromCharCode.apply(
+              null,
+              Array.from(bytes.subarray(i, i + chunkSize))
+            );
+          }
+          const base64Data = window.btoa(binary);
+
+          const savedFile = await Filesystem.writeFile({
+            path: fileName,
+            data: base64Data,
+            directory: Directory.Documents,
+            recursive: true,
+          });
+
+          alert(`File saved successfully:\n📁 Documents/${fileName}`);
+
+          if (savedFile.uri) {
+            try {
+              await Share.share({
+                title: fileName,
+                url: savedFile.uri,
+                dialogTitle: "Open or View Excel File",
+              });
+            } catch {}
+          }
+        } else {
+          const blob = new Blob([excelBuffer], {
+            type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          });
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = fileName;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          window.URL.revokeObjectURL(url);
         }
-        const base64Data = window.btoa(binary);
-
-        const savedFile = await Filesystem.writeFile({
-          path: fileName,
-          data: base64Data,
-          directory: Directory.Documents,
-          recursive: true,
-        });
-
-        alert(`File saved successfully:\n📁 Documents/${fileName}`);
-
-        if (savedFile.uri) {
-          try {
-            await Share.share({
-              title: fileName,
-              url: savedFile.uri,
-              dialogTitle: "Open or View Excel File",
-            });
-          } catch {}
-        }
-      } else {
-        const blob = new Blob([excelBuffer], {
-          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
+      } catch (err: any) {
+        console.error("Export error:", err);
+        alert("Failed to export: " + (err?.message || ""));
+      } finally {
+        setIsExportModalOpen(false);
       }
-    } catch (err: any) {
-      console.error("Export error:", err);
-      alert("Failed to export: " + (err?.message || ""));
     } finally {
-      setIsExportModalOpen(false);
+      setExporting(false);
     }
   }
 
@@ -2816,7 +2888,7 @@ export default function DocTrackingPage() {
     if (!activeTarget) return [];
     const cleanId = normStr(activeTarget.doc_id);
     return Array.from(
-      new Set(
+      new Set<string>(
         supplies
           .filter(
             (x) =>
@@ -3129,6 +3201,8 @@ export default function DocTrackingPage() {
       district: activeTarget.district || "Mymensingh",
       upazila: activeTarget.upazila || "",
       agent_id: feedAgentId ? String(feedAgentId) : "",
+      assign_to: "agent",
+      sub_agent_id: "",
       union_name: "",
       village: trackForm.address,
       latitude: "",
@@ -3152,6 +3226,23 @@ export default function DocTrackingPage() {
       return false;
     return true;
   });
+
+  // Sub-agents: a farmer always keeps agent_id = the parent agent;
+  // sub_agent_id is optional (empty = directly under the agent).
+  const subAgentById: Record<string, SubAgentRecord> = {};
+  subAgents.forEach((s) => {
+    subAgentById[String(s.id)] = s;
+  });
+  // Sub-agent option label: "SubAgentName (ParentAgentName)" so the
+  // parent agent is visible in the all-sub-agents dropdown.
+  function getSubAgentOptionLabel(s: SubAgentRecord): string {
+    const parent = feedAgents.find(
+      (a) => String(a.id) === String(s.agent_id)
+    );
+    return parent?.agent_name
+      ? `${s.sub_agent_name} (${parent.agent_name})`
+      : s.sub_agent_name;
+  }
 
   // Other Agents List (Excludes current agent)
   const currentCollaboratedAgentId = getCollaboratedFeedAgentId(activeTarget);
@@ -3240,6 +3331,17 @@ export default function DocTrackingPage() {
   const selectedNewFarmerDistrictObj = geoDistricts.find(
     (d) => d.name === newFarmerForm.district
   );
+
+  // Map picker centre: the farmer's (parent) agent first — in Sub Agent
+  // mode agent_id already holds the sub-agent's parent agent. Falls back
+  // to upazila/district when the agent has no lat/lon.
+  const newFarmerAgent = newFarmerForm.agent_id
+    ? feedAgents.find((a) => String(a.id) === String(newFarmerForm.agent_id))
+    : null;
+  const newFarmerAgentCenter: [number, number] | null =
+    newFarmerAgent?.latitude && newFarmerAgent?.longitude
+      ? [Number(newFarmerAgent.latitude), Number(newFarmerAgent.longitude)]
+      : null;
 
   const isTrackingFormVisible =
     !!editingTracking ||
@@ -3805,6 +3907,19 @@ export default function DocTrackingPage() {
                                               canModifyTracking(tr);
                                             const autoInfo =
                                               mapPcdToCategoryAndBreed(tr.pcd);
+                                            const trFarmer = tr.farmer_id
+                                              ? farmersList.find(
+                                                  (f) =>
+                                                    Number(f.id) ===
+                                                    Number(tr.farmer_id)
+                                                )
+                                              : undefined;
+                                            const subAgentName =
+                                              trFarmer?.sub_agent_id
+                                                ? subAgentById[
+                                                    String(trFarmer.sub_agent_id)
+                                                  ]?.sub_agent_name || ""
+                                                : "";
                                             const computedBox =
                                               tr.b_qty !== undefined &&
                                               tr.b_qty !== null
@@ -3823,6 +3938,7 @@ export default function DocTrackingPage() {
                                               >
                                                 <td className="py-0.5 px-1.5 font-bold text-slate-800">
                                                   {displayNameForTracking(tr)}
+                                                  {subAgentName && (<div className="text-[10px] text-slate-400 leading-tight">sub-ag • {subAgentName}</div>)}
                                                 </td>
                                                 <td className="py-0.5 px-1.5 text-slate-600">
                                                   {tr.h_date}
@@ -3865,7 +3981,7 @@ export default function DocTrackingPage() {
                                                             agent
                                                           )
                                                         }
-                                                        className="text-blue-600 hover:text-blue-800 p-0.5"
+                                                        className="text-blue-600 hover:text-blue-800 p-0.5 cursor-pointer"
                                                         title="Edit"
                                                       >
                                                         <FaEdit size={10} />
@@ -3877,7 +3993,7 @@ export default function DocTrackingPage() {
                                                             tr
                                                           )
                                                         }
-                                                        className="text-red-500 hover:text-red-700 p-0.5"
+                                                        className="text-red-500 hover:text-red-700 p-0.5 cursor-pointer"
                                                         title="Delete"
                                                       >
                                                         <FaTrash size={9} />
@@ -4281,6 +4397,7 @@ export default function DocTrackingPage() {
                             ...newFarmerForm,
                             company_id: e.target.value,
                             agent_id: "",
+                            sub_agent_id: "",
                           })
                         }
                         className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
@@ -4306,6 +4423,7 @@ export default function DocTrackingPage() {
                             upazila: "",
                             union_name: "",
                             agent_id: "",
+                            sub_agent_id: "",
                           })
                         }
                         className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
@@ -4330,6 +4448,7 @@ export default function DocTrackingPage() {
                             upazila: e.target.value,
                             union_name: "",
                             agent_id: "",
+                            sub_agent_id: "",
                           })
                         }
                         className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
@@ -4342,28 +4461,101 @@ export default function DocTrackingPage() {
                         ))}
                       </select>
                     </div>
-                    <div>
+                    {/* Assign to: Agent or Sub Agent (checkboxes act like radios) */}
+                    <div className="col-span-2">
                       <label className="block font-medium text-slate-700 mb-0.5">
-                        Agent *
+                        Assign Farmer To *
                       </label>
-                      <select
-                        value={newFarmerForm.agent_id}
-                        onChange={(e) =>
-                          setNewFarmerForm({
-                            ...newFarmerForm,
-                            agent_id: e.target.value,
-                          })
-                        }
-                        className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
-                      >
-                        <option value="">Select</option>
-                        {nfAgentOptions.map((a) => (
-                          <option key={a.id} value={a.id}>
-                            {a.agent_name}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="flex items-center gap-5">
+                        <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={newFarmerForm.assign_to === "agent"}
+                            onChange={() =>
+                              setNewFarmerForm({
+                                ...newFarmerForm,
+                                assign_to: "agent",
+                                sub_agent_id: "",
+                              })
+                            }
+                            className="w-3.5 h-3.5 accent-indigo-600"
+                          />
+                          Agent
+                        </label>
+                        <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={newFarmerForm.assign_to === "sub"}
+                            onChange={() =>
+                              setNewFarmerForm({
+                                ...newFarmerForm,
+                                assign_to: "sub",
+                                sub_agent_id: "",
+                              })
+                            }
+                            className="w-3.5 h-3.5 accent-indigo-600"
+                          />
+                          Sub Agent
+                        </label>
+                      </div>
                     </div>
+                    {newFarmerForm.assign_to === "agent" ? (
+                      <div>
+                        <label className="block font-medium text-slate-700 mb-0.5">
+                          Agent *
+                        </label>
+                        <select
+                          value={newFarmerForm.agent_id}
+                          onChange={(e) =>
+                            setNewFarmerForm({
+                              ...newFarmerForm,
+                              agent_id: e.target.value,
+                              sub_agent_id: "",
+                            })
+                          }
+                          className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
+                        >
+                          <option value="">Select</option>
+                          {nfAgentOptions.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.agent_name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="block font-medium text-slate-700 mb-0.5">
+                          Sub Agent *
+                        </label>
+                        <select
+                          value={newFarmerForm.sub_agent_id}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            // The farmer keeps agent_id = the
+                            // sub-agent's parent agent.
+                            const parent = subAgents.find(
+                              (s) => String(s.id) === String(v)
+                            );
+                            setNewFarmerForm({
+                              ...newFarmerForm,
+                              sub_agent_id: v,
+                              agent_id: parent
+                                ? String(parent.agent_id)
+                                : newFarmerForm.agent_id,
+                            });
+                          }}
+                          className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
+                        >
+                          <option value="">Select</option>
+                          {subAgents.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {getSubAgentOptionLabel(s)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                     <div>
                       <label className="block font-medium text-slate-700 mb-0.5">
                         Union
@@ -4429,188 +4621,176 @@ export default function DocTrackingPage() {
                     )}
                   </div>
 
-                  {/* Sheds for the new farmer — first shed is just the farmer name */}
-                  <div className="border-t border-indigo-200 pt-2 space-y-2">
-                    <div className="font-bold text-[11px] text-indigo-900">
-                      Sheds — short labels only
-                    </div>
-                    <p className="text-[11px] text-slate-500">
-                      Type a short label — e.g. Shed 1 or Bridge par. A
-                      single shed can stay blank. The table shows only
-                      this label; the map/popup show it with the farmer name.
-                    </p>
-                    {newFarmerSheds.map(
-                      (
-                        ns: {
-                          shed_name: string;
-                          farm_category: string;
-                          latitude: string;
-                          longitude: string;
-                        },
-                        nsIdx: number
-                      ) => (
-                      <div
-                        key={nsIdx}
-                        className="border border-indigo-200 bg-white rounded-lg p-2 space-y-1.5"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-slate-800">
-                            {trackForm.farmer_name.trim()
-                              ? getShedDisplayName(
-                                  {
-                                    farmer_name: trackForm.farmer_name.trim(),
-                                  },
-                                  { shed_name: ns.shed_name },
-                                  nsIdx,
-                                  newFarmerSheds.length
+                  {/* Sheds for the new farmer — first shed is just the farmer name.
+                      Sheds apply to Poultry only; hidden for Fish/Cattle. */}
+                  {trackForm.category !== "Cattle" &&
+                    trackForm.category !== "Fish" && (
+                    <div className="border-t border-indigo-200 pt-2 space-y-2">
+                      <div className="font-bold text-[11px] text-indigo-900">
+                        Sheds — short labels only
+                      </div>
+                      <p className="text-[11px] text-slate-500">
+                        Type a short label — e.g. Shed 1 or Bridge par. A
+                        single shed can stay blank. The table shows only
+                        this label; the map/popup show it with the farmer name.
+                      </p>
+                      {newFarmerSheds.map(
+                        (
+                          ns: {
+                            shed_name: string;
+                            farm_category: string;
+                            latitude: string;
+                            longitude: string;
+                          },
+                          nsIdx: number
+                        ) => (
+                        <div
+                          key={nsIdx}
+                          className="border border-indigo-200 bg-white rounded-lg p-2 space-y-1.5"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-slate-800">
+                              {trackForm.farmer_name.trim()
+                                ? getShedDisplayName(
+                                    {
+                                      farmer_name: trackForm.farmer_name.trim(),
+                                    },
+                                    { shed_name: ns.shed_name },
+                                    nsIdx,
+                                    newFarmerSheds.length
+                                  )
+                                : nsIdx === 0
+                                ? "First shed"
+                                : `Shed ${nsIdx + 1}`}
+                            </span>
+                            {newFarmerSheds.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setNewFarmerSheds((prev) =>
+                                    prev.filter((_: any, i: number) => i !== nsIdx)
+                                  )
+                                }
+                                className="text-red-600 text-[11px] font-semibold"
+                              >
+                                Remove
+                              </button>
+                            )}
+                          </div>
+                          <input
+                            placeholder={
+                              nsIdx === 0
+                                ? "Shed label (optional — blank = farmer name)"
+                                : "Shed label e.g. Bridge par (optional)"
+                            }
+                            value={ns.shed_name}
+                            onChange={(e) =>
+                              setNewFarmerSheds((prev) =>
+                                prev.map((s, i) =>
+                                  i === nsIdx
+                                    ? { ...s, shed_name: e.target.value }
+                                    : s
                                 )
-                              : nsIdx === 0
-                              ? "First shed"
-                              : `Shed ${nsIdx + 1}`}
-                          </span>
-                          {newFarmerSheds.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setNewFarmerSheds((prev) =>
-                                  prev.filter((_: any, i: number) => i !== nsIdx)
-                                )
-                              }
-                              className="text-red-600 text-[11px] font-semibold"
-                            >
-                              Remove
-                            </button>
+                              )
+                            }
+                            className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
+                          />
+                          <div className="w-full border border-slate-200 rounded-lg px-2 py-1 bg-slate-50 text-[12px] font-semibold text-slate-600">
+                            Poultry
+                          </div>
+                          {nsIdx === 0 ? (
+                            <p className="text-[11px] text-slate-500">
+                              Location above is used for this shed.
+                            </p>
+                          ) : (
+                            <div className="grid grid-cols-2 gap-2">
+                              <input
+                                placeholder="Latitude (optional)"
+                                value={ns.latitude}
+                                onChange={(e) =>
+                                  setNewFarmerSheds((prev) =>
+                                    prev.map((s, i) =>
+                                      i === nsIdx
+                                        ? { ...s, latitude: e.target.value }
+                                        : s
+                                    )
+                                  )
+                                }
+                                className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
+                              />
+                              <input
+                                placeholder="Longitude (optional)"
+                                value={ns.longitude}
+                                onChange={(e) =>
+                                  setNewFarmerSheds((prev) =>
+                                    prev.map((s, i) =>
+                                      i === nsIdx
+                                        ? { ...s, longitude: e.target.value }
+                                        : s
+                                    )
+                                  )
+                                }
+                                className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
+                              />
+                            </div>
                           )}
                         </div>
-                        <input
-                          placeholder={
-                            nsIdx === 0
-                              ? "Shed label (optional — blank = farmer name)"
-                              : "Shed label e.g. Bridge par (optional)"
-                          }
-                          value={ns.shed_name}
-                          onChange={(e) =>
-                            setNewFarmerSheds((prev) =>
-                              prev.map((s, i) =>
-                                i === nsIdx
-                                  ? { ...s, shed_name: e.target.value }
-                                  : s
-                              )
-                            )
-                          }
-                          className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
-                        />
-                        <select
-                          value={ns.farm_category || trackForm.category}
-                          onChange={(e) =>
-                            setNewFarmerSheds((prev) =>
-                              prev.map((s, i) =>
-                                i === nsIdx
-                                  ? { ...s, farm_category: e.target.value }
-                                  : s
-                              )
-                            )
-                          }
-                          className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
-                        >
-                          {FARM_CATEGORIES.map((cat) => (
-                            <option key={cat} value={cat}>
-                              {cat}
-                            </option>
-                          ))}
-                        </select>
-                        {nsIdx === 0 ? (
-                          <p className="text-[11px] text-slate-500">
-                            Location above is used for this shed.
-                          </p>
-                        ) : (
-                          <div className="grid grid-cols-2 gap-2">
-                            <input
-                              placeholder="Latitude (optional)"
-                              value={ns.latitude}
-                              onChange={(e) =>
-                                setNewFarmerSheds((prev) =>
-                                  prev.map((s, i) =>
-                                    i === nsIdx
-                                      ? { ...s, latitude: e.target.value }
-                                      : s
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // Adding a 2nd shed: if the only shed has no name
+                          // yet, ask for its name first. Empty/cancel =>
+                          // it becomes "Shed 1" automatically. (No DB save
+                          // here — this farmer is still being created.)
+                          const prev = newFarmerSheds;
+                          const prevNeedsName =
+                            prev.length === 1 &&
+                            getShedShortName(
+                              { farmer_name: trackForm.farmer_name },
+                              prev[0],
+                              0,
+                              1
+                            ) === "";
+                          let prevName = "";
+                          if (prevNeedsName) {
+                            const answer = window.prompt(
+                              "Name the previous shed (leave empty for 'Shed 1'):",
+                              ""
+                            );
+                            prevName =
+                              answer && answer.trim()
+                                ? getShedShortName(
+                                    { farmer_name: trackForm.farmer_name },
+                                    { shed_name: answer.trim() },
+                                    0,
+                                    2
                                   )
+                                : "Shed 1";
+                          }
+                          setNewFarmerSheds((prevSheds) => {
+                            const updated = prevNeedsName
+                              ? prevSheds.map((s, i) =>
+                                  i === 0 ? { ...s, shed_name: prevName } : s
                                 )
-                              }
-                              className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
-                            />
-                            <input
-                              placeholder="Longitude (optional)"
-                              value={ns.longitude}
-                              onChange={(e) =>
-                                setNewFarmerSheds((prev) =>
-                                  prev.map((s, i) =>
-                                    i === nsIdx
-                                      ? { ...s, longitude: e.target.value }
-                                      : s
-                                  )
-                                )
-                              }
-                              className="w-full border border-slate-300 rounded-lg px-2 py-1 bg-white"
-                            />
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        // Adding a 2nd shed: if the only shed has no name
-                        // yet, ask for its name first. Empty/cancel =>
-                        // it becomes "Shed 1" automatically. (No DB save
-                        // here — this farmer is still being created.)
-                        const prev = newFarmerSheds;
-                        const prevNeedsName =
-                          prev.length === 1 &&
-                          getShedShortName(
-                            { farmer_name: trackForm.farmer_name },
-                            prev[0],
-                            0,
-                            1
-                          ) === "";
-                        let prevName = "";
-                        if (prevNeedsName) {
-                          const answer = window.prompt(
-                            "Ager shed er nam din (khali rakhle 'Shed 1' hobe):",
-                            ""
-                          );
-                          prevName =
-                            answer && answer.trim()
-                              ? getShedShortName(
-                                  { farmer_name: trackForm.farmer_name },
-                                  { shed_name: answer.trim() },
-                                  0,
-                                  2
-                                )
-                              : "Shed 1";
-                        }
-                        setNewFarmerSheds((prevSheds) => {
-                          const updated = prevNeedsName
-                            ? prevSheds.map((s, i) =>
-                                i === 0 ? { ...s, shed_name: prevName } : s
-                              )
-                            : prevSheds;
-                          return [
-                            ...updated,
-                            {
-                              shed_name: `Shed ${prevSheds.length + 1}`,
-                              farm_category: "",
-                              latitude: "",
-                              longitude: "",
-                            },
-                          ];
-                        });
-                      }}
-                      className="inline-flex items-center gap-1 bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded text-[11px] font-semibold"
-                    >
-                      + Add another shed
-                    </button>
-                  </div>
+                              : prevSheds;
+                            return [
+                              ...updated,
+                              {
+                                shed_name: `Shed ${prevSheds.length + 1}`,
+                                farm_category: "",
+                                latitude: "",
+                                longitude: "",
+                              },
+                            ];
+                          });
+                        }}
+                        className="inline-flex items-center gap-1 bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded text-[11px] font-semibold"
+                      >
+                        + Add another shed
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -5031,10 +5211,14 @@ export default function DocTrackingPage() {
                     modalSelectedStats.remaining <= 0 ||
                     !isTrackingFormVisible
                   }
-                  className="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold flex items-center justify-center gap-1.5"
+                  className="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 cursor-pointer text-white font-bold flex items-center justify-center gap-1.5"
                 >
                   {submitting && <FaSpinner className="animate-spin" />}
-                  {editingTracking ? "Update Tracking" : "Save Tracking"}
+                  {submitting
+                    ? "Saving..."
+                    : editingTracking
+                    ? "Update Tracking"
+                    : "Save Tracking"}
                 </button>
               </div>
             </form>
@@ -5089,6 +5273,8 @@ export default function DocTrackingPage() {
               center={
                 pickerCenterOverride
                   ? pickerCenterOverride
+                  : newFarmerAgentCenter
+                  ? newFarmerAgentCenter
                   : selectedNewFarmerUpazilaObj?.lat &&
                     selectedNewFarmerUpazilaObj?.lon
                   ? [
@@ -5106,6 +5292,8 @@ export default function DocTrackingPage() {
               zoom={
                 pickerCenterOverride
                   ? 17
+                  : newFarmerAgentCenter
+                  ? 14
                   : selectedNewFarmerUpazilaObj
                   ? 13
                   : selectedNewFarmerDistrictObj
@@ -5211,11 +5399,18 @@ export default function DocTrackingPage() {
                 <button
                   type="button"
                   onClick={handleExportExcel}
-                  disabled={exportSelectedTypes.length === 0}
-                  className="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold flex items-center justify-center gap-1.5"
+                  disabled={exporting || exportSelectedTypes.length === 0}
+                  className="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 cursor-pointer text-white text-xs font-semibold flex items-center justify-center gap-1.5"
                 >
-                  <FaFileExcel />
-                  Export ({exportSelectedTypes.length})
+                  {exporting ? (
+                    <>
+                      <FaSpinner className="animate-spin" /> Exporting...
+                    </>
+                  ) : (
+                    <>
+                      <FaFileExcel /> Export ({exportSelectedTypes.length})
+                    </>
+                  )}
                 </button>
               </div>
             </div>

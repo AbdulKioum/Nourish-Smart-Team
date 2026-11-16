@@ -390,11 +390,14 @@ function NoteThread({
   async function handleSaveEdit(n: any) {
     if (!onEditNote || !editValue.trim() || savingEdit) return;
     setSavingEdit(true);
-    const ok = await onEditNote(n, editValue.trim());
-    setSavingEdit(false);
-    if (ok) {
-      setEditingId(null);
-      setEditValue("");
+    try {
+      const ok = await onEditNote(n, editValue.trim());
+      if (ok) {
+        setEditingId(null);
+        setEditValue("");
+      }
+    } finally {
+      setSavingEdit(false);
     }
   }
 
@@ -465,7 +468,7 @@ function NoteThread({
                     type="button"
                     onClick={() => onTagUser(n.user_name || "Officer")}
                     title={`Tag ${n.user_name || "Officer"}`}
-                    className="inline-flex items-center gap-0.5 rounded bg-blue-50 hover:bg-blue-100 border border-blue-200 px-1.5 py-0.5 text-[10px] font-bold text-blue-700 transition"
+                    className="cursor-pointer inline-flex items-center gap-0.5 rounded bg-blue-50 hover:bg-blue-100 border border-blue-200 px-1.5 py-0.5 text-[10px] font-bold text-blue-700 transition"
                   >
                     @ Tag
                   </button>
@@ -481,7 +484,7 @@ function NoteThread({
                       setEditingId(n.id);
                       setEditValue(meta.cleanText);
                     }}
-                    className="rounded p-1 text-slate-400 hover:bg-slate-200/70 hover:text-emerald-700 transition"
+                    className="cursor-pointer rounded p-1 text-slate-400 hover:bg-slate-200/70 hover:text-emerald-700 transition"
                   >
                     <Pencil size={11} />
                   </button>
@@ -505,7 +508,7 @@ function NoteThread({
                       setEditingId(null);
                       setEditValue("");
                     }}
-                    className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
+                    className="cursor-pointer rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
                   >
                     Cancel
                   </button>
@@ -513,7 +516,7 @@ function NoteThread({
                     type="button"
                     disabled={savingEdit || !editValue.trim()}
                     onClick={() => handleSaveEdit(n)}
-                    className="inline-flex items-center gap-1 rounded-md bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1 text-[11px] font-bold text-white disabled:opacity-50"
+                    className="cursor-pointer inline-flex items-center gap-1 rounded-md bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1 text-[11px] font-bold text-white disabled:opacity-60"
                   >
                     <Check size={11} />
                     {savingEdit ? "Saving..." : "Update"}
@@ -533,7 +536,7 @@ function NoteThread({
         <button
           type="button"
           onClick={() => setLimit((prev) => prev + 10)}
-          className="w-full rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 py-1.5 text-center text-xs font-semibold text-emerald-700 transition"
+          className="cursor-pointer w-full rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 py-1.5 text-center text-xs font-semibold text-emerald-700 transition"
         >
           Load more messages ({remaining} older)
         </button>
@@ -691,7 +694,7 @@ function MapPickerModal({
         }
         if (perm.location !== "granted") {
           alert(
-            "অনুগ্রহ করে ফোনের Settings থেকে এই অ্যাপের Location Permission অন করুন।"
+            "Please turn on Location Permission for this app from your phone's Settings."
           );
           setLocating(false);
           return;
@@ -717,12 +720,12 @@ function MapPickerModal({
             setMyLoc(coords);
             setFlyTarget([...coords]);
           },
-          () => alert("ব্রাউজারে লোকেশন পাওয়া যায়নি।"),
+          () => alert("Could not get location from the browser."),
           { enableHighAccuracy: true }
         );
       }
     } catch (err: any) {
-      alert("লোকেশন পেতে সমস্যা হয়েছে: " + err.message);
+      alert("There was a problem getting your location: " + err.message);
     } finally {
       setLocating(false);
     }
@@ -748,14 +751,14 @@ function MapPickerModal({
               type="button"
               onClick={handleLocateMe}
               disabled={locating}
-              className="flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 px-3 py-1.5 text-xs font-bold text-white shadow-sm disabled:opacity-60"
+              className="cursor-pointer flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 px-3 py-1.5 text-xs font-bold text-white shadow-sm disabled:opacity-60"
             >
               <Crosshair size={13} />
               {locating ? "Locating..." : "Locate Me"}
             </button>
             <button
               onClick={onClose}
-              className="text-slate-500 hover:text-slate-800"
+              className="cursor-pointer text-slate-500 hover:text-slate-800"
             >
               <X size={18} />
             </button>
@@ -822,7 +825,7 @@ function MapPickerModal({
             type="button"
             onClick={handleLocateMe}
             disabled={locating}
-            className="absolute top-3 right-3 z-[1000] flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white/95 hover:bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 shadow-lg backdrop-blur-xs"
+            className="cursor-pointer absolute top-3 right-3 z-[1000] flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white/95 hover:bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 shadow-lg backdrop-blur-xs"
           >
             <Crosshair size={14} className="text-blue-600" />
             {locating ? "Locating..." : "Locate Me"}
@@ -967,20 +970,20 @@ function FarmerMapModal({
               type="button"
               onClick={handleLocateMe}
               disabled={locating}
-              className="flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 px-3 py-1.5 text-xs font-bold text-white shadow-sm disabled:opacity-60"
+              className="cursor-pointer flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 px-3 py-1.5 text-xs font-bold text-white shadow-sm disabled:opacity-60"
             >
               <Crosshair size={13} />
               {locating ? "Locating..." : "Locate Me"}
             </button>
             <button
               onClick={onDetails}
-              className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              className="cursor-pointer rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
             >
               View details
             </button>
             <button
               onClick={onClose}
-              className="text-slate-500 hover:text-slate-800"
+              className="cursor-pointer text-slate-500 hover:text-slate-800"
             >
               <X size={18} />
             </button>
@@ -993,7 +996,7 @@ function FarmerMapModal({
               type="button"
               onClick={handleLocateMe}
               disabled={locating}
-              className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white/95 hover:bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 shadow-lg backdrop-blur-xs"
+              className="cursor-pointer flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white/95 hover:bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 shadow-lg backdrop-blur-xs"
             >
               <Crosshair size={14} className="text-blue-600" />
               {locating ? "Locating..." : "Locate Me"}
@@ -1066,6 +1069,7 @@ function FarmerModal({
   onViewMap,
   onClose,
 }: {
+  key?: string | number;
   farmer: any;
   notes: any[];
   initialTab: "track" | "details";
@@ -1109,26 +1113,29 @@ function FarmerModal({
     e.preventDefault();
     if (!text.trim() || saving) return;
     setSaving(true);
-    const prefix =
-      postMode === "risky"
-        ? `${RISKY_PREFIX} `
-        : postMode === "weak"
-        ? `${WEAK_PREFIX} `
-        : postMode === "clear"
-        ? `${RESOLVED_PREFIX} `
-        : "";
-    const ok = await onSave(farmer, `${prefix}${text.trim()}`);
-    setSaving(false);
-    if (ok) {
-      setText("");
-      setPostMode("normal");
+    try {
+      const prefix =
+        postMode === "risky"
+          ? `${RISKY_PREFIX} `
+          : postMode === "weak"
+          ? `${WEAK_PREFIX} `
+          : postMode === "clear"
+          ? `${RESOLVED_PREFIX} `
+          : "";
+      const ok = await onSave(farmer, `${prefix}${text.trim()}`);
+      if (ok) {
+        setText("");
+        setPostMode("normal");
+      }
+    } finally {
+      setSaving(false);
     }
   }
 
   const tabBtn = (id: "track" | "details", label: string) => (
     <button
       onClick={() => setTab(id)}
-      className={`border-b-2 px-3 py-2 text-xs font-semibold ${
+      className={`cursor-pointer border-b-2 px-3 py-2 text-xs font-semibold ${
         tab === id
           ? "border-emerald-600 text-emerald-700"
           : "border-transparent text-slate-500 hover:text-slate-800"
@@ -1207,14 +1214,14 @@ function FarmerModal({
             {farmer.latitude && farmer.longitude && (
               <button
                 onClick={() => onViewMap(farmer)}
-                className="flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                className="cursor-pointer flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
               >
                 <MapPin size={12} /> Map
               </button>
             )}
             <button
               onClick={onClose}
-              className="text-slate-500 hover:text-slate-800"
+              className="cursor-pointer text-slate-500 hover:text-slate-800"
             >
               <X size={18} />
             </button>
@@ -1239,7 +1246,7 @@ function FarmerModal({
                         onClick={() =>
                           setPostMode(postMode === "clear" ? "normal" : "clear")
                         }
-                        className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
+                        className={`cursor-pointer inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
                           postMode === "clear"
                             ? "border-emerald-600 bg-emerald-600 text-white"
                             : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
@@ -1253,7 +1260,7 @@ function FarmerModal({
                         onClick={() =>
                           setPostMode(postMode === "risky" ? "normal" : "risky")
                         }
-                        className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
+                        className={`cursor-pointer inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
                           postMode === "risky"
                             ? "border-red-600 bg-red-600 text-white"
                             : "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
@@ -1268,7 +1275,7 @@ function FarmerModal({
                       onClick={() =>
                         setPostMode(postMode === "clear" ? "normal" : "clear")
                       }
-                      className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
+                      className={`cursor-pointer inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
                         postMode === "clear"
                           ? "border-emerald-600 bg-emerald-600 text-white"
                           : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
@@ -1282,7 +1289,7 @@ function FarmerModal({
                       onClick={() =>
                         setPostMode(postMode === "weak" ? "normal" : "weak")
                       }
-                      className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
+                      className={`cursor-pointer inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
                         postMode === "weak"
                           ? "border-teal-600 bg-teal-600 text-white"
                           : "border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100"
@@ -1296,7 +1303,7 @@ function FarmerModal({
                 <button
                   type="button"
                   onClick={() => setShowMentionList((v) => !v)}
-                  className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 text-[11px] font-bold text-blue-700 transition"
+                  className="cursor-pointer inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 text-[11px] font-bold text-blue-700 transition"
                 >
                   <AtSign size={11} /> Tag User
                 </button>
@@ -1311,7 +1318,7 @@ function FarmerModal({
                           key={u.id}
                           type="button"
                           onClick={() => handleModalTagUser(uName)}
-                          className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-blue-50 rounded-lg transition"
+                          className="cursor-pointer w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-blue-50 rounded-lg transition"
                         >
                           <UserAvatar
                             name={uName}
@@ -1364,7 +1371,7 @@ function FarmerModal({
                   <button
                     type="submit"
                     disabled={saving || !text.trim()}
-                    className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50 ${
+                    className={`cursor-pointer flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60 ${
                       postMode === "risky"
                         ? "bg-red-600 hover:bg-red-700"
                         : postMode === "weak"
@@ -1376,7 +1383,7 @@ function FarmerModal({
                   >
                     <Send size={12} />{" "}
                     {saving
-                      ? "Saving..."
+                      ? "Sending..."
                       : postMode === "risky"
                       ? "Save Risky & Notify"
                       : postMode === "weak"
@@ -1437,6 +1444,7 @@ function FarmerTrackingGroupCard({
   onViewMap,
   onEditNote,
 }: {
+  key?: string | number;
   farmer: any;
   notes: any[];
   currentUserId: string;
@@ -1470,7 +1478,7 @@ function FarmerTrackingGroupCard({
             <button
               type="button"
               onClick={onDetails}
-              className="flex items-start gap-2.5 text-left min-w-0"
+              className="cursor-pointer flex items-start gap-2.5 text-left min-w-0"
             >
               <span className="text-xl leading-none shrink-0 mt-0.5">
                 {badge.emoji}
@@ -1509,7 +1517,7 @@ function FarmerTrackingGroupCard({
             <button
               type="button"
               onClick={onRetrack}
-              className="inline-flex items-center justify-center gap-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1 text-[11px] font-bold text-white shadow-2xs transition"
+              className="cursor-pointer inline-flex items-center justify-center gap-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1 text-[11px] font-bold text-white shadow-2xs transition"
             >
               <RotateCcw size={11} /> Retrack
             </button>
@@ -1518,7 +1526,7 @@ function FarmerTrackingGroupCard({
               type="button"
               onClick={onViewMap}
               disabled={!farmer.latitude || !farmer.longitude}
-              className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700 disabled:opacity-40 transition"
+              className="cursor-pointer inline-flex items-center justify-center gap-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700 disabled:opacity-40 transition"
             >
               <MapPin size={11} /> Map
             </button>
@@ -1562,11 +1570,10 @@ function TrackingContent({ role }: { role: any }) {
   // Permissions (src/utils/accessControl.ts): tracking notes cover ALL
   // categories, so there is NO category gate here — only ownership
   // (canEditRecord on user_id). View stays open to everyone.
- 
 
   const [currentUserId, setCurrentUserId] = useState("");
   const [currentUserName, setCurrentUserName] = useState("User");
-  const [_assignedCategories, setAssignedCategories] = useState<string[]>([]);
+  const [, setAssignedCategories] = useState<string[]>([]);
   const [allUsers, setAllUsers] = useState<any[]>([]);
   const [farmers, setFarmers] = useState<any[]>([]);
   const [trackings, setTrackings] = useState<any[]>([]);
@@ -2041,22 +2048,25 @@ function TrackingContent({ role }: { role: any }) {
   async function handleSavePicked() {
     if (!pickedFarmer || !noteText.trim() || saving) return;
     setSaving(true);
-    const prefix =
-      pickedMode === "risky"
-        ? `${RISKY_PREFIX} `
-        : pickedMode === "weak"
-        ? `${WEAK_PREFIX} `
-        : pickedMode === "clear"
-        ? `${RESOLVED_PREFIX} `
-        : "";
-    const ok = await saveNote(pickedFarmer, `${prefix}${noteText.trim()}`);
-    setSaving(false);
-    if (ok) {
-      setNoteText("");
-      setPickedMode("normal");
-      setPickedFarmer(null);
-      setFarmerQuery("");
-      setTrackOpen(false);
+    try {
+      const prefix =
+        pickedMode === "risky"
+          ? `${RISKY_PREFIX} `
+          : pickedMode === "weak"
+          ? `${WEAK_PREFIX} `
+          : pickedMode === "clear"
+          ? `${RESOLVED_PREFIX} `
+          : "";
+      const ok = await saveNote(pickedFarmer, `${prefix}${noteText.trim()}`);
+      if (ok) {
+        setNoteText("");
+        setPickedMode("normal");
+        setPickedFarmer(null);
+        setFarmerQuery("");
+        setTrackOpen(false);
+      }
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -2194,7 +2204,7 @@ function TrackingContent({ role }: { role: any }) {
             <button
               type="button"
               onClick={() => setTrackOpen((o) => !o)}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold shadow-xs transition-all duration-300 ${
+              className={`cursor-pointer inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold shadow-xs transition-all duration-300 ${
                 trackOpen
                   ? "bg-slate-800 text-white"
                   : "bg-emerald-600 hover:bg-emerald-700 text-white"
@@ -2218,7 +2228,7 @@ function TrackingContent({ role }: { role: any }) {
             <button
               type="button"
               onClick={() => setShowPicker(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 hover:bg-blue-100 px-3 py-2 text-xs font-bold text-blue-700 transition"
+              className="cursor-pointer inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 hover:bg-blue-100 px-3 py-2 text-xs font-bold text-blue-700 transition"
             >
               <MapPin size={13} /> Pick from Map
             </button>
@@ -2228,7 +2238,7 @@ function TrackingContent({ role }: { role: any }) {
             <button
               type="button"
               onClick={() => setTrackOpen(true)}
-              className="text-xs font-semibold text-emerald-700 hover:underline animate-pulse"
+              className="cursor-pointer text-xs font-semibold text-emerald-700 hover:underline animate-pulse"
             >
               Selected: {pickedFarmer.farmer_name} (Click to open)
             </button>
@@ -2360,7 +2370,7 @@ function TrackingContent({ role }: { role: any }) {
                               e.preventDefault();
                               pickFarmer(f);
                             }}
-                            className="flex w-full items-center gap-2 border-b border-slate-100 px-3 py-2 text-left hover:bg-emerald-50 transition"
+                            className="cursor-pointer flex w-full items-center gap-2 border-b border-slate-100 px-3 py-2 text-left hover:bg-emerald-50 transition"
                           >
                             <span className="text-lg leading-none">
                               {getFarmerBadgeInfo(f).emoji}
@@ -2419,7 +2429,7 @@ function TrackingContent({ role }: { role: any }) {
                       <button
                         onClick={clearPicked}
                         title="Clear"
-                        className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+                        className="cursor-pointer rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
                       >
                         <X size={14} />
                       </button>
@@ -2449,7 +2459,7 @@ function TrackingContent({ role }: { role: any }) {
                         <button
                           type="button"
                           onClick={() => setShowMentionList((v) => !v)}
-                          className="inline-flex items-center gap-0.5 rounded border border-blue-200 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-blue-700 transition"
+                          className="cursor-pointer inline-flex items-center gap-0.5 rounded border border-blue-200 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-blue-700 transition"
                         >
                           <AtSign size={10} /> Tag User
                         </button>
@@ -2462,7 +2472,7 @@ function TrackingContent({ role }: { role: any }) {
                                   pickedMode === "clear" ? "normal" : "clear"
                                 )
                               }
-                              className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold transition ${
+                              className={`cursor-pointer inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold transition ${
                                 pickedMode === "clear"
                                   ? "bg-emerald-600 text-white"
                                   : "border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
@@ -2478,7 +2488,7 @@ function TrackingContent({ role }: { role: any }) {
                                   pickedMode === "risky" ? "normal" : "risky"
                                 )
                               }
-                              className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold transition ${
+                              className={`cursor-pointer inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold transition ${
                                 pickedMode === "risky"
                                   ? "bg-red-600 text-white"
                                   : "border border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
@@ -2495,7 +2505,7 @@ function TrackingContent({ role }: { role: any }) {
                                 pickedMode === "clear" ? "normal" : "clear"
                               )
                             }
-                            className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold transition ${
+                            className={`cursor-pointer inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold transition ${
                               pickedMode === "clear"
                                 ? "bg-emerald-600 text-white"
                                 : "border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
@@ -2511,7 +2521,7 @@ function TrackingContent({ role }: { role: any }) {
                                 pickedMode === "weak" ? "normal" : "weak"
                               )
                             }
-                            className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold transition ${
+                            className={`cursor-pointer inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold transition ${
                               pickedMode === "weak"
                                 ? "bg-teal-600 text-white"
                                 : "border border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100"
@@ -2533,7 +2543,7 @@ function TrackingContent({ role }: { role: any }) {
                               key={u.id}
                               type="button"
                               onClick={() => handlePickedTagUser(uName)}
-                              className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-blue-50 rounded-lg transition"
+                              className="cursor-pointer w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-blue-50 rounded-lg transition"
                             >
                               <UserAvatar
                                 name={uName}
@@ -2582,7 +2592,7 @@ function TrackingContent({ role }: { role: any }) {
                       <button
                         onClick={handleSavePicked}
                         disabled={saving || !noteText.trim()}
-                        className={`flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-xs font-bold text-white disabled:opacity-50 ${
+                        className={`cursor-pointer flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-xs font-bold text-white disabled:opacity-60 ${
                           pickedMode === "risky"
                             ? "bg-red-600 hover:bg-red-700"
                             : pickedMode === "weak"
@@ -2630,7 +2640,7 @@ function TrackingContent({ role }: { role: any }) {
             <button
               type="button"
               onClick={() => setTrackOpen(false)}
-              className="font-bold text-emerald-700 hover:underline shrink-0 ml-2"
+              className="cursor-pointer font-bold text-emerald-700 hover:underline shrink-0 ml-2"
             >
               Show Messages ▾
             </button>
@@ -2653,7 +2663,7 @@ function TrackingContent({ role }: { role: any }) {
               <button
                 type="button"
                 onClick={() => setFilterOpen((o) => !o)}
-                className={`relative inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold shadow-xs transition-all duration-300 md:hidden ${
+                className={`cursor-pointer relative inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold shadow-xs transition-all duration-300 md:hidden ${
                   filterOpen
                     ? "bg-slate-800 text-white"
                     : "bg-emerald-600 hover:bg-emerald-700 text-white"
@@ -2692,7 +2702,7 @@ function TrackingContent({ role }: { role: any }) {
                 <button
                   type="button"
                   onClick={() => setStatusTab("all")}
-                  className={`flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-bold transition-all duration-300 ${
+                  className={`cursor-pointer flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-bold transition-all duration-300 ${
                     statusTab === "all"
                       ? "bg-white text-slate-900 shadow-2xs shrink-0"
                       : "text-slate-600 hover:text-slate-900 flex-1 min-w-0"
@@ -2710,7 +2720,7 @@ function TrackingContent({ role }: { role: any }) {
                 <button
                   type="button"
                   onClick={() => setStatusTab("risky")}
-                  className={`flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-bold transition-all duration-300 ${
+                  className={`cursor-pointer flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-bold transition-all duration-300 ${
                     statusTab === "risky"
                       ? "bg-red-600 text-white shadow-2xs shrink-0"
                       : "text-red-700 hover:bg-red-50 flex-1 min-w-0"
@@ -2738,7 +2748,7 @@ function TrackingContent({ role }: { role: any }) {
                 <button
                   type="button"
                   onClick={() => setStatusTab("weak")}
-                  className={`flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-bold transition-all duration-300 ${
+                  className={`cursor-pointer flex items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-bold transition-all duration-300 ${
                     statusTab === "weak"
                       ? "bg-teal-600 text-white shadow-2xs shrink-0"
                       : "text-teal-800 hover:bg-teal-50 flex-1 min-w-0"
@@ -2840,7 +2850,7 @@ function TrackingContent({ role }: { role: any }) {
                     <button
                       type="button"
                       onClick={resetLogFilters}
-                      className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-700"
+                      className="cursor-pointer inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-700"
                     >
                       <RotateCcw size={12} /> Reset
                     </button>
@@ -2956,7 +2966,7 @@ function TrackingContent({ role }: { role: any }) {
                     <button
                       type="button"
                       onClick={() => setVisibleFarmersCount((c) => c + 20)}
-                      className="rounded-xl border border-slate-300 bg-white hover:bg-slate-50 px-5 py-2 text-xs font-bold text-slate-700 shadow-2xs"
+                      className="cursor-pointer rounded-xl border border-slate-300 bg-white hover:bg-slate-50 px-5 py-2 text-xs font-bold text-slate-700 shadow-2xs"
                     >
                       Load more farmers ({logGroups.length - visibleFarmersCount}{" "}
                       remaining)

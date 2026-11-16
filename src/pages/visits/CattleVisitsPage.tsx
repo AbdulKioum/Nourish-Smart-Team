@@ -77,9 +77,9 @@ function validateReportDate(
   const d = String(reportDate || "").slice(0, 10);
   if (!d) return null; // empty date is caught by the required-field check
   const today = new Date().toISOString().split("T")[0];
-  if (d > today) return "Agami date e report dewa jabe na.";
+  if (d > today) return "You cannot add a report for a future date.";
   const floor = hatchDate ? String(hatchDate).slice(0, 10) : "";
-  if (floor && d < floor) return "Hatch date er age report dewa jabe na.";
+  if (floor && d < floor) return "Report date cannot be before the hatch date.";
   return null;
 }
 
@@ -89,7 +89,7 @@ function validateMortality(
 ): string | null {
   if (cap == null) return null; // no stock on record — nothing to cap against
   if (Number(mortality || 0) > cap)
-    return "Mortality total bird er cheye beshi hote parbe na.";
+    return "Mortality cannot be more than total birds.";
   return null;
 }
 
@@ -204,8 +204,6 @@ export default function CattleVisitsPage() {
 
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [assignedCategories, setAssignedCategories] = useState<string[]>([]);
-  const [_assignedUpazilas, setAssignedUpazilas] = useState<string[]>([]);
-  const [_assignedDistricts, setAssignedDistricts] = useState<string[]>([]);
 
   const [farmers, setFarmers] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
@@ -275,8 +273,6 @@ export default function CattleVisitsPage() {
         uCats = parseList(uProf.assigned_categories);
       }
     }
-    setAssignedUpazilas(uUpa);
-    setAssignedDistricts(uDist);
     setAssignedCategories(uCats);
 
     const [{ data: farmersData }, { data: agentsData }, { data: compData }, { data: visitData }] =
@@ -440,22 +436,23 @@ export default function CattleVisitsPage() {
 
   async function handleSaveVisit(e: React.FormEvent) {
     e.preventDefault();
+    if (saving) return;
     // Handler-level guard (not just the button): Add/Edit/Delete on the
     // Cattle page needs the Cattle category, and edits need ownership.
     if (!canAddCattle) {
-      alert("Apnar Cattle category assign kora nei — Cattle visit add/edit korte parben na.");
+      alert("Cattle is not assigned to you — you cannot add or edit Cattle visits.");
       return;
     }
     if (editingRow && !canEditRecord(roleStr, editingRow.created_by, currentUserId)) {
-      alert("Ei visit apni add koren ni — edit korte parben na.");
+      alert("You did not add this visit — you cannot edit it.");
       return;
     }
     if (!form.farmer_id) {
-      alert("Farmer select korun.");
+      alert("Please select a farmer.");
       return;
     }
     if (!form.visit_date) {
-      alert("Visit date din.");
+      alert("Please enter the visit date.");
       return;
     }
     // Report validation — BEFORE any DB write (add and edit alike).
@@ -533,14 +530,14 @@ export default function CattleVisitsPage() {
   async function handleDeleteVisit(row: any) {
     // Handler-level guard: Cattle category + ownership.
     if (!canAddCattle) {
-      alert("Apnar Cattle category assign kora nei — delete korte parben na.");
+      alert("Cattle is not assigned to you — you cannot delete.");
       return;
     }
     if (!canEditRecord(roleStr, row.created_by, currentUserId)) {
-      alert("Ei visit apni add koren ni — delete korte parben na.");
+      alert("You did not add this visit — you cannot delete it.");
       return;
     }
-    if (!window.confirm("Ei Cattle visit ta delete korben?")) return;
+    if (!window.confirm("Delete this Cattle visit?")) return;
     const { error } = await supabase.from("cattle_visits").delete().eq("id", row.id);
     if (error) {
       alert(error.message || "Delete failed.");
@@ -556,7 +553,7 @@ export default function CattleVisitsPage() {
     const lat = s?.latitude ?? farmer?.latitude;
     const lng = s?.longitude ?? farmer?.longitude;
     if (lat == null || lng == null || lat === "" || lng === "") {
-      alert("Ei farmer er location save kora nei.");
+      alert("No location saved for this farmer.");
       return;
     }
     window.open(
@@ -606,7 +603,7 @@ export default function CattleVisitsPage() {
       const next = [...prev];
       if (next.length === 0) {
         const name = window.prompt(
-          "Ager shed er nam din (khali rakhle 'Shed 1' hobe):",
+          "Name the previous shed (leave empty for 'Shed 1'):",
           ""
         );
         next.push({
@@ -623,12 +620,13 @@ export default function CattleVisitsPage() {
 
   async function handleSaveFarmer(e: React.FormEvent) {
     e.preventDefault();
+    if (savingFarmer) return;
     if (!canAddFarmerHere) {
-      alert("Apni farmer add korte parben na.");
+      alert("You do not have permission to add farmers.");
       return;
     }
     if (!farmerForm.farmer_name.trim()) {
-      alert("Farmer name din.");
+      alert("Please enter the farmer name.");
       return;
     }
     setSavingFarmer(true);
@@ -678,12 +676,12 @@ export default function CattleVisitsPage() {
     "w-full border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500";
   const labelCls = "block text-[11px] font-semibold text-slate-600 mb-0.5";
   const btnPrimary =
-    "inline-flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg";
+    "inline-flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg cursor-pointer disabled:opacity-60";
   const btnGhost =
-    "inline-flex items-center gap-1 bg-white border border-slate-300 text-slate-700 text-xs font-semibold px-3 py-1.5 rounded-lg";
+    "inline-flex items-center gap-1 bg-white border border-slate-300 text-slate-700 text-xs font-semibold px-3 py-1.5 rounded-lg cursor-pointer";
 
   const tabBtn = (active: boolean) =>
-    `px-3 py-1.5 rounded-full text-xs font-semibold ${
+    `px-3 py-1.5 rounded-full text-xs font-semibold cursor-pointer ${
       active ? "bg-emerald-600 text-white" : "bg-white text-slate-600 border border-slate-300"
     }`;
 
@@ -692,6 +690,82 @@ export default function CattleVisitsPage() {
       <div className="p-4 text-xs text-slate-500">Loading Cattle Visits...</div>
     );
   }
+
+  // TEMP: page parked for now — delete this block to restore the full page.
+  return (
+    <div className="min-h-[70vh] p-3 md:p-4 max-w-6xl mx-auto flex items-center justify-center overflow-hidden">
+      <style>{`
+        @keyframes ct-float { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-12px); } }
+        @keyframes ct-bubble { 0% { transform: translateY(0) scale(1); opacity: 0.6; } 100% { transform: translateY(-110px) scale(1.5); opacity: 0; } }
+        @keyframes ct-shimmer { 0% { background-position: -200% center; } 100% { background-position: 200% center; } }
+        @keyframes ct-ring { 0% { transform: scale(0.9); opacity: 0.7; } 100% { transform: scale(1.6); opacity: 0; } }
+      `}</style>
+      <div
+        className="relative w-full max-w-lg text-center"
+        style={{ perspective: "1000px" }}
+      >
+        {/* floating dots */}
+        <span
+          className="absolute left-[10%] bottom-6 w-3 h-3 rounded-full bg-lime-300/70"
+          style={{ animation: "ct-bubble 4s ease-in infinite" }}
+        />
+        <span
+          className="absolute left-[22%] bottom-2 w-2 h-2 rounded-full bg-green-300/70"
+          style={{ animation: "ct-bubble 5s ease-in 1s infinite" }}
+        />
+        <span
+          className="absolute right-[14%] bottom-8 w-4 h-4 rounded-full bg-amber-300/60"
+          style={{ animation: "ct-bubble 4.5s ease-in 0.5s infinite" }}
+        />
+        <span
+          className="absolute right-[26%] bottom-0 w-2 h-2 rounded-full bg-emerald-200/80"
+          style={{ animation: "ct-bubble 3.5s ease-in 1.5s infinite" }}
+        />
+        {/* 3D floating card */}
+        <div style={{ animation: "ct-float 5s ease-in-out infinite" }}>
+          <div
+            className="relative rounded-3xl bg-gradient-to-br from-lime-500 via-green-500 to-emerald-700 p-[2px] shadow-[0_30px_60px_-15px_rgba(22,163,74,0.55)]"
+            style={{ transform: "rotateX(10deg)" }}
+          >
+            <div className="rounded-3xl bg-white/95 backdrop-blur px-6 py-10 sm:px-10">
+              <div className="relative mx-auto w-20 h-20 mb-5">
+                <span
+                  className="absolute inset-0 rounded-full bg-green-400/40"
+                  style={{ animation: "ct-ring 2s ease-out infinite" }}
+                />
+                <span className="relative flex items-center justify-center w-20 h-20 rounded-full bg-gradient-to-br from-lime-400 to-emerald-600 text-4xl shadow-lg shadow-green-500/40">
+                  🐄
+                </span>
+              </div>
+              <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-slate-800">
+                Cattle Visit
+              </h1>
+              <p
+                className="mt-2 text-2xl sm:text-3xl font-black tracking-[0.2em] bg-gradient-to-r from-green-500 via-lime-500 to-green-500 bg-[length:200%_auto] bg-clip-text text-transparent"
+                style={{ animation: "ct-shimmer 3s linear infinite" }}
+              >
+                COMING SOON
+              </p>
+              <p className="mt-3 text-sm text-slate-500">
+                We&apos;re getting this page ready for you.
+              </p>
+              <div className="mt-6 flex items-center justify-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-green-500 animate-bounce" />
+                <span
+                  className="w-2 h-2 rounded-full bg-lime-500 animate-bounce"
+                  style={{ animationDelay: "0.15s" }}
+                />
+                <span
+                  className="w-2 h-2 rounded-full bg-emerald-500 animate-bounce"
+                  style={{ animationDelay: "0.3s" }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="p-3 md:p-4 space-y-3 max-w-6xl mx-auto">
@@ -791,7 +865,7 @@ export default function CattleVisitsPage() {
               setSearchQuery("");
               setFilterDate("");
             }}
-            className="text-[11px] text-emerald-700 font-semibold"
+            className="text-[11px] text-emerald-700 font-semibold cursor-pointer"
           >
             Clear
           </button>
@@ -870,7 +944,7 @@ export default function CattleVisitsPage() {
                         <div className="flex items-center justify-end gap-1">
                           <button
                             onClick={() => openMapForFarmer(f)}
-                            className="p-1 rounded-md text-teal-600 hover:bg-teal-50"
+                            className="p-1 rounded-md text-teal-600 hover:bg-teal-50 cursor-pointer"
                             title="Map (everyone)"
                           >
                             <MapPin size={14} />
@@ -879,14 +953,14 @@ export default function CattleVisitsPage() {
                             <>
                               <button
                                 onClick={() => openEditForm(v)}
-                                className="p-1 rounded-md text-blue-600 hover:bg-blue-50"
+                                className="p-1 rounded-md text-blue-600 hover:bg-blue-50 cursor-pointer"
                                 title="Edit"
                               >
                                 <Pencil size={14} />
                               </button>
                               <button
                                 onClick={() => handleDeleteVisit(v)}
-                                className="p-1 rounded-md text-red-600 hover:bg-red-50"
+                                className="p-1 rounded-md text-red-600 hover:bg-red-50 cursor-pointer"
                                 title="Delete"
                               >
                                 <Trash2 size={14} />
@@ -914,7 +988,7 @@ export default function CattleVisitsPage() {
               </h2>
               <button
                 onClick={() => setShowForm(false)}
-                className="p-1 rounded-md text-slate-500 hover:bg-slate-100"
+                className="p-1 rounded-md text-slate-500 hover:bg-slate-100 cursor-pointer"
               >
                 <X size={16} />
               </button>
@@ -1173,7 +1247,7 @@ export default function CattleVisitsPage() {
               <h2 className="text-sm font-bold text-slate-800">Add Farmer (Cattle)</h2>
               <button
                 onClick={() => setShowFarmerForm(false)}
-                className="p-1 rounded-md text-slate-500 hover:bg-slate-100"
+                className="p-1 rounded-md text-slate-500 hover:bg-slate-100 cursor-pointer"
               >
                 <X size={16} />
               </button>
@@ -1243,7 +1317,7 @@ export default function CattleVisitsPage() {
                           )
                         );
                       }}
-                      placeholder="Shed 2 or Bridge par"
+                      placeholder="Shed 2 or Bridge side"
                       className={inputCls}
                     />
                   </div>
@@ -1252,7 +1326,7 @@ export default function CattleVisitsPage() {
               <button
                 type="button"
                 onClick={addExtraShed}
-                className="text-[11px] font-semibold text-emerald-700"
+                className="text-[11px] font-semibold text-emerald-700 cursor-pointer"
               >
                 + Add Shed
               </button>

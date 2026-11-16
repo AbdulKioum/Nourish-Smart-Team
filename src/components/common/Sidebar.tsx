@@ -380,7 +380,7 @@ export default function Sidebar({
                 {profileDetails.fullName || userName || "User"}
               </div>
               <div className="text-xs text-emerald-700 font-medium capitalize truncate">
-                {role ? role.replaceAll("_", " ") : "Officer"} • View Profile
+                {role ? role.split("_").join(" ") : "Officer"} • View Profile
               </div>
             </div>
           </button>
@@ -440,7 +440,7 @@ export default function Sidebar({
                     {profileDetails.email || "-"}
                   </div>
                   <span className="inline-block mt-1 px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-semibold uppercase">
-                    {(profileDetails.role || "officer").replaceAll("_", " ")}
+                    {(profileDetails.role || "officer").split("_").join(" ")}
                   </span>
                 </div>
               </div>

@@ -72,10 +72,12 @@ export default function Navbar({
     isFullAccess: boolean;
     upazilas: string[];
     districts: string[];
+    categories: string[];
   }>({
     isFullAccess: false,
     upazilas: [],
     districts: [],
+    categories: [],
   });
 
   // Page title: exact name per route, so the header always shows the
@@ -359,13 +361,14 @@ export default function Navbar({
 
       let uUpazilas: string[] = [];
       let uDistricts: string[] = [];
+      let uCategories: string[] = [];
       let role = "officer";
       let uName = user?.email?.split("@")[0] || "";
 
       if (user) {
         const { data: profile } = await supabase
           .from("users")
-          .select("full_name, email, role, upazilas, districts")
+          .select("full_name, email, role, upazilas, districts, assigned_categories")
           .eq("id", user.id)
           .single();
 
@@ -374,6 +377,7 @@ export default function Navbar({
           uName = profile.full_name || profile.email || uName;
           uUpazilas = parseArray(profile.upazilas);
           uDistricts = parseArray(profile.districts);
+          uCategories = parseArray(profile.assigned_categories);
         }
       }
 
@@ -382,6 +386,7 @@ export default function Navbar({
         isFullAccess,
         upazilas: uUpazilas,
         districts: uDistricts,
+        categories: uCategories,
         userId: user?.id || "",
         userName: uName,
       };
@@ -469,25 +474,31 @@ export default function Navbar({
       setRunningVisits(visits);
 
       // ৩. Broiler/Sonali Time to Sale (Age >= 28) phones notification
-      const todayKey = new Date().toISOString().slice(0, 10);
+      // Poultry-assigned users ONLY — managers / super admins do NOT
+      // receive this phone push. The bell "Ready for Sale" list is
+      // unchanged, so they can still see it by clicking the bell icon.
+      if (uCategories.includes("Poultry")) {
+        const todayKey = new Date().toISOString().slice(0, 10);
       visits.forEach((v: any) => {
         const cat = (v.category || "Broiler").toLowerCase();
         if (cat !== "broiler" && cat !== "sonali") return;
         const age = getAgeDays(v.hatch_date);
-        if (age >= 28) {
+        const saleAge = cat === "sonali" ? 40 : 28;
+        if (age >= saleAge) {
           const storageKey = `notified_sale_${v.id}_${todayKey}`;
           if (!localStorage.getItem(storageKey)) {
             localStorage.setItem(storageKey, "1");
             const fName =
               v.batch_label || v.farmers?.farmer_name || "Unknown Farmer";
             triggerPhoneNotification(
-              "Broiler Time to sale",
+              `${cat === "sonali" ? "Sonali" : "Broiler"} Time to sale`,
               `Farmer Name: ${fName} | Age: ${age} Days`,
               `/visits?focus=${v.id}&action=after_sale`
             );
           }
         }
-      });
+        });
+      }
 
       const visitIds = visits.map((v: any) => String(v.id));
       if (visitIds.length > 0) {
@@ -628,9 +639,10 @@ export default function Navbar({
 
   const broilerSellAlerts = runningVisits.filter((v: any) => {
     const cat = (v.category || "Broiler").toLowerCase();
-    if (cat !== "broiler" && cat !== "sonali") return false;
     const age = getAgeDays(v.hatch_date);
-    return age >= 28;
+    if (cat === "broiler") return age >= 28;
+    if (cat === "sonali") return age >= 40;
+    return false;
   });
 
   const totalAlertsCount =

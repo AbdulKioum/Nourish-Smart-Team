@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import LocationPicker from "../../components/maps/LocationPicker";
+import SearchableSelect from "../../components/common/SearchableSelect";
 import { supabase } from "../../lib/supabase";
 import {
   getAgents,
@@ -186,7 +187,6 @@ function getAgentCompanies(agent: any): any[] {
   ];
 }
 
-
 function isNonExclusive(agent: any): boolean {
   return getAgentCompanies(agent).length >= 2;
 }
@@ -316,7 +316,11 @@ export default function AgentsPage() {
   }
 
   const isFullAccess = role === "super_admin" || role === "manager";
-
+  // Permissions (src/utils/accessControl.ts): manager / super admin can do
+  // everything; officers edit/delete only their own rows (old rows with
+  // created_by null are editable by area officers — the save stamps the
+  // creator). Agent add is NOT category-gated (rule 5, like farmers).
+  // View / Map stay open to everyone.
   const canAddAgentHere = canAddFarmer(role);
   const canEditAgent = (agent: any) =>
     canEditRecord(role, agent?.created_by, currentUserId);
@@ -325,7 +329,7 @@ export default function AgentsPage() {
   const [currentUserId, setCurrentUserId] = useState("");
   const [currentUserName, setCurrentUserName] = useState("User");
   const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>([]);
-  const [_assignedCategories, setAssignedCategories] = useState<string[]>([]);
+  const [, setAssignedCategories] = useState<string[]>([]);
 
   // Master Data
   const [agents, setAgents] = useState<any[]>([]);
@@ -348,7 +352,7 @@ export default function AgentsPage() {
   const [companyPickerId, setCompanyPickerId] = useState("");
   const [nonExPopupAgentId, setNonExPopupAgentId] = useState<number | null>(null);
   const [nonExPopupPos, setNonExPopupPos] = useState<{ top: number; left: number } | null>(null);
-  const [showFilters, setShowFilters] = useState(false);
+  const [showFilters, setShowFilters] = useState(true);
   const [selectedMapAgentId, setSelectedMapAgentId] = useState<number | null>(null);
 
   // Close the non-ex. popover with Escape.
@@ -378,6 +382,7 @@ export default function AgentsPage() {
   const [newNoteText, setNewNoteText] = useState("");
   const [loadingNotes, setLoadingNotes] = useState(false);
   const [savingNote, setSavingNote] = useState(false);
+  const [savingAgent, setSavingAgent] = useState(false);
 
   // Filters
   const [search, setSearch] = useState("");
@@ -699,7 +704,7 @@ export default function AgentsPage() {
     loadAgentNotes(agent.id);
 
     // আগে খোলা থাকা যেকোনো পপআপ বন্ধ করে দেওয়া হচ্ছে যাতে ম্যাপ পরিষ্কার দেখা যায়
-    Object.values(agentMarkerRefs.current).forEach((m) => m?.closePopup());
+    Object.values(agentMarkerRefs.current).forEach((m) => (m as any)?.closePopup());
 
     setTimeout(() => {
       mapSectionRef.current?.scrollIntoView({
@@ -931,6 +936,8 @@ export default function AgentsPage() {
   // SAVE, DELETE & LOCATE ME (INCLUDING NOURISH AGENT ID)
   // ==================================================
   async function handleSave() {
+    if (savingAgent) return;
+    setSavingAgent(true);
     try {
       // Permission guard (buttons are hidden too — this is the
       // backstop for the save itself). Agent add is NOT
@@ -1120,6 +1127,8 @@ export default function AgentsPage() {
       loadData();
     } catch (error: any) {
       alert(error?.message || "Save Failed");
+    } finally {
+      setSavingAgent(false);
     }
   }
 
@@ -1129,8 +1138,18 @@ export default function AgentsPage() {
       alert("You can only delete agents you added.");
       return;
     }
+    const { data: linkedFarmers } = await supabase
+      .from("farmers")
+      .select("id")
+      .eq("agent_id", id)
+      .limit(1);
+    if (linkedFarmers && linkedFarmers.length > 0) {
+      alert("This agent has farmers.");
+      return;
+    }
     if (!confirm("Delete Agent?")) return;
     await deleteAgent(id);
+    setSelectedAgent(null);
     loadData();
   }
 
@@ -1668,94 +1687,78 @@ export default function AgentsPage() {
             />
           </div>
 
-          <select
+          <SearchableSelect
+            searchable={false}
             value={districtFilter}
-            onChange={(e) => {
-              setDistrictFilter(e.target.value);
+            onChange={(v) => {
+              setDistrictFilter(v);
               setUpazilaFilter("");
               setUnionFilter("");
               setBazarFilter("");
             }}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-blue-500"
-          >
-            <option value="">All Districts</option>
-            {districts.map((d) => (
-              <option key={d.id} value={d.name}>
-                {d.name}
-              </option>
-            ))}
-          </select>
+            placeholder="All Districts"
+            options={districts.map((d) => ({ value: d.name, label: d.name }))}
+          />
 
-          <select
+          <SearchableSelect
             value={upazilaFilter}
-            onChange={(e) => {
-              setUpazilaFilter(e.target.value);
+            onChange={(v) => {
+              setUpazilaFilter(v);
               setUnionFilter("");
               setBazarFilter("");
             }}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-blue-500"
-          >
-            <option value="">All Upazilas</option>
-            {filterUpazilas.map((u: any) => (
-              <option key={u.id} value={u.name}>
-                {u.name}
-              </option>
-            ))}
-          </select>
+            placeholder="All Upazilas"
+            options={filterUpazilas.map((u: any) => ({
+              value: u.name,
+              label: u.name,
+            }))}
+          />
 
-          <select
+          <SearchableSelect
             value={unionFilter}
-            onChange={(e) => {
-              setUnionFilter(e.target.value);
+            onChange={(v) => {
+              setUnionFilter(v);
               setBazarFilter("");
             }}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-blue-500"
-          >
-            <option value="">All Unions</option>
-            {filterUnions.map((u: any) => (
-              <option key={u.id} value={u.name}>
-                {u.name}
-              </option>
-            ))}
-          </select>
+            placeholder="All Unions"
+            options={filterUnions.map((u: any) => ({
+              value: u.name,
+              label: u.name,
+            }))}
+          />
 
-          <select
+          <SearchableSelect
             value={bazarFilter}
-            onChange={(e) => setBazarFilter(e.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-blue-500"
-          >
-            <option value="">All Bazars</option>
-            {filterBazars.map((b: any) => (
-              <option key={b.id} value={b.name}>
-                {b.name}
-              </option>
-            ))}
-          </select>
+            onChange={setBazarFilter}
+            placeholder="All Bazars"
+            options={filterBazars.map((b: any) => ({
+              value: b.name,
+              label: b.name,
+            }))}
+          />
 
-          <select
+          <SearchableSelect
+            searchable={false}
             value={exclusivityFilter}
-            onChange={(e) => setExclusivityFilter(e.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-blue-500"
-            title="Exclusive / Non-exclusive"
-          >
-            <option value="">All Agents</option>
-            <option value="exclusive">Exclusive only</option>
-            <option value="nonexclusive">Non-exclusive only</option>
-          </select>
+            onChange={setExclusivityFilter}
+            placeholder="All Agents"
+            options={[
+              { value: "exclusive", label: "Exclusive only" },
+              { value: "nonexclusive", label: "Non-exclusive only" },
+            ]}
+          />
 
           <div className="col-span-2 sm:col-span-1 flex items-center gap-1.5">
-            <select
+            <SearchableSelect
+              className="w-full"
               value={companyFilter}
-              onChange={(e) => setCompanyFilter(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs outline-none focus:border-blue-500"
-            >
-              <option value="">All Companies</option>
-              {companies.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.company_name}
-                </option>
-              ))}
-            </select>
+              onChange={setCompanyFilter}
+              placeholder="All Companies"
+              options={companies.map((c) => ({
+                value: String(c.id),
+                label: c.company_name,
+              }))}
+            />
 
             <button
               onClick={clearFilters}
@@ -1973,7 +1976,6 @@ export default function AgentsPage() {
               {mapAgents
                 .filter((a) => a.latitude && a.longitude)
                 .map((agent) => {
-                  
                   const aLat = Number(agent.latitude);
                   const aLng = Number(agent.longitude);
 
@@ -2095,9 +2097,9 @@ export default function AgentsPage() {
                               <button
                                 type="submit"
                                 disabled={savingNote}
-                                className="bg-emerald-600 text-white px-2 py-1 rounded text-[11px] font-semibold"
+                                className="bg-emerald-600 text-white px-2 py-1 rounded text-[11px] font-semibold cursor-pointer disabled:opacity-60"
                               >
-                                Track
+                                {savingNote ? "Saving..." : "Track"}
                               </button>
                             </form>
                           </div>
@@ -2354,7 +2356,7 @@ export default function AgentsPage() {
                                     setNonExPopupPos({ top, left });
                                   }}
                                   title="Non-exclusive — also works with other companies"
-                                  className="ml-1 align-middle text-[10px] font-semibold italic text-violet-600 underline decoration-dotted underline-offset-2 hover:text-violet-800"
+                                  className="ml-1 align-middle rounded bg-violet-100 px-1 py-0 text-[10px] font-bold italic text-violet-700 ring-1 ring-violet-300 hover:bg-violet-200 cursor-pointer"
                                 >
                                   non-ex.
                                 </button>
@@ -2403,33 +2405,17 @@ export default function AgentsPage() {
                           <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap space-x-1">
                             <button
                               onClick={() => setSelectedAgent(agent)}
-                              className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-0.5 rounded text-[11px]"
+                              className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-0.5 rounded text-[11px] cursor-pointer"
                             >
                               View
                             </button>
                             <button
                               onClick={() => handleViewAgentOnMap(agent)}
-                              className="inline-flex items-center gap-1 bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded text-[11px]"
+                              className="inline-flex items-center gap-1 bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded text-[11px] cursor-pointer"
                             >
                               <MapPin size={10} className="shrink-0" />
                               <span>Map</span>
                             </button>
-                            {canEditAgent(agent) && (
-                              <>
-                            <button
-                              onClick={() => openEditForm(agent)}
-                              className="bg-yellow-500 hover:bg-yellow-600 text-white px-2 py-0.5 rounded text-[11px]"
-                            >
-                              Edit
-                            </button>
-                            <button
-                              onClick={() => handleDelete(agent.id)}
-                              className="bg-red-600 hover:bg-red-700 text-white px-2 py-0.5 rounded text-[11px]"
-                            >
-                              Delete
-                            </button>
-                              </>
-                            )}
                           </td>
                         </tr>
                       );
@@ -2597,9 +2583,9 @@ export default function AgentsPage() {
                   <button
                     type="submit"
                     disabled={savingNote || !newNoteText.trim()}
-                    className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded text-xs font-semibold flex items-center gap-1"
+                    className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded text-xs font-semibold flex items-center gap-1 cursor-pointer"
                   >
-                    <Send size={12} /> Track
+                    <Send size={12} /> {savingNote ? "Saving..." : "Track"}
                   </button>
                 </form>
               </div>
@@ -2763,6 +2749,27 @@ export default function AgentsPage() {
                 </div>
               </div>
 
+              {/* Edit/Delete live ONLY here in the View modal (FarmersPage pattern). */}
+              {canEditAgent(selectedAgent) && (
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    onClick={() => {
+                      openEditForm(selectedAgent);
+                      setSelectedAgent(null);
+                    }}
+                    className="bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1.5 rounded text-xs font-semibold cursor-pointer"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => handleDelete(selectedAgent.id)}
+                    className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded text-xs font-semibold cursor-pointer"
+                  >
+                    Delete Agent
+                  </button>
+                </div>
+              )}
+
             </div>
           </div>
         </div>
@@ -2822,18 +2829,15 @@ export default function AgentsPage() {
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   Primary Company *
                 </label>
-                <select
+                <SearchableSelect
                   value={form.company_id}
-                  onChange={(e) => handlePrimaryCompanyChange(e.target.value)}
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select Company</option>
-                  {companies.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.company_name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={handlePrimaryCompanyChange}
+                  placeholder="Select Company"
+                  options={companies.map((c) => ({
+                    value: String(c.id),
+                    label: c.company_name,
+                  }))}
+                />
               </div>
 
               {/* Agent ID Field — ONLY SHOWN WHEN NOURISH IS SELECTED */}
@@ -2899,95 +2903,82 @@ export default function AgentsPage() {
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   District *
                 </label>
-                <select
+                <SearchableSelect
+                  searchable={false}
                   value={form.district}
-                  onChange={(e) =>
+                  onChange={(v) =>
                     setForm({
                       ...form,
-                      district: e.target.value,
+                      district: v,
                       upazila: "",
                       union_name: "",
                       bazar: "",
                     })
                   }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select District</option>
-                  {districts.map((d) => (
-                    <option key={d.id} value={d.name}>
-                      {d.name}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="Select District"
+                  options={districts.map((d) => ({
+                    value: d.name,
+                    label: d.name,
+                  }))}
+                />
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   Upazila *
                 </label>
-                <select
+                <SearchableSelect
                   value={form.upazila}
-                  onChange={(e) =>
+                  onChange={(v) =>
                     setForm({
                       ...form,
-                      upazila: e.target.value,
+                      upazila: v,
                       union_name: "",
                       bazar: "",
                     })
                   }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select Upazila</option>
-                  {upazilas.map((u) => (
-                    <option key={u.id} value={u.name}>
-                      {u.name}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="Select Upazila"
+                  options={upazilas.map((u) => ({
+                    value: u.name,
+                    label: u.name,
+                  }))}
+                />
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   Union
                 </label>
-                <select
+                <SearchableSelect
                   value={form.union_name}
-                  onChange={(e) =>
+                  onChange={(v) =>
                     setForm({
                       ...form,
-                      union_name: e.target.value,
+                      union_name: v,
                       bazar: "",
                     })
                   }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select Union</option>
-                  {unions.map((u: any) => (
-                    <option key={u.id} value={u.name}>
-                      {u.name}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="Select Union"
+                  options={unions.map((u: any) => ({
+                    value: u.name,
+                    label: u.name,
+                  }))}
+                />
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   Bazar
                 </label>
-                <select
+                <SearchableSelect
                   value={form.bazar}
-                  onChange={(e) =>
-                    setForm({ ...form, bazar: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select Bazar</option>
-                  {filteredBazars.map((bazar) => (
-                    <option key={bazar.id} value={bazar.name}>
-                      {bazar.name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => setForm({ ...form, bazar: v })}
+                  placeholder="Select Bazar"
+                  options={filteredBazars.map((bazar) => ({
+                    value: bazar.name,
+                    label: bazar.name,
+                  }))}
+                />
               </div>
             </div>
 
@@ -3031,10 +3022,10 @@ export default function AgentsPage() {
                           className="w-5 h-5 object-contain rounded bg-white border border-slate-200"
                         />
                       ) : null}
-                      <select
+                      <SearchableSelect
+                        className="flex-1 min-w-[140px]"
                         value={comp.company_id}
-                        onChange={(e) => {
-                          const v = e.target.value;
+                        onChange={(v) => {
                           if (
                             formCompanies.some(
                               (c: any, i: number) =>
@@ -3054,15 +3045,12 @@ export default function AgentsPage() {
                             logo_url: picked?.logo_url || "",
                           });
                         }}
-                        className="flex-1 min-w-[140px] rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold"
-                      >
-                        <option value="">Select Company</option>
-                        {companies.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.company_name}
-                          </option>
-                        ))}
-                      </select>
+                        placeholder="Select Company"
+                        options={companies.map((c) => ({
+                          value: String(c.id),
+                          label: c.company_name,
+                        }))}
+                      />
                       <span className="text-[11px] font-bold text-emerald-800 whitespace-nowrap">
                         Total: {linkSaleTotal(comp).toLocaleString()}
                       </span>
@@ -3108,25 +3096,23 @@ export default function AgentsPage() {
               })}
               {formType === "nonexclusive" && (
                 <div className="flex flex-wrap items-center gap-2">
-                  <select
+                  <SearchableSelect
+                    className="flex-1 min-w-[160px]"
                     value={companyPickerId}
-                    onChange={(e) => setCompanyPickerId(e.target.value)}
-                    className="flex-1 min-w-[160px] rounded border border-slate-300 bg-white px-2 py-1.5 text-xs"
-                  >
-                    <option value="">Select company to add…</option>
-                    {companies
+                    onChange={setCompanyPickerId}
+                    placeholder="Select company to add…"
+                    options={companies
                       .filter(
                         (c) =>
                           !formCompanies.some(
                             (fc: any) => String(fc.company_id) === String(c.id)
                           )
                       )
-                      .map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.company_name}
-                        </option>
-                      ))}
-                  </select>
+                      .map((c) => ({
+                        value: String(c.id),
+                        label: c.company_name,
+                      }))}
+                  />
                   <button
                     type="button"
                     onClick={() => {
@@ -3147,39 +3133,38 @@ export default function AgentsPage() {
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   Focus Item
                 </label>
-                <select
+                <SearchableSelect
+                  searchable={false}
                   value={form.focus_item}
-                  onChange={(e) =>
-                    setForm({ ...form, focus_item: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select Focus Item</option>
-                  <option value="Broiler Feed">Broiler Feed</option>
-                  <option value="Layer Feed">Layer Feed</option>
-                  <option value="Sonali Feed">Sonali Feed</option>
-                  <option value="Cattle Feed">Cattle Feed</option>
-                  <option value="Fish Feed">Fish Feed</option>
-                  <option value="Goat Feed">Goat Feed</option>
-                  <option value="Duck Feed">Duck Feed</option>
-                  <option value="Others">Others</option>
-                </select>
+                  onChange={(v) => setForm({ ...form, focus_item: v })}
+                  placeholder="Select Focus Item"
+                  options={[
+                    { value: "Broiler Feed", label: "Broiler Feed" },
+                    { value: "Layer Feed", label: "Layer Feed" },
+                    { value: "Sonali Feed", label: "Sonali Feed" },
+                    { value: "Cattle Feed", label: "Cattle Feed" },
+                    { value: "Fish Feed", label: "Fish Feed" },
+                    { value: "Goat Feed", label: "Goat Feed" },
+                    { value: "Duck Feed", label: "Duck Feed" },
+                    { value: "Others", label: "Others" },
+                  ]}
+                />
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   Status
                 </label>
-                <select
+                <SearchableSelect
+                  searchable={false}
                   value={form.status}
-                  onChange={(e) =>
-                    setForm({ ...form, status: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="Active">Active</option>
-                  <option value="Inactive">Inactive</option>
-                </select>
+                  onChange={(v) => setForm({ ...form, status: v })}
+                  placeholder="Select Status"
+                  options={[
+                    { value: "Active", label: "Active" },
+                    { value: "Inactive", label: "Inactive" },
+                  ]}
+                />
               </div>
             </div>
 
@@ -3197,9 +3182,14 @@ export default function AgentsPage() {
               </button>
               <button
                 onClick={handleSave}
-                className="px-4 py-1.5 rounded bg-green-600 text-white text-xs font-semibold"
+                disabled={savingAgent}
+                className="px-4 py-1.5 rounded bg-green-600 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
               >
-                {editingId ? "Update Agent" : "Save Agent"}
+                {savingAgent
+                  ? "Saving..."
+                  : editingId
+                  ? "Update Agent"
+                  : "Save Agent"}
               </button>
             </div>
           </div>

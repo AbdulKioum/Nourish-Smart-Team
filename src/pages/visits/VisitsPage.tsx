@@ -146,6 +146,10 @@ const FISH_FIELDS = [
 const EMPTY_FARMER_FORM = {
   company_id: "",
   agent_id: "",
+  // How the farmer is assigned: "agent" = directly under an agent,
+  // "sub" = under a sub-agent (agent_id then holds the sub-agent's parent).
+  assign_to: "agent",
+  sub_agent_id: "",
   farmer_name: "",
   mobile: "",
   village: "",
@@ -538,10 +542,11 @@ function getShedVisitStatus(
   else if (days !== null && days <= 60) status = "Active";
   else if (days !== null) status = "Inactive";
   else
+    // No visit history at all: a stored "Running" is stale (it survives
+    // when the running batch's visit row is deleted), so only a stored
+    // Active/Inactive is trusted — otherwise the shed is Active.
     status =
-      shed?.status === "Running" ||
-      shed?.status === "Active" ||
-      shed?.status === "Inactive"
+      shed?.status === "Active" || shed?.status === "Inactive"
         ? shed.status
         : "Active";
   return {
@@ -760,7 +765,6 @@ export default function VetVisitsPage() {
   // export / Map stay open to everyone.
   const [currentUserId, setCurrentUserId] = useState("");
   const [assignedCategories, setAssignedCategories] = useState<string[]>([]);
-
   const canAddPoultryReport = canAddReport(role, assignedCategories, "Poultry");
   const canAddFarmerHere = canAddFarmer(role);
   const canEditPoultryReport = (rec: any) =>
@@ -781,9 +785,11 @@ export default function VetVisitsPage() {
 
   const [companies, setCompanies] = useState<any[]>([]);
   const [allAgents, setAllAgents] = useState<any[]>([]);
+  const [subAgents, setSubAgents] = useState<any[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<string>("all");
   const [selectedUpazila, setSelectedUpazila] = useState<string>("all");
   const [selectedAgent, setSelectedAgent] = useState<string>("all");
+  const [selectedSubAgent, setSelectedSubAgent] = useState<string>("all");
   const [selectedCategoryFilter, setSelectedCategoryFilter] =
     useState<string>("all");
   const [selectedStatusFilter, setSelectedStatusFilter] =
@@ -838,6 +844,13 @@ export default function VetVisitsPage() {
   // list edited in the Add/Edit Farmer modal (first shed = farmer form).
   const [activateShedId, setActivateShedId] = useState<string>("");
   const [addingActivateShed, setAddingActivateShed] = useState(false);
+  const [savingFarmer, setSavingFarmer] = useState(false);
+  const [savingActivate, setSavingActivate] = useState(false);
+  const [savingVaccine, setSavingVaccine] = useState(false);
+  const [savingBefore, setSavingBefore] = useState(false);
+  const [savingAfter, setSavingAfter] = useState(false);
+  const [savingLayer, setSavingLayer] = useState(false);
+  const [savingAddVaccine, setSavingAddVaccine] = useState(false);
   const [formSheds, setFormSheds] = useState<any[]>([{ ...EMPTY_SHED_FORM }]);
   const [geoDistricts, setGeoDistricts] = useState<any[]>([]);
   const [geoUpazilas, setGeoUpazilas] = useState<any[]>([]);
@@ -1083,6 +1096,23 @@ export default function VetVisitsPage() {
     formAgent?.latitude && formAgent?.longitude
       ? [Number(formAgent.latitude), Number(formAgent.longitude)]
       : null;
+
+  // Sub-agents: a farmer always keeps agent_id = the parent agent;
+  // sub_agent_id is optional (empty = directly under the agent).
+  const subAgentById: Record<string, any> = {};
+  subAgents.forEach((s: any) => {
+    subAgentById[String(s.id)] = s;
+  });
+  // Sub-agent option label: "SubAgentName (ParentAgentName)" so the
+  // parent agent is visible in the all-sub-agents dropdown.
+  function getSubAgentOptionLabel(s: any): string {
+    const parent = allAgents.find(
+      (a: any) => String(a.id) === String(s.agent_id)
+    );
+    return parent?.agent_name
+      ? `${s.sub_agent_name} (${parent.agent_name})`
+      : s.sub_agent_name;
+  }
 
   useEffect(() => {
     async function loadModalUnions() {
@@ -1474,7 +1504,6 @@ export default function VetVisitsPage() {
   // skipped for legacy (synthesised) sheds and when the table/column is
   // missing — the caller still updates the farmer-row legacy totals.
   async function updateFarmerShedStock(
-    _farmer: any,
     shed: any,
     stockUpdates: Record<string, any>
   ): Promise<void> {
@@ -1559,7 +1588,7 @@ export default function VetVisitsPage() {
     let prevName = "";
     if (prevNeedsName) {
       const answer = window.prompt(
-        "Enter name for the shed or will be shed 1:",
+        "Name the previous shed (leave empty for 'Shed 1'):",
         ""
       );
       prevName =
@@ -1623,6 +1652,7 @@ export default function VetVisitsPage() {
         { data: bMeta },
         { data: aMeta },
         { data: lMeta },
+        { data: subAgentsData },
       ] = await Promise.all([
         supabase
           .from("vet_visits")
@@ -1639,11 +1669,23 @@ export default function VetVisitsPage() {
         supabase
           .from("layer_reports")
           .select("id, vet_visit_id, farmer_id, visit_date"),
+        // sub_agents table may not exist yet (migration not run) —
+        // data is null then and the list stays empty.
+        supabase.from("sub_agents").select("id, sub_agent_name, agent_id"),
       ]);
       if (visitErr) throw visitErr;
 
       const vMetaMap: Record<string, { count: number; lastDate: string }> = {};
       const fMetaMap: Record<string, { count: number; lastDate: string }> = {};
+
+      // Only reports attached to a LIVE vet_visits row count. A report
+      // whose batch row was deleted (directly in Supabase) is an orphan:
+      // the History modal can only show reports of live batches, so
+      // counting orphans here enabled the History button + "Last:" date
+      // for a modal that opens empty.
+      const liveVisitIds = new Set<string>(
+        (visits || []).map((v: any) => String(v.id))
+      );
 
       const allReportRows = [
         ...(bMeta || []),
@@ -1652,6 +1694,7 @@ export default function VetVisitsPage() {
       ];
       allReportRows.forEach((r: any) => {
         const vKey = String(r.vet_visit_id || "");
+        if (!vKey || !liveVisitIds.has(vKey)) return; // orphan — never shown
         const fKey = String(r.farmer_id || "");
         const dStr = String(r.visit_date || "").slice(0, 10);
 
@@ -1679,6 +1722,7 @@ export default function VetVisitsPage() {
 
       setVisitReportMeta(vMetaMap);
       setFarmerReportMeta(fMetaMap);
+      setSubAgents((subAgentsData as any[]) || []);
 
       const allVisits = visits || [];
       const agentsList = agentsData || [];
@@ -1753,10 +1797,17 @@ export default function VetVisitsPage() {
             String(a.created_at || "").localeCompare(String(b.created_at || ""))
           );
 
-        const numberedVisits = fv.map((v: any, index: number) => {
-          const seqNum = index + 1;
-          const autoBatchTitle = `${f.farmer_name} Batch ${seqNum}`;
+        // Batch numbers count per SHED, not per farmer: each shed's
+        // batches start again at 1 (Bridge par: Batch 1..N, Shed 2:
+        // Batch 1..N). A visit without a shed_id on a multi-shed
+        // farmer counts in its own group ("none").
+        const perShedCount: Record<string, number> = {};
+        const numberedVisits = fv.map((v: any) => {
           const enriched = enrich(v);
+          const shedKey = String(enriched.shed?.id || "none");
+          perShedCount[shedKey] = (perShedCount[shedKey] || 0) + 1;
+          const seqNum = perShedCount[shedKey];
+          const autoBatchTitle = `${f.farmer_name} Batch ${seqNum}`;
           return {
             ...enriched,
             seqNum,
@@ -1773,8 +1824,11 @@ export default function VetVisitsPage() {
           .reverse();
         const latestClosed = closedVisits[0] || null;
 
+        // Sale date comes ONLY from a live closed visit row (Sold/Culled).
+        // farmers.last_sale_date is a stale copy: it survives when the
+        // sale record is deleted (in the app or directly in Supabase),
+        // so it must never drive this display.
         const lastSaleDate =
-          f.last_sale_date ||
           latestClosed?.closed_date ||
           (latestClosed?.created_at
             ? String(latestClosed.created_at).slice(0, 10)
@@ -1966,6 +2020,9 @@ export default function VetVisitsPage() {
 
   async function handleSaveLoggedVaccine(e: React.FormEvent) {
     e.preventDefault();
+    if (savingVaccine) return;
+    setSavingVaccine(true);
+    try {
     if (!activeVaccineVisit || !logVaccineForm.vaccine_name.trim()) return;
     // Logging a vaccine edits the visit row: Poultry category +
     // ownership.
@@ -2011,6 +2068,9 @@ export default function VetVisitsPage() {
       loadVetVisits();
     } catch (err: any) {
       alert(err.message || "Failed to save vaccine log.");
+    }
+    } finally {
+      setSavingVaccine(false);
     }
   }
 
@@ -2183,17 +2243,17 @@ export default function VetVisitsPage() {
   ): string | null {
     const today = new Date().toISOString().split("T")[0];
     if (reportDate && reportDate > today) {
-      return "Agami date e report dewa jabe na.";
+      return "You cannot add a report for a future date.";
     }
     if (reportDate && hatchDate && reportDate < hatchDate) {
-      return "Hatch date er age report dewa jabe na.";
+      return "Report date cannot be before the hatch date.";
     }
     return null;
   }
 
   function validateMortality(mortality: number, cap: number): string | null {
     if (Number(mortality) > Number(cap)) {
-      return "Mortality total bird er cheye beshi hote parbe na.";
+      return "Mortality cannot be more than total birds.";
     }
     return null;
   }
@@ -2826,6 +2886,9 @@ ${currentUserProfile.region}`;
   // ================= PART 2A OF 2 (Paste right below Part 1) =================
 
   async function handleBeforeSaleSubmit() {
+    if (savingBefore) return;
+    setSavingBefore(true);
+    try {
     if (!activeReportVisit) return;
     if (!validateBeforeSaleInputs(beforeForm)) return;
     // Permission guard (rule 5): Poultry report add needs the category
@@ -2977,9 +3040,15 @@ ${currentUserProfile.region}`;
     } catch (err: any) {
       alert(err.message || "Failed to save report");
     }
+    } finally {
+      setSavingBefore(false);
+    }
   }
 
   async function handleAfterSaleSoldSubmit() {
+    if (savingAfter) return;
+    setSavingAfter(true);
+    try {
     if (!activeReportVisit) return;
     if (!validateAfterSaleInputs(afterForm)) return;
     // Permission guard (rule 5): Poultry report add needs the category
@@ -3153,10 +3222,16 @@ ${currentUserProfile.region}`;
     } catch (err: any) {
       alert(err.message || "Failed to save after sale report");
     }
+    } finally {
+      setSavingAfter(false);
+    }
   }
   
   
   async function handleLayerReportSubmit(markAsCulled = false) {
+    if (savingLayer) return;
+    setSavingLayer(true);
+    try {
     if (!activeReportVisit) return;
     // Permission guard (rule 5): Poultry report add needs the category
     // assigned; edits also need ownership (old rows: first edit stamps).
@@ -3236,7 +3311,12 @@ ${currentUserProfile.region}`;
 
       const mortNum = Math.max(0, Number(layerForm.mortality_pcs || 0));
       const prevBirds = Number(activeReportVisit.t_birds || 0);
-     
+      // EDIT FIX: activeReportVisit.t_birds already had the OLD mortality
+      // subtracted when that report was added, so the pre-mortality total
+      // for this report is prevBirds + oldMort. Recompute the live total
+      // from scratch from that base — max(0, prevBirds + oldMort - mortNum)
+      // — exactly like the add path, never by applying a delta. For a new
+      // report oldMort is 0 and this is identical to updatedTBirds.
       const isEditingLayerReport =
         editingReportId !== null && editingReportId !== undefined;
       const editingLayerOldRep = isEditingLayerReport
@@ -3441,7 +3521,7 @@ ${currentUserProfile.region}`;
                 : Number(s.layer || 0)),
             0
           );
-          await updateFarmerShedStock(targetFarmerObj, mortShed, {
+          await updateFarmerShedStock(mortShed, {
             layer: shedLayer,
           });
         }
@@ -3502,10 +3582,16 @@ ${currentUserProfile.region}`;
     } catch (err: any) {
       alert(err.message || "Failed to save layer report");
     }
+    } finally {
+      setSavingLayer(false);
+    }
   }
 
   async function handleAddVaccine(e: React.FormEvent) {
     e.preventDefault();
+    if (savingAddVaccine) return;
+    setSavingAddVaccine(true);
+    try {
     if (!isSuperAdmin) return;
     if (!vaccineForm.age_days || !vaccineForm.vaccine_name.trim()) return;
 
@@ -3524,6 +3610,9 @@ ${currentUserProfile.region}`;
     }
     setVaccineForm({ ...vaccineForm, age_days: "", vaccine_name: "" });
     await loadVaccinesList();
+    } finally {
+      setSavingAddVaccine(false);
+    }
   }
 
   async function handleDeleteVaccine(id: number) {
@@ -3537,8 +3626,13 @@ ${currentUserProfile.region}`;
       alert("You do not have permission to add farmers.");
       return;
     }
+    // A sub-agent group preselects the sub-agent (with its parent
+    // agent); an agent group preselects the agent directly.
+    const subId = agentGroup.isSubAgent
+      ? String(agentGroup.subAgentId || "")
+      : "";
     const agentObj = allAgents.find(
-      (a) => String(a.id) === String(agentGroup.agentId)
+      (a) => String(a.id) === String(agentGroup.parentAgentId || "")
     );
     const nourishComp = companies.find((c) =>
       c.company_name?.toLowerCase().includes("nourish")
@@ -3563,6 +3657,10 @@ ${currentUserProfile.region}`;
       ...EMPTY_FARMER_FORM,
       company_id: compId,
       agent_id: agentObj ? String(agentObj.id) : "",
+      // Sub-agent group: Sub Agent mode with that sub-agent preselected
+      // (agent_id = its parent agent). Agent group: Agent mode.
+      assign_to: subId ? "sub" : "agent",
+      sub_agent_id: subId,
       district: defDist,
       upazila: defUpa,
       farm_category: "Poultry",
@@ -3589,6 +3687,8 @@ ${currentUserProfile.region}`;
     setFarmerForm({
       company_id: String(f.company_id || ""),
       agent_id: String(f.agent_id || ""),
+      assign_to: (f as any).sub_agent_id ? "sub" : "agent",
+      sub_agent_id: String((f as any).sub_agent_id || ""),
       farmer_name: f.farmer_name || "",
       mobile: f.mobile || "",
       village: f.village || "",
@@ -3665,7 +3765,7 @@ ${currentUserProfile.region}`;
         box_no: v.box_no || "",
         t_birds: String(v.t_birds || ""),
         category: v.category || "Broiler",
-        batch_label: v.batch_label || "",
+        batch_label: v.batch_label || (v as any).displayBatchName || "",
       });
     }
 
@@ -3673,16 +3773,27 @@ ${currentUserProfile.region}`;
   }
 
   async function handleSaveFarmerAndBatch() {
+    if (savingFarmer) return;
+    setSavingFarmer(true);
+    try {
+    // Assignment: Agent mode needs an agent, Sub Agent mode needs a
+    // sub-agent (its parent agent is derived and stored in agent_id).
+    const assignOk =
+      farmerForm.assign_to === "sub"
+        ? !!farmerForm.sub_agent_id
+        : !!farmerForm.agent_id;
     if (
       !farmerForm.company_id ||
-      !farmerForm.agent_id ||
+      !assignOk ||
       !farmerForm.farmer_name.trim() ||
       !farmerForm.farm_category ||
       !farmerForm.district ||
       !farmerForm.upazila
     ) {
       alert(
-        "Company, District, Upazila, Agent, Farmer Name, and Farm Category are required."
+        farmerForm.assign_to === "sub"
+          ? "Company, District, Upazila, Sub Agent, Farmer Name, and Farm Category are required."
+          : "Company, District, Upazila, Agent, Farmer Name, and Farm Category are required."
       );
       return;
     }
@@ -3720,6 +3831,9 @@ ${currentUserProfile.region}`;
         ...farmerForm,
         company_id: Number(farmerForm.company_id),
         agent_id: Number(farmerForm.agent_id),
+        sub_agent_id: farmerForm.sub_agent_id
+          ? Number(farmerForm.sub_agent_id)
+          : null,
         latitude:
           farmerForm.latitude === "" ? null : Number(farmerForm.latitude),
         longitude:
@@ -3733,19 +3847,38 @@ ${currentUserProfile.region}`;
       // Multi-shed: first shed = farmer form (empty shed_name, shown as the
       // farmer name); extra sheds from formSheds. Farmer-row stock stays
       // the SUM across sheds so old reports keep working.
-      const shedsToSave = syncFormShedsWithFarmerForm();
-      [...POULTRY_FIELDS, ...CATTLE_FIELDS, ...FISH_FIELDS].forEach((field) => {
-        payload[field] = shedsToSave.reduce(
-          (sum: number, s: any) => sum + Number(s[field] || 0),
-          0
-        );
-      });
+      // Sheds are poultry-only: other categories save the farmer
+      // without sheds (farmerForm already holds their stock/location).
+      const isPoultryFarmer = farmerForm.farm_category === "Poultry";
+      const shedsToSave = isPoultryFarmer ? syncFormShedsWithFarmerForm() : [];
+      if (isPoultryFarmer) {
+        [...POULTRY_FIELDS, ...CATTLE_FIELDS, ...FISH_FIELDS].forEach((field) => {
+          payload[field] = shedsToSave.reduce(
+            (sum: number, s: any) => sum + Number(s[field] || 0),
+            0
+          );
+        });
+      }
 
       if (editingFarmerId) {
-        const { error: fErr } = await supabase
-          .from("farmers")
-          .update(payload)
-          .eq("id", editingFarmerId);
+        // If the sub_agent_id column does not exist yet (migration not
+        // run), retry the update without it so the save never fails
+        // for a missing column.
+        let fErr = (
+          await supabase
+            .from("farmers")
+            .update(payload)
+            .eq("id", editingFarmerId)
+        ).error;
+        if (fErr && /sub_agent_id/i.test(String(fErr.message || ""))) {
+          const { sub_agent_id, ...payloadNoSub } = payload;
+          fErr = (
+            await supabase
+              .from("farmers")
+              .update(payloadNoSub)
+              .eq("id", editingFarmerId)
+          ).error;
+        }
         if (fErr) throw fErr;
 
         // Ownership (rule 2): stamp created_by on first edit of an
@@ -3761,12 +3894,14 @@ ${currentUserProfile.region}`;
           }
         }
 
-        await saveShedsForFarmer(
-          editingFarmerId,
-          farmerForm.farmer_name,
-          shedsToSave,
-          editingFarmerCreator || currentUserId
-        );
+        if (isPoultryFarmer) {
+          await saveShedsForFarmer(
+            editingFarmerId,
+            farmerForm.farmer_name,
+            shedsToSave,
+            editingFarmerCreator || currentUserId
+          );
+        }
 
         if (editingBatchVisit) {
           const visitUpd: Record<string, any> = {
@@ -3801,10 +3936,24 @@ ${currentUserProfile.region}`;
         }
         alert("Farmer & Batch details updated!");
       } else {
-        const { data: insData, error: insErr } = await supabase
+        // If the sub_agent_id column does not exist yet (migration not
+        // run), retry the insert without it so the save never fails
+        // for a missing column.
+        let insRes = await supabase
           .from("farmers")
           .insert([payload])
           .select("id");
+        if (
+          insRes.error &&
+          /sub_agent_id/i.test(String(insRes.error.message || ""))
+        ) {
+          const { sub_agent_id, ...payloadNoSub } = payload;
+          insRes = await supabase
+            .from("farmers")
+            .insert([payloadNoSub])
+            .select("id");
+        }
+        const { data: insData, error: insErr } = insRes;
         if (insErr) throw insErr;
         // Resolve the new farmer id so its first shed can be saved to
         // farmer_sheds (same name+mobile lookup FarmersPage uses when the
@@ -3836,12 +3985,14 @@ ${currentUserProfile.region}`;
               // created_by column not added yet.
             }
           }
-          await saveShedsForFarmer(
-            newFarmerId,
-            farmerForm.farmer_name,
-            shedsToSave,
-            currentUserId
-          );
+          if (isPoultryFarmer) {
+            await saveShedsForFarmer(
+              newFarmerId,
+              farmerForm.farmer_name,
+              shedsToSave,
+              currentUserId
+            );
+          }
         }
         alert("New Farmer saved!");
       }
@@ -3852,6 +4003,9 @@ ${currentUserProfile.region}`;
       loadVetVisits();
     } catch (err: any) {
       alert(err.message || "Failed to save farmer details");
+    }
+    } finally {
+      setSavingFarmer(false);
     }
   }
 
@@ -3917,8 +4071,10 @@ ${currentUserProfile.region}`;
       );
 
       if (remainingRunning.length === 0) {
+        // Recompute from the REMAINING closed visits only — never from
+        // farmers.last_sale_date (stale copy). Write the true value back
+        // so the farmer row heals instead of showing a deleted sale.
         const lastSaleDate =
-          farmer.last_sale_date ||
           farmer.latestClosed?.closed_date ||
           (farmer.latestClosed?.created_at
             ? String(farmer.latestClosed.created_at).slice(0, 10)
@@ -3929,7 +4085,7 @@ ${currentUserProfile.region}`;
 
         await supabase
           .from("farmers")
-          .update({ status: revertedStatus })
+          .update({ status: revertedStatus, last_sale_date: lastSaleDate })
           .eq("id", farmer.id);
       }
 
@@ -4440,7 +4596,13 @@ ${currentUserProfile.region}`;
       f.agentUpazila === selectedUpazila;
     const matchAgent =
       selectedAgent === "all" || String(f.agent_id) === String(selectedAgent);
-    return matchComp && matchUpa && matchAgent;
+    // Sub-agent filter is independent of the agent filter; a farmer
+    // under a sub-agent still carries the parent agent_id, so Agent +
+    // Sub Agent combine as AND.
+    const matchSubAgent =
+      selectedSubAgent === "all" ||
+      String((f as any).sub_agent_id || "") === String(selectedSubAgent);
+    return matchComp && matchUpa && matchAgent && matchSubAgent;
   });
 
   function getSummaryForGroup(groupFilter: (f: any) => boolean) {
@@ -4645,11 +4807,27 @@ ${currentUserProfile.region}`;
 
   const filteredAgentsList = Object.values(
     tableFilteredRows.reduce((acc: Record<string, any>, r: any) => {
-      const key = String(r.farmer.agent_id || "unknown");
+      // A farmer under a sub-agent forms that sub-agent's own group
+      // (key "sub-<id>"); a farmer directly under an agent stays in
+      // the agent's group (key "agent-<id>"). The Sl serial restarts
+      // per group, so it now restarts per sub-agent group too.
+      const subId = r.farmer.sub_agent_id
+        ? String(r.farmer.sub_agent_id)
+        : "";
+      const key = subId
+        ? `sub-${subId}`
+        : `agent-${String(r.farmer.agent_id || "unknown")}`;
       if (!acc[key]) {
+        const subName = subId
+          ? subAgentById[subId]?.sub_agent_name || ""
+          : "";
         acc[key] = {
           agentId: key,
-          agentName: r.farmer.agentName,
+          agentName: subId ? subName || "Sub Agent" : r.farmer.agentName,
+          parentAgentName: subId ? r.farmer.agentName || "" : "",
+          parentAgentId: String(r.farmer.agent_id || ""),
+          isSubAgent: !!subId,
+          subAgentId: subId,
           rows: [],
           counts: {} as Record<string, number>,
         };
@@ -4711,7 +4889,7 @@ ${currentUserProfile.region}`;
       let baseSheds: any[] = sheds;
       if (prevNeedsName && prev) {
         const answer = window.prompt(
-          "Enter name for the shed or will be shed 1:",
+          "Name the previous shed (leave empty for 'Shed 1'):",
           ""
         );
         const prevName =
@@ -4752,7 +4930,7 @@ ${currentUserProfile.region}`;
       // empty/cancel falls back to the default "Shed N" label.
       const newCount = baseSheds.length + 1;
       const newAnswer = window.prompt(
-        `Notun shed er nam din (khali rakhle 'Shed ${newCount}' hobe):`,
+        `Enter the new shed name (leave empty for 'Shed ${newCount}'):`,
         ""
       );
       const newName =
@@ -4828,7 +5006,7 @@ ${currentUserProfile.region}`;
       setActivateShedId(String(newShed.id));
     } catch (e: any) {
       console.error("Could not add shed:", e);
-      alert("Shed add kora jayni. " + (e?.message || ""));
+      alert("Could not add shed. " + (e?.message || ""));
     } finally {
       setAddingActivateShed(false);
     }
@@ -4879,8 +5057,19 @@ ${currentUserProfile.region}`;
   const activateSheds: any[] = activateFarmer
     ? getShedsForFarmer(activateFarmer)
     : [];
+  // Next batch number for the activate modal title — counts only the
+  // selected shed's batches (batch numbers are per shed).
+  const activateNextBatchNo =
+    (activateFarmer?.allBatches || []).filter(
+      (v: any) =>
+        String(v.shed?.id || "none") ===
+        String(activateShedId || activateSheds[0]?.id || "none")
+    ).length + 1;
 
   async function handleActivateSubmit() {
+    if (savingActivate) return;
+    setSavingActivate(true);
+    try {
     if (!activateForm.hatch_date || !activateForm.t_birds) {
       alert("Hatch Date and Total Birds are required.");
       return;
@@ -4896,8 +5085,6 @@ ${currentUserProfile.region}`;
     try {
       for (const target of targets) {
         const running: any[] = target.runningVisits || [];
-        const totalExistingBatches = (target.allBatches || []).length;
-        const nextSeqNum = totalExistingBatches + 1;
         const baseName = target.farmer_name || "Farmer";
         const cat = activateForm.category;
         const catLower = cat.toLowerCase();
@@ -4913,6 +5100,14 @@ ${currentUserProfile.region}`;
           targetSheds.find(
             (s: any) => String(s.id) === String(activateShedId)
           ) || targetSheds[0] || null;
+
+        // Batch numbers count per shed: only this shed's batches.
+        const totalExistingBatches = (target.allBatches || []).filter(
+          (v: any) =>
+            String(v.shed?.id || "none") ===
+            String(chosenShed?.id || "none")
+        ).length;
+        const nextSeqNum = totalExistingBatches + 1;
 
         const manual = activateForm.batch_mark.trim() || "";
         const autoNumberedName = `${baseName} Batch ${nextSeqNum}`;
@@ -4947,7 +5142,7 @@ ${currentUserProfile.region}`;
                 if (k !== stockKey) shedStockUpdate[k] = 0;
               });
             }
-            await updateFarmerShedStock(target, chosenShed, shedStockUpdate);
+            await updateFarmerShedStock(chosenShed, shedStockUpdate);
           }
         }
         const selectedCompObj = companies.find(
@@ -5005,6 +5200,9 @@ ${currentUserProfile.region}`;
       loadVetVisits();
     } catch (err: any) {
       alert(err.message || "Failed to activate farmer");
+    }
+    } finally {
+      setSavingActivate(false);
     }
   }
 
@@ -5172,9 +5370,6 @@ ${currentUserProfile.region}`;
           <h1 className="text-sm sm:text-base font-bold text-slate-800">
             Poultry Visit
           </h1>
-          <span className="text-[11px] font-semibold bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-lg text-slate-700">
-            Rows: <strong>{tableFilteredRows.length}</strong>
-          </span>
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
@@ -5304,6 +5499,19 @@ ${currentUserProfile.region}`;
 
 <SearchableSelect
   compact
+  allValue="all"
+  className="max-w-[160px]"
+  value={selectedSubAgent}
+  onChange={setSelectedSubAgent}
+  placeholder="All Sub Agents"
+  options={subAgents.map((s: any) => ({
+    value: String(s.id),
+    label: s.sub_agent_name,
+  }))}
+/>
+
+<SearchableSelect
+  compact
   searchable={false}
   allValue="all"
   value={selectedCategoryFilter}
@@ -5323,6 +5531,7 @@ ${currentUserProfile.region}`;
                   : "all"
               );
               setSelectedAgent("all");
+              setSelectedSubAgent("all");
               setSelectedCategoryFilter("all");
               setSelectedStatusFilter("all");
               setSearchQuery("");
@@ -5355,10 +5564,27 @@ ${currentUserProfile.region}`;
               <div className="bg-slate-100 px-3 py-1.5 border-b border-slate-300 flex flex-wrap justify-between items-center gap-2">
                 <div className="flex items-center gap-2">
                   <h2 className="font-bold text-xs sm:text-sm text-slate-800">
-                    Agent:{" "}
-                    <span className="text-emerald-700">
-                      {agentGroup.agentName}
-                    </span>
+                    {agentGroup.isSubAgent ? (
+                      <>
+                        Sub Agent:{" "}
+                        <span className="text-emerald-700">
+                          {agentGroup.agentName}
+                        </span>{" "}
+                        <span className="text-[10px] font-semibold bg-white border border-slate-300 px-1.5 py-0.5 rounded text-slate-600">
+                          sub-ag
+                        </span>{" "}
+                        <span className="font-normal text-slate-600">
+                          ({agentGroup.parentAgentName})
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        Agent:{" "}
+                        <span className="text-emerald-700">
+                          {agentGroup.agentName}
+                        </span>
+                      </>
+                    )}
                   </h2>
                   {canAddFarmerHere && (
                   <button
@@ -5434,8 +5660,10 @@ ${currentUserProfile.region}`;
                         : 0;
                       const isSellTime =
                         isBatch &&
-                        category.toLowerCase() === "broiler" &&
-                        ageDays >= 28;
+                        ((category.toLowerCase() === "broiler" &&
+                          ageDays >= 28) ||
+                          (category.toLowerCase() === "sonali" &&
+                            ageDays >= 40));
                       const vacInfo = isBatch
                         ? getVaccineInfoForVisit(visit)
                         : null;
@@ -5448,6 +5676,10 @@ ${currentUserProfile.region}`;
                       const shedName = isBatch
                         ? getVisitShedDisplayName(visit, farmer)
                         : row.shedDisplayName || farmer.farmer_name || "N/A";
+                      const subAgentName = farmer?.sub_agent_id
+                        ? subAgentById[String(farmer.sub_agent_id)]
+                            ?.sub_agent_name || ""
+                        : "";
                       const isFocused =
                         isBatch && focusVisitId === String(visit.id);
                       const days = row.daysSinceSale ?? farmer.daysSinceSale;
@@ -5514,25 +5746,25 @@ ${currentUserProfile.region}`;
                                 </span>
                               )}
                             </div>
-                            <div className="text-[10px] text-slate-500 truncate">
-                              {isBatch ? (
-                                <>H.Date: {formatDmy(visit.hatch_date)}</>
-                              ) : row.statusDate ? (
-                                <>
-                                  {row.closedType ||
-                                    farmer.closedType ||
-                                    "Sale"}
-                                  : {formatDmy(row.statusDate)}
-                                  {daysText && (
-                                    <span className="ml-1 font-semibold text-slate-600">
-                                      • {daysText}
-                                    </span>
-                                  )}
-                                </>
-                              ) : (
-                                "No sale record"
-                              )}
-                            </div>
+                            {!isBatch && (
+                              <div className="text-[10px] text-slate-500 truncate">
+                                {row.statusDate ? (
+                                  <>
+                                    {row.closedType ||
+                                      farmer.closedType ||
+                                      "Sale"}
+                                    : {formatDmy(row.statusDate)}
+                                    {daysText && (
+                                      <span className="ml-1 font-semibold text-slate-600">
+                                        • {daysText}
+                                      </span>
+                                    )}
+                                  </>
+                                ) : (
+                                  "No sale record"
+                                )}
+                              </div>
+                            )}
                           </td>
 
                           {/* 2. AGE */}
@@ -5550,6 +5782,7 @@ ${currentUserProfile.region}`;
                           {/* 4. FARMER */}
                           <td className="border border-slate-300 px-2 py-1 font-bold text-slate-800 whitespace-nowrap">
                             <div>{shedName}</div>
+                            {subAgentName && (<div className="text-[10px] text-slate-400 leading-tight">sub-ag • {subAgentName}</div>)}
                             {tag && (
                               <div className="text-[10px] font-semibold text-emerald-700">
                                 {tag}
@@ -5825,6 +6058,7 @@ ${currentUserProfile.region}`;
                       ...farmerForm,
                       company_id: v,
                       agent_id: "",
+                      sub_agent_id: "",
                     })
                   }
                   placeholder="Select Company"
@@ -5849,6 +6083,7 @@ ${currentUserProfile.region}`;
                       upazila: "",
                       union_name: "",
                       agent_id: "",
+                      sub_agent_id: "",
                     })
                   }
                   placeholder="Select District"
@@ -5871,6 +6106,7 @@ ${currentUserProfile.region}`;
                       upazila: v,
                       union_name: "",
                       agent_id: "",
+                      sub_agent_id: "",
                     })
                   }
                   placeholder="Select Upazila"
@@ -5881,22 +6117,96 @@ ${currentUserProfile.region}`;
                 />
               </div>
 
-              <div>
+              {/* Assign to: Agent or Sub Agent (checkboxes act like radios) */}
+              <div className="sm:col-span-2">
                 <label className="block text-xs font-bold text-slate-600 mb-1">
-                  Agent *
+                  Assign Farmer To *
                 </label>
-                <SearchableSelect
-                  value={farmerForm.agent_id}
-                  onChange={(v) => setFarmerForm({ ...farmerForm, agent_id: v })}
-                  placeholder="Select Agent"
-                  options={modalAvailableAgents.map((a) => ({
-                    value: String(a.id),
-                    label:
-                      a.agent_name +
-                      (isAgentNonExclusive(a) ? " (non-ex.)" : ""),
-                  }))}
-                />
+                <div className="flex items-center gap-5">
+                  <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={farmerForm.assign_to === "agent"}
+                      onChange={() =>
+                        setFarmerForm({
+                          ...farmerForm,
+                          assign_to: "agent",
+                          sub_agent_id: "",
+                        })
+                      }
+                      className="w-3.5 h-3.5 accent-indigo-600"
+                    />
+                    Agent
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={farmerForm.assign_to === "sub"}
+                      onChange={() =>
+                        setFarmerForm({
+                          ...farmerForm,
+                          assign_to: "sub",
+                          sub_agent_id: "",
+                        })
+                      }
+                      className="w-3.5 h-3.5 accent-indigo-600"
+                    />
+                    Sub Agent
+                  </label>
+                </div>
               </div>
+
+              {farmerForm.assign_to === "agent" ? (
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">
+                    Agent *
+                  </label>
+                  <SearchableSelect
+                    value={farmerForm.agent_id}
+                    onChange={(v) =>
+                      setFarmerForm({
+                        ...farmerForm,
+                        agent_id: v,
+                        sub_agent_id: "",
+                      })
+                    }
+                    placeholder="Select Agent"
+                    options={modalAvailableAgents.map((a) => ({
+                      value: String(a.id),
+                      label:
+                        a.agent_name +
+                        (isAgentNonExclusive(a) ? " (non-ex.)" : ""),
+                    }))}
+                  />
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">
+                    Sub Agent *
+                  </label>
+                  <SearchableSelect
+                    value={farmerForm.sub_agent_id}
+                    onChange={(v) => {
+                      // The farmer keeps agent_id = the sub-agent's parent.
+                      const parent = subAgents.find(
+                        (s: any) => String(s.id) === String(v)
+                      );
+                      setFarmerForm({
+                        ...farmerForm,
+                        sub_agent_id: v,
+                        agent_id: parent
+                          ? String(parent.agent_id)
+                          : farmerForm.agent_id,
+                      });
+                    }}
+                    placeholder="Select Sub Agent"
+                    options={subAgents.map((s: any) => ({
+                      value: String(s.id),
+                      label: getSubAgentOptionLabel(s),
+                    }))}
+                  />
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">
@@ -5959,7 +6269,36 @@ ${currentUserProfile.region}`;
               </div>
             </div>
 
+            {/* Farm Category — sheds are for poultry only */}
+            <div className="mb-3">
+              <label className="block text-xs font-bold text-slate-600 mb-1">
+                Farm Category *
+              </label>
+              <SearchableSelect
+                searchable={false}
+                value={farmerForm.farm_category || ""}
+                onChange={(v) =>
+                  setFarmerForm({ ...farmerForm, farm_category: v })
+                }
+                placeholder="Select Category"
+                options={[
+                  { value: "Poultry", label: "🐔 Poultry" },
+                  { value: "Cattle", label: "🐄 Cattle" },
+                  { value: "Fish", label: "🐟 Fish" },
+                ]}
+              />
+              {farmerForm.farm_category &&
+                farmerForm.farm_category !== "Poultry" && (
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Sheds are for poultry only — this farmer will be saved
+                    without sheds.
+                  </p>
+                )}
+            </div>
+
             {/* Sheds — one farmer, multiple sheds, each with its own location/category/stock */}
+            {farmerForm.farm_category === "Poultry" && (
+              <>
             <div className="mb-3">
               <div className="flex items-center justify-between mb-2">
                 <label className="block text-xs font-bold text-slate-600">
@@ -6032,26 +6371,11 @@ ${currentUserProfile.region}`;
                       </div>
                       <div>
                         <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                          Farm Category *
+                          Farm Category
                         </label>
-                        <SearchableSelect
-                          searchable={false}
-                          value={shedCat}
-                          onChange={(v) =>
-                            sIdx === 0
-                              ? setFarmerForm({
-                                  ...farmerForm,
-                                  farm_category: v,
-                                })
-                              : updateFormShedField(sIdx, "farm_category", v)
-                          }
-                          placeholder="Select Category"
-                          options={[
-                            { value: "Poultry", label: "🐔 Poultry" },
-                            { value: "Cattle", label: "🐄 Cattle" },
-                            { value: "Fish", label: "🐟 Fish" },
-                          ]}
-                        />
+                        <div className="w-full rounded border border-slate-200 bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-slate-700">
+                          🐔 Poultry
+                        </div>
                       </div>
                     </div>
 
@@ -6205,6 +6529,42 @@ ${currentUserProfile.region}`;
                 <Plus size={13} /> Add Shed
               </button>
             </div>
+              </>
+            )}
+
+            {farmerForm.farm_category &&
+              farmerForm.farm_category !== "Poultry" && (
+                <div className="mb-3 border border-slate-300 rounded-lg p-3 bg-slate-50">
+                  <div className="text-xs font-bold text-slate-700 mb-2">
+                    Location
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPickerCenterOverride(null);
+                        setShowMapPicker(true);
+                      }}
+                      className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-xs font-semibold cursor-pointer"
+                    >
+                      <MapPin size={13} /> Select Location from Map
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleLocateMeInPicker}
+                      disabled={locatingInPicker}
+                      className="inline-flex items-center gap-1.5 bg-slate-600 hover:bg-slate-700 text-white px-3 py-1.5 rounded text-xs font-semibold disabled:opacity-50 cursor-pointer"
+                    >
+                      <Navigation size={13} /> Locate Me
+                    </button>
+                    {farmerForm.latitude && farmerForm.longitude && (
+                      <span className="text-[11px] font-semibold text-emerald-700">
+                        📍 {farmerForm.latitude}, {farmerForm.longitude}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
 
             <div className="grid grid-cols-1 gap-3 mb-3 text-xs">
               <div>
@@ -6379,9 +6739,14 @@ ${currentUserProfile.region}`;
               <button
                 type="button"
                 onClick={handleSaveFarmerAndBatch}
-                className="px-4 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+                disabled={savingFarmer}
+                className="px-4 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-semibold cursor-pointer disabled:opacity-60"
               >
-                {editingFarmerId ? "Update Farmer" : "Save Farmer"}
+                {savingFarmer
+                  ? "Saving..."
+                  : editingFarmerId
+                  ? "Update Farmer"
+                  : "Save Farmer"}
               </button>
             </div>
           </div>
@@ -6528,14 +6893,14 @@ ${currentUserProfile.region}`;
               <h3 className="text-sm sm:text-base font-bold text-slate-800">
                 {activateFarmer?.runningCount > 0
                   ? `Add Batch (${
-                      (activateFarmer?.allBatches?.length || 0) + 1
+                      activateNextBatchNo
                     }): ${activateFarmer?.farmer_name}`
                   : activateFarmer?.computedStatus === "Active"
                   ? `Run Farm (Batch ${
-                      (activateFarmer?.allBatches?.length || 0) + 1
+                      activateNextBatchNo
                     }): ${activateFarmer?.farmer_name}`
                   : `Activate Farmer (Batch ${
-                      (activateFarmer?.allBatches?.length || 0) + 1
+                      activateNextBatchNo
                     }): ${activateFarmer?.farmer_name}`}
               </h3>
               <button
@@ -6775,7 +7140,7 @@ ${currentUserProfile.region}`;
       <label className="block font-bold text-slate-600 mb-1">
         Batch Mark (Optional — Auto:{" "}
         {activateFarmer?.farmer_name} Batch{" "}
-        {(activateFarmer?.allBatches?.length || 0) + 1})
+        {activateNextBatchNo})
       </label>
       <input
         type="text"
@@ -6802,9 +7167,10 @@ ${currentUserProfile.region}`;
     <button
       type="button"
       onClick={handleActivateSubmit}
-      className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-sm"
+      disabled={savingActivate}
+      className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-sm cursor-pointer disabled:opacity-60"
     >
-      Run Farm
+      {savingActivate ? "Activating..." : "Run Farm"}
     </button>
   </div>
 </div>
@@ -6924,9 +7290,10 @@ ${currentUserProfile.region}`;
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-sm"
+                  disabled={savingVaccine}
+                  className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-sm cursor-pointer disabled:opacity-60"
                 >
-                  OK / Add
+                  {savingVaccine ? "Saving..." : "OK / Add"}
                 </button>
               </div>
             </form>
@@ -7389,9 +7756,14 @@ ${currentUserProfile.region}`;
                 </button>
                 <button
                   onClick={handleBeforeSaleSubmit}
-                  className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold"
+                  disabled={savingBefore}
+                  className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
                 >
-                  {editingReportId ? "Update Report" : "Save Report"}
+                  {savingBefore
+                    ? "Saving..."
+                    : editingReportId
+                    ? "Update Report"
+                    : "Save Report"}
                 </button>
               </div>
             </div>
@@ -7699,9 +8071,14 @@ ${currentUserProfile.region}`;
                 </button>
                 <button
                   onClick={handleAfterSaleSoldSubmit}
-                  className="px-5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm"
+                  disabled={savingAfter}
+                  className="px-5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm cursor-pointer disabled:opacity-60"
                 >
-                  {editingReportId ? "Update Report" : "Sold"}
+                  {savingAfter
+                    ? "Saving..."
+                    : editingReportId
+                    ? "Update Report"
+                    : "Sold"}
                 </button>
               </div>
             </div>
@@ -8124,9 +8501,10 @@ ${currentUserProfile.region}`;
                       <button
                         type="button"
                         onClick={() => handleLayerReportSubmit(true)}
-                        className="px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold shrink-0 shadow-sm"
+                        disabled={savingLayer}
+                        className="px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold shrink-0 shadow-sm cursor-pointer disabled:opacity-60"
                       >
-                        Confirm Culled
+                        {savingLayer ? "Saving..." : "Confirm Culled"}
                       </button>
                     </div>
                   </div>
@@ -8152,9 +8530,10 @@ ${currentUserProfile.region}`;
                   <button
                     type="button"
                     onClick={() => handleLayerReportSubmit(true)}
-                    className="px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold shrink-0 shadow-sm"
+                    disabled={savingLayer}
+                    className="px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold shrink-0 shadow-sm cursor-pointer disabled:opacity-60"
                   >
-                    Confirm Culled
+                    {savingLayer ? "Saving..." : "Confirm Culled"}
                   </button>
                 </div>
               </div>
@@ -8190,9 +8569,12 @@ ${currentUserProfile.region}`;
                 <button
                   type="button"
                   onClick={() => handleLayerReportSubmit(false)}
-                  className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold"
+                  disabled={savingLayer}
+                  className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
                 >
-                  {editingReportId
+                  {savingLayer
+                    ? "Saving..."
+                    : editingReportId
                     ? "Update Layer Report"
                     : "Save Layer Report"}
                 </button>
@@ -8319,9 +8701,10 @@ ${currentUserProfile.region}`;
                   />
                   <button
                     type="submit"
-                    className="bg-emerald-600 text-white px-3 rounded font-bold shrink-0"
+                    disabled={savingAddVaccine}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 rounded font-bold shrink-0 cursor-pointer disabled:opacity-60"
                   >
-                    + Add
+                    {savingAddVaccine ? "Adding..." : "+ Add"}
                   </button>
                 </div>
               </form>

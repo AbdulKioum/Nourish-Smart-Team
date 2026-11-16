@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import LocationPicker from "../../components/maps/LocationPicker";
+import SearchableSelect from "../../components/common/SearchableSelect";
 import { supabase } from "../../lib/supabase";
 import { getAgents } from "../../services/agentService";
 import {
@@ -9,6 +10,10 @@ import {
   deleteSubAgent,
 } from "../../services/subAgentService";
 import { useAuth } from "../../context/AuthContext";
+import {
+  canEditRecord,
+  canAddFarmer,
+} from "../../utils/accessControl";
 import {
   MapContainer,
   Marker,
@@ -122,15 +127,12 @@ export default function SubAgentPage() {
   const mapSectionRef = useRef<HTMLDivElement | null>(null);
   const subAgentMarkerRefs = useRef<Record<number, L.Marker | null>>({});
 
-  if (role === "viewer") {
-    return <div className="p-6 text-center text-slate-500">Access Denied</div>;
-  }
-
   const isFullAccess = role === "super_admin" || role === "manager";
 
   // Assigned Areas
 
   const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>([]);
+  const [currentUserId, setCurrentUserId] = useState("");
 
   // Master Data
   const [subAgents, setSubAgents] = useState<any[]>([]);
@@ -146,6 +148,8 @@ export default function SubAgentPage() {
   const [showMap, setShowMap] = useState(false);
   const [showSubAgentMap, setShowSubAgentMap] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
+  const [showFilters, setShowFilters] = useState(true);
+  const [savingSubAgent, setSavingSubAgent] = useState(false);
   const [selectedSubAgent, setSelectedSubAgent] = useState<any>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState({ ...EMPTY_FORM });
@@ -180,6 +184,15 @@ export default function SubAgentPage() {
   const [mapCenter,] = useState<[number, number]>([24.75, 90.4]);
   const [myLocationMode, setMyLocationMode] = useState(false);
 
+  // Permissions (src/utils/accessControl.ts): manager / super admin can do
+  // everything; officers edit/delete only their own rows. Sub-agent rows
+  // have no created_by column, so created_by is undefined and the
+  // legacy-row rule applies (editable by area officers). View / Map
+  // stay open to everyone, including viewers.
+  const canAddSubAgentHere = canAddFarmer(role);
+  const canEditSubAgent = (sa: any) =>
+    canEditRecord(role, sa?.created_by, currentUserId);
+
   // ==================================================
   // INITIALIZE USER & DATA (STRICT AREA RESTRICTION)
   // ==================================================
@@ -187,6 +200,8 @@ export default function SubAgentPage() {
     const {
       data: { user },
     } = await supabase.auth.getUser();
+
+    if (user) setCurrentUserId(user.id);
 
     let uDistricts: string[] = [];
     let uUpazilas: string[] = [];
@@ -528,7 +543,21 @@ export default function SubAgentPage() {
   // SAVE, DELETE & LOCATE ME
   // ==================================================
   async function handleSave() {
+    if (savingSubAgent) return;
+    setSavingSubAgent(true);
     try {
+      if (editingId) {
+        const editingSubAgent = subAgents.find(
+          (sa: any) => Number(sa.id) === Number(editingId)
+        );
+        if (!canEditSubAgent(editingSubAgent || {})) {
+          alert("You can only edit sub-agents you added.");
+          return;
+        }
+      } else if (!canAddSubAgentHere) {
+        alert("You do not have permission to add sub-agents.");
+        return;
+      }
       if (
         !form.company_id ||
         !form.sub_agent_name.trim() ||
@@ -569,12 +598,33 @@ export default function SubAgentPage() {
       loadData();
     } catch (error: any) {
       alert(error?.message || "Save Failed");
+    } finally {
+      setSavingSubAgent(false);
     }
   }
 
   async function handleDelete(id: number) {
+    const target = subAgents.find((sa: any) => Number(sa.id) === Number(id));
+    if (!canEditSubAgent(target || {})) {
+      alert("You can only delete sub-agents you added.");
+      return;
+    }
+    // Block delete when the sub-agent has farmers. The farmers
+    // sub_agent_id column comes from a separate migration that may
+    // not have run yet — a query error means "no farmers found"
+    // so the page keeps working before that migration runs.
+    const { data: linkedFarmers, error: linkedErr } = await supabase
+      .from("farmers")
+      .select("id")
+      .eq("sub_agent_id", id)
+      .limit(1);
+    if (!linkedErr && linkedFarmers && linkedFarmers.length > 0) {
+      alert("This sub-agent has farmers.");
+      return;
+    }
     if (!confirm("Delete Sub Agent?")) return;
     await deleteSubAgent(id);
+    setSelectedSubAgent(null);
     loadData();
   }
 
@@ -919,6 +969,10 @@ export default function SubAgentPage() {
 }
 
   function openEditForm(sa: any) {
+    if (!canEditSubAgent(sa)) {
+      alert("You can only edit sub-agents you added.");
+      return;
+    }
     setEditingId(sa.id);
     setForm({
       agent_id: String(sa.agent_id || ""),
@@ -949,8 +1003,17 @@ export default function SubAgentPage() {
       {/* ==================================================
           1. COMPACT FILTER BAR AT THE TOP
       ================================================== */}
-      <div className="bg-white border border-slate-300 rounded-xl p-2.5 shadow-sm">
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 items-center">
+      <div className="bg-white border border-slate-300 rounded-xl p-2 shadow-sm">
+        <button
+          type="button"
+          onClick={() => setShowFilters(!showFilters)}
+          className="sm:hidden inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700"
+        >
+          <Search size={12} /> Filters {showFilters ? "▲" : "▼"}
+        </button>
+        <div
+          className={`${showFilters ? "grid" : "hidden"} sm:grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-1.5 items-center mt-2 sm:mt-0`}
+        >
           {/* Search */}
           <div className="col-span-2 sm:col-span-2 lg:col-span-2 relative">
             <Search
@@ -962,116 +1025,97 @@ export default function SubAgentPage() {
               placeholder="Search sub-agent, proprietor, mobile, bazar..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 pl-8 pr-2.5 py-1.5 text-xs outline-none focus:border-blue-500"
+              className="w-full rounded-lg border border-slate-300 pl-8 pr-2.5 py-1 text-xs outline-none focus:border-blue-500"
             />
           </div>
 
           {/* District */}
-          <select
+          <SearchableSelect
+            searchable={false}
             value={districtFilter}
-            onChange={(e) => {
-              setDistrictFilter(e.target.value);
+            onChange={(v) => {
+              setDistrictFilter(v);
               setUpazilaFilter("");
               setUnionFilter("");
               setBazarFilter("");
               setAgentFilter("");
             }}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
-          >
-            <option value="">All Districts</option>
-            {districts.map((d) => (
-              <option key={d.id} value={d.name}>
-                {d.name}
-              </option>
-            ))}
-          </select>
+            placeholder="All Districts"
+            options={districts.map((d) => ({ value: d.name, label: d.name }))}
+          />
 
           {/* Upazila */}
-          <select
+          <SearchableSelect
             value={upazilaFilter}
-            onChange={(e) => {
-              setUpazilaFilter(e.target.value);
+            onChange={(v) => {
+              setUpazilaFilter(v);
               setUnionFilter("");
               setBazarFilter("");
               setAgentFilter("");
             }}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
-          >
-            <option value="">All Upazilas</option>
-            {filterUpazilas.map((u: any) => (
-              <option key={u.id} value={u.name}>
-                {u.name}
-              </option>
-            ))}
-          </select>
+            placeholder="All Upazilas"
+            options={filterUpazilas.map((u: any) => ({
+              value: u.name,
+              label: u.name,
+            }))}
+          />
 
           {/* Union */}
-          <select
+          <SearchableSelect
             value={unionFilter}
-            onChange={(e) => {
-              setUnionFilter(e.target.value);
+            onChange={(v) => {
+              setUnionFilter(v);
               setBazarFilter("");
             }}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
-          >
-            <option value="">All Unions</option>
-            {filterUnions.map((u: any) => (
-              <option key={u.id} value={u.name}>
-                {u.name}
-              </option>
-            ))}
-          </select>
+            placeholder="All Unions"
+            options={filterUnions.map((u: any) => ({
+              value: u.name,
+              label: u.name,
+            }))}
+          />
 
           {/* Bazar */}
-          <select
+          <SearchableSelect
             value={bazarFilter}
-            onChange={(e) => setBazarFilter(e.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
-          >
-            <option value="">All Bazars</option>
-            {filterBazars.map((b: any) => (
-              <option key={b.id} value={b.name}>
-                {b.name}
-              </option>
-            ))}
-          </select>
+            onChange={setBazarFilter}
+            placeholder="All Bazars"
+            options={filterBazars.map((b: any) => ({
+              value: b.name,
+              label: b.name,
+            }))}
+          />
 
           {/* Company */}
-          <select
+          <SearchableSelect
             value={companyFilter}
-            onChange={(e) => {
-              setCompanyFilter(e.target.value);
+            onChange={(v) => {
+              setCompanyFilter(v);
               setAgentFilter("");
             }}
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
-          >
-            <option value="">All Companies</option>
-            {companies.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.company_name}
-              </option>
-            ))}
-          </select>
+            placeholder="All Companies"
+            options={companies.map((c) => ({
+              value: String(c.id),
+              label: c.company_name,
+            }))}
+          />
 
           {/* Parent Agent (Strictly Filtered by Assigned District/Upazila) + Small Reset Button */}
           <div className="flex items-center gap-1.5">
-            <select
+            <SearchableSelect
+              className="w-full"
               value={agentFilter}
-              onChange={(e) => setAgentFilter(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500"
-            >
-              <option value="">All Parent Agents</option>
-              {availableFilterAgents.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.agent_name}
-                </option>
-              ))}
-            </select>
+              onChange={setAgentFilter}
+              placeholder="All Parent Agents"
+              options={availableFilterAgents.map((a) => ({
+                value: String(a.id),
+                label: a.agent_name,
+              }))}
+            />
 
             <button
               onClick={clearFilters}
               title="Reset Filters"
-              className="shrink-0 inline-flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition"
+              className="shrink-0 inline-flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 transition"
             >
               <RotateCcw size={13} />
             </button>
@@ -1082,8 +1126,9 @@ export default function SubAgentPage() {
       {/* ==================================================
           2. ADD SUB AGENT, SUMMARY, EXPORT, VIEW MAP BAR (BELOW FILTER)
       ================================================== */}
-      <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-slate-300 rounded-xl px-3.5 py-2 shadow-sm">
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-1.5 bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 shadow-sm">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {canAddSubAgentHere && (
           <button
             onClick={() => {
               setEditingId(null);
@@ -1104,24 +1149,25 @@ export default function SubAgentPage() {
               });
               setShowForm(true);
             }}
-            className="inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition"
+            className="inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white px-2.5 py-1 rounded-lg text-[11px] font-semibold shadow-sm transition"
           >
             <Plus size={14} /> Add Sub Agent
           </button>
+          )}
 
           <button
             onClick={() => {
               setShowMap(false);
               setShowSummary(true);
             }}
-            className="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition"
+            className="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded-lg text-[11px] font-semibold shadow-sm transition"
           >
             <BarChart3 size={14} /> Summary
           </button>
 
           <button
             onClick={exportSubAgentsExcel}
-            className="inline-flex items-center gap-1.5 bg-emerald-700 hover:bg-emerald-800 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition"
+            className="inline-flex items-center gap-1.5 bg-emerald-700 hover:bg-emerald-800 text-white px-2.5 py-1 rounded-lg text-[11px] font-semibold shadow-sm transition"
           >
             <FileSpreadsheet size={14} /> Export Excel
           </button>
@@ -1136,7 +1182,7 @@ export default function SubAgentPage() {
               setShowSummary(false);
               setShowMap(!showMap);
             }}
-            className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition ${
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold shadow-sm transition ${
               showMap
                 ? "bg-red-600 hover:bg-red-700 text-white"
                 : "bg-blue-600 hover:bg-blue-700 text-white"
@@ -1170,17 +1216,17 @@ export default function SubAgentPage() {
         <div
           ref={mapSectionRef}
           id="subagent-map-section"
-          className="bg-white rounded-xl shadow border border-slate-300 p-3"
+          className="bg-white rounded-xl shadow border border-slate-300 p-2 relative z-10"
         >
-          <h3 className="text-sm font-bold text-slate-800 mb-2">
+          <h3 className="text-sm font-bold text-slate-800 mb-1">
             Sub Agent Locations
           </h3>
 
-          <div className="w-full overflow-hidden rounded-xl border border-slate-300 relative">
+          <div className="w-full h-[320px] sm:h-[420px] lg:h-[480px] overflow-hidden rounded-xl border border-slate-300 relative">
             <MapContainer
               center={mapCenter}
               zoom={8}
-              style={{ height: "480px", width: "100%" }}
+              style={{ height: "100%", width: "100%", zIndex: 1 }}
             >
               <MapLayers />
 
@@ -1343,12 +1389,28 @@ export default function SubAgentPage() {
                 })}
             </MapContainer>
 
-            <button
-              onClick={getMyLocation}
-              className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg px-3.5 py-1.5 text-xs font-semibold transition"
-            >
-              <MapPin size={15} /> Locate Me
-            </button>
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[500] flex flex-col items-center gap-1.5">
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={getMyLocation}
+                  className="flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg px-2.5 py-1.5 text-xs font-semibold whitespace-nowrap transition"
+                >
+                  <MapPin size={15} /> Locate Me
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMap(false);
+                    setSelectedLocation(null);
+                  }}
+                  title="Close Map"
+                  className="flex items-center gap-1 bg-purple-500 hover:bg-red-700 text-white rounded-full shadow-lg px-3 py-1.5 text-xs font-bold whitespace-nowrap transition"
+                >
+                  <X size={14} /> Close
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1437,7 +1499,6 @@ export default function SubAgentPage() {
                   </thead>
                   <tbody>
                     {group.subAgents.map((sa: any, idx: number) => {
-                      const breakdown = getSaleBreakdown(sa);
                       return (
                         <tr key={sa.id} className="hover:bg-slate-50">
                           <td className="border border-slate-300 px-2 py-1">
@@ -1464,12 +1525,17 @@ export default function SubAgentPage() {
                           <td className="border border-slate-300 px-2 py-1">
                             {sa.upazila || "-"}
                           </td>
-                          <td className="border border-slate-300 px-2 py-1">
-                            {breakdown.length === 0
-                              ? "-"
-                              : breakdown
-                                  .map((b) => `${b.label}: ${b.val}`)
-                                  .join(", ")}
+                          <td
+                            className="border border-slate-300 px-2 py-1 whitespace-nowrap"
+                            title={`Broiler ${Number(sa.broiler_sale || 0)} • Layer ${Number(sa.layer_sale || 0)} • Sonali ${Number(sa.sonali_sale || 0)} • Cattle ${Number(sa.cattle_sale || 0)} • Fish ${Number(sa.fish_sale || 0)}`}
+                          >
+                            <span className="font-medium text-slate-700">
+                              <span title="Broiler">B:{Number(sa.broiler_sale || 0)}</span>{" "}
+                              <span title="Sonali">S:{Number(sa.sonali_sale || 0)}</span>{" "}
+                              <span title="Layer">L:{Number(sa.layer_sale || 0)}</span>{" "}
+                              <span title="Cattle">C:{Number(sa.cattle_sale || 0)}</span>{" "}
+                              <span title="Fish">F:{Number(sa.fish_sale || 0)}</span>
+                            </span>
                           </td>
                           <td className="border border-slate-300 px-2 py-1 text-right font-bold text-slate-800">
                             {Number(sa.monthly_sale || 0).toLocaleString()}
@@ -1480,28 +1546,16 @@ export default function SubAgentPage() {
                           <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap space-x-1">
                             <button
                               onClick={() => setSelectedSubAgent(sa)}
-                              className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-0.5 rounded text-[11px]"
+                              className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-0.5 rounded text-[11px] cursor-pointer"
                             >
                               View
                             </button>
                             <button
                               onClick={() => handleViewSubAgentOnMap(sa)}
-                              className="inline-flex items-center gap-1 bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded text-[11px]"
+                              className="inline-flex items-center gap-1 bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded text-[11px] cursor-pointer"
                               >
                                 <MapPin size={10} className="shrink-0" />
                                 <span>Map</span>
-                            </button>
-                            <button
-                              onClick={() => openEditForm(sa)}
-                              className="bg-yellow-500 hover:bg-yellow-600 text-white px-2 py-0.5 rounded text-[11px]"
-                            >
-                              Edit
-                            </button>
-                            <button
-                              onClick={() => handleDelete(sa.id)}
-                              className="bg-red-600 hover:bg-red-700 text-white px-2 py-0.5 rounded text-[11px]"
-                            >
-                              Delete
                             </button>
                           </td>
                         </tr>
@@ -1519,9 +1573,9 @@ export default function SubAgentPage() {
           5. VIEW SUB AGENT MODAL (CLEAN BORDERED TABLE)
       ================================================== */}
       {selectedSubAgent && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
-          <div className="bg-white rounded-xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden shadow-2xl border border-slate-300">
-            <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-300 bg-slate-100">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[2000] p-2 sm:p-4">
+          <div className="bg-white rounded-xl w-full max-w-xl max-h-[92vh] flex flex-col overflow-hidden shadow-2xl border border-slate-300">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-slate-300 bg-slate-100">
               <h2 className="text-sm sm:text-base font-bold text-slate-800">
                 Sub Agent: {selectedSubAgent.sub_agent_name}
               </h2>
@@ -1533,7 +1587,7 @@ export default function SubAgentPage() {
               </button>
             </div>
 
-            <div className="p-4 overflow-y-auto">
+            <div className="p-3 sm:p-4 space-y-2.5 overflow-y-auto">
               <table className="w-full border-collapse border border-slate-300 text-xs">
                 <tbody>
                   <tr>
@@ -1641,6 +1695,27 @@ export default function SubAgentPage() {
                   </tr>
                 </tbody>
               </table>
+
+              {/* Edit/Delete live ONLY here in the View modal (AgentsPage pattern). */}
+              {canEditSubAgent(selectedSubAgent) && (
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    onClick={() => {
+                      openEditForm(selectedSubAgent);
+                      setSelectedSubAgent(null);
+                    }}
+                    className="bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1.5 rounded text-xs font-semibold cursor-pointer"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => handleDelete(selectedSubAgent.id)}
+                    className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded text-xs font-semibold cursor-pointer"
+                  >
+                    Delete Sub Agent
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1650,8 +1725,8 @@ export default function SubAgentPage() {
           6. ADD / EDIT SUB AGENT MODAL
       ================================================== */}
       {showForm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
-          <div className="bg-white rounded-xl p-4 sm:p-5 w-full max-w-2xl max-h-[92vh] overflow-y-auto shadow-2xl">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[2000] p-2 sm:p-4">
+          <div className="bg-white rounded-xl p-3 sm:p-4 w-full max-w-2xl max-h-[92vh] overflow-y-auto shadow-2xl">
             <div className="flex justify-between items-center pb-2.5 mb-3 border-b">
               <h2 className="text-base font-bold text-slate-800">
                 {editingId ? "Edit Sub Agent" : "Add Sub Agent"}
@@ -1671,44 +1746,36 @@ export default function SubAgentPage() {
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   Company *
                 </label>
-                <select
+                <SearchableSelect
                   value={form.company_id}
-                  onChange={(e) =>
+                  onChange={(companyId) =>
                     setForm({
                       ...form,
-                      company_id: e.target.value,
+                      company_id: companyId,
                       agent_id: "",
                     })
                   }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select Company</option>
-                  {companies.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.company_name}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="Select Company"
+                  options={companies.map((c) => ({
+                    value: String(c.id),
+                    label: c.company_name,
+                  }))}
+                />
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   Parent Agent
                 </label>
-                <select
+                <SearchableSelect
                   value={form.agent_id}
-                  onChange={(e) =>
-                    setForm({ ...form, agent_id: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select Parent Agent</option>
-                  {formAvailableAgents.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.agent_name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => setForm({ ...form, agent_id: v })}
+                  placeholder="Select Parent Agent"
+                  options={formAvailableAgents.map((a) => ({
+                    value: String(a.id),
+                    label: a.agent_name,
+                  }))}
+                />
               </div>
 
               <div>
@@ -1757,95 +1824,82 @@ export default function SubAgentPage() {
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   District *
                 </label>
-                <select
+                <SearchableSelect
+                  searchable={false}
                   value={form.district}
-                  onChange={(e) =>
+                  onChange={(v) =>
                     setForm({
                       ...form,
-                      district: e.target.value,
+                      district: v,
                       upazila: "",
                       union_name: "",
                       bazar: "",
                     })
                   }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select District</option>
-                  {districts.map((d) => (
-                    <option key={d.id} value={d.name}>
-                      {d.name}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="Select District"
+                  options={districts.map((d) => ({
+                    value: d.name,
+                    label: d.name,
+                  }))}
+                />
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   Upazila *
                 </label>
-                <select
+                <SearchableSelect
                   value={form.upazila}
-                  onChange={(e) =>
+                  onChange={(v) =>
                     setForm({
                       ...form,
-                      upazila: e.target.value,
+                      upazila: v,
                       union_name: "",
                       bazar: "",
                     })
                   }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select Upazila</option>
-                  {upazilas.map((u) => (
-                    <option key={u.id} value={u.name}>
-                      {u.name}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="Select Upazila"
+                  options={upazilas.map((u) => ({
+                    value: u.name,
+                    label: u.name,
+                  }))}
+                />
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   Union
                 </label>
-                <select
+                <SearchableSelect
                   value={form.union_name}
-                  onChange={(e) =>
+                  onChange={(v) =>
                     setForm({
                       ...form,
-                      union_name: e.target.value,
+                      union_name: v,
                       bazar: "",
                     })
                   }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select Union</option>
-                  {unions.map((u: any) => (
-                    <option key={u.id} value={u.name}>
-                      {u.name}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="Select Union"
+                  options={unions.map((u: any) => ({
+                    value: u.name,
+                    label: u.name,
+                  }))}
+                />
               </div>
 
               <div className="sm:col-span-2">
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   Bazar
                 </label>
-                <select
+                <SearchableSelect
                   value={form.bazar}
-                  onChange={(e) =>
-                    setForm({ ...form, bazar: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select Bazar</option>
-                  {filteredBazars.map((bazar) => (
-                    <option key={bazar.id} value={bazar.name}>
-                      {bazar.name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => setForm({ ...form, bazar: v })}
+                  placeholder="Select Bazar"
+                  options={filteredBazars.map((bazar) => ({
+                    value: bazar.name,
+                    label: bazar.name,
+                  }))}
+                />
               </div>
             </div>
 
@@ -1960,39 +2014,38 @@ export default function SubAgentPage() {
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   Focus Item
                 </label>
-                <select
+                <SearchableSelect
+                  searchable={false}
                   value={form.focus_item}
-                  onChange={(e) =>
-                    setForm({ ...form, focus_item: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="">Select Focus Item</option>
-                  <option value="Broiler Feed">Broiler Feed</option>
-                  <option value="Layer Feed">Layer Feed</option>
-                  <option value="Sonali Feed">Sonali Feed</option>
-                  <option value="Cattle Feed">Cattle Feed</option>
-                  <option value="Fish Feed">Fish Feed</option>
-                  <option value="Goat Feed">Goat Feed</option>
-                  <option value="Duck Feed">Duck Feed</option>
-                  <option value="Others">Others</option>
-                </select>
+                  onChange={(v) => setForm({ ...form, focus_item: v })}
+                  placeholder="Select Focus Item"
+                  options={[
+                    { value: "Broiler Feed", label: "Broiler Feed" },
+                    { value: "Layer Feed", label: "Layer Feed" },
+                    { value: "Sonali Feed", label: "Sonali Feed" },
+                    { value: "Cattle Feed", label: "Cattle Feed" },
+                    { value: "Fish Feed", label: "Fish Feed" },
+                    { value: "Goat Feed", label: "Goat Feed" },
+                    { value: "Duck Feed", label: "Duck Feed" },
+                    { value: "Others", label: "Others" },
+                  ]}
+                />
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   Status
                 </label>
-                <select
+                <SearchableSelect
+                  searchable={false}
                   value={form.status}
-                  onChange={(e) =>
-                    setForm({ ...form, status: e.target.value })
-                  }
-                  className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                >
-                  <option value="Active">Active</option>
-                  <option value="Inactive">Inactive</option>
-                </select>
+                  onChange={(v) => setForm({ ...form, status: v })}
+                  placeholder="Select Status"
+                  options={[
+                    { value: "Active", label: "Active" },
+                    { value: "Inactive", label: "Inactive" },
+                  ]}
+                />
               </div>
             </div>
 
@@ -2008,9 +2061,14 @@ export default function SubAgentPage() {
               </button>
               <button
                 onClick={handleSave}
-                className="px-4 py-1.5 rounded bg-green-600 text-white text-xs font-semibold"
+                disabled={savingSubAgent}
+                className="px-4 py-1.5 rounded bg-green-600 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
               >
-                {editingId ? "Update Sub Agent" : "Save Sub Agent"}
+                {savingSubAgent
+                  ? "Saving..."
+                  : editingId
+                  ? "Update Sub Agent"
+                  : "Save Sub Agent"}
               </button>
             </div>
           </div>
@@ -2021,7 +2079,7 @@ export default function SubAgentPage() {
           7. LOCATION PICKER MODAL WITH LOCATE ME BUTTON
       ================================================== */}
       {showSubAgentMap && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-2 sm:p-4">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[2100] p-2 sm:p-4">
           <div className="bg-white p-3 sm:p-4 rounded-xl w-full max-w-4xl shadow-2xl space-y-2.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="font-bold text-sm sm:text-base">
@@ -2119,9 +2177,9 @@ export default function SubAgentPage() {
           8. SUB AGENT SUMMARY MODAL
       ================================================== */}
       {showSummary && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
-          <div className="bg-white rounded-xl p-4 sm:p-6 w-full max-w-3xl max-h-[85vh] overflow-auto">
-            <div className="flex justify-between items-center pb-3 mb-4 border-b">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[2000] p-2 sm:p-4">
+          <div className="bg-white rounded-xl p-3 sm:p-4 w-full max-w-3xl max-h-[92vh] overflow-auto">
+            <div className="flex justify-between items-center pb-2 mb-3 border-b">
               <div>
                 <h2 className="text-base sm:text-lg font-bold">
                   Sub Agent Summary — {selectedCompanyName}

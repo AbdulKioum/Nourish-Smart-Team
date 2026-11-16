@@ -523,7 +523,7 @@ export default function UsersPage() {
       default:
         return (
           role
-            ?.replaceAll("_", " ")
+            ?.split("_").join(" ")
             .replace(/\b\w/g, (char) => char.toUpperCase()) || "Officer"
         );
     }
@@ -574,7 +574,7 @@ export default function UsersPage() {
 
         <button
           onClick={handleOpenCreateModal}
-          className="w-full sm:w-auto flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white px-4 py-2 rounded-xl text-xs sm:text-sm font-medium shadow-sm transition shrink-0"
+          className="cursor-pointer w-full sm:w-auto flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white px-4 py-2 rounded-xl text-xs sm:text-sm font-medium shadow-sm transition shrink-0"
         >
           <FaUserPlus />
           Add New User
@@ -587,7 +587,7 @@ export default function UsersPage() {
           <span className="break-words">{errorMsg}</span>
           <button
             onClick={() => setErrorMsg("")}
-            className="text-red-500 hover:text-red-700 shrink-0 p-1"
+            className="cursor-pointer text-red-500 hover:text-red-700 shrink-0 p-1"
           >
             <FaTimes />
           </button>
@@ -775,7 +775,7 @@ export default function UsersPage() {
                 <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
                   <button
                     onClick={() => handleOpenEditModal(user)}
-                    className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 rounded-xl bg-blue-50 text-blue-600 active:bg-blue-100 text-xs font-semibold transition"
+                    className="cursor-pointer flex-1 inline-flex items-center justify-center gap-1.5 py-2 rounded-xl bg-blue-50 text-blue-600 active:bg-blue-100 text-xs font-semibold transition"
                   >
                     <FaEdit />
                     Edit User & Area
@@ -784,7 +784,7 @@ export default function UsersPage() {
                   <button
                     onClick={() => handleDelete(user)}
                     disabled={isCurrentUser || deletingId === user.id}
-                    className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-red-50 text-red-600 active:bg-red-100 disabled:opacity-40 text-xs font-semibold transition"
+                    className="cursor-pointer inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-red-50 text-red-600 active:bg-red-100 disabled:opacity-40 text-xs font-semibold transition"
                   >
                     {deletingId === user.id ? (
                       <FaSpinner className="animate-spin" />
@@ -1001,7 +1001,7 @@ export default function UsersPage() {
                         <div className="flex justify-end gap-2">
                           <button
                             onClick={() => handleOpenEditModal(user)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 text-sm font-medium transition"
+                            className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 text-sm font-medium transition"
                           >
                             <FaEdit />
                             Edit
@@ -1043,7 +1043,7 @@ export default function UsersPage() {
                 type="button"
                 onClick={closeModal}
                 disabled={submitting}
-                className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-500"
+                className="cursor-pointer w-8 h-8 sm:w-9 sm:h-9 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-500"
               >
                 <FaTimes />
               </button>
@@ -1083,7 +1083,7 @@ export default function UsersPage() {
                       onClick={() =>
                         setFormData((prev) => ({ ...prev, avatar_url: "" }))
                       }
-                      className="px-2 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-600 text-xs font-semibold"
+                      className="cursor-pointer px-2 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-600 text-xs font-semibold"
                     >
                       Remove
                     </button>
@@ -1226,7 +1226,7 @@ export default function UsersPage() {
                           upazilas: [],
                         })
                       }
-                      className="text-xs text-red-500 hover:underline"
+                      className="cursor-pointer text-xs text-red-500 hover:underline"
                     >
                       Clear All
                     </button>
@@ -1245,7 +1245,7 @@ export default function UsersPage() {
                         <button
                           type="button"
                           onClick={() => handleToggleDistrict(dist)}
-                          className="ml-1 text-blue-500 hover:text-blue-800"
+                          className="cursor-pointer ml-1 text-blue-500 hover:text-blue-800"
                         >
                           <FaTimes />
                         </button>
@@ -1259,7 +1259,7 @@ export default function UsersPage() {
                   onClick={() =>
                     setIsDistrictDropdownOpen(!isDistrictDropdownOpen)
                   }
-                  className="w-full flex items-center justify-between border border-slate-300 rounded-xl px-3 py-2 text-sm text-left bg-white hover:bg-slate-50"
+                  className="cursor-pointer w-full flex items-center justify-between border border-slate-300 rounded-xl px-3 py-2 text-sm text-left bg-white hover:bg-slate-50"
                 >
                   <span className="text-slate-600">
                     {formData.districts.length === 0
@@ -1319,7 +1319,7 @@ export default function UsersPage() {
                     <button
                       type="button"
                       onClick={handleSelectAllUpazilas}
-                      className="text-xs text-emerald-600 hover:underline font-medium"
+                      className="cursor-pointer text-xs text-emerald-600 hover:underline font-medium"
                     >
                       {availableUpazilas.every((u) =>
                         formData.upazilas.includes(u.name)
@@ -1341,7 +1341,7 @@ export default function UsersPage() {
                         <button
                           type="button"
                           onClick={() => handleToggleUpazila(upa)}
-                          className="ml-1 text-emerald-500 hover:text-emerald-800"
+                          className="cursor-pointer ml-1 text-emerald-500 hover:text-emerald-800"
                         >
                           <FaTimes />
                         </button>
@@ -1356,7 +1356,7 @@ export default function UsersPage() {
                   onClick={() =>
                     setIsUpazilaDropdownOpen(!isUpazilaDropdownOpen)
                   }
-                  className="w-full flex items-center justify-between border border-slate-300 rounded-xl px-3 py-2 text-sm text-left bg-white hover:bg-slate-50 disabled:bg-slate-100"
+                  className="cursor-pointer w-full flex items-center justify-between border border-slate-300 rounded-xl px-3 py-2 text-sm text-left bg-white hover:bg-slate-50 disabled:bg-slate-100"
                 >
                   <span className="text-slate-600">
                     {formData.districts.length === 0
@@ -1409,7 +1409,7 @@ export default function UsersPage() {
                       onClick={() =>
                         setFormData({ ...formData, assigned_categories: [] })
                       }
-                      className="text-xs text-red-500 hover:underline"
+                      className="cursor-pointer text-xs text-red-500 hover:underline"
                     >
                       Clear All
                     </button>
@@ -1427,7 +1427,7 @@ export default function UsersPage() {
                         <button
                           type="button"
                           onClick={() => handleToggleCategory(cat)}
-                          className="ml-1 text-amber-500 hover:text-amber-800"
+                          className="cursor-pointer ml-1 text-amber-500 hover:text-amber-800"
                         >
                           <FaTimes />
                         </button>
@@ -1445,7 +1445,7 @@ export default function UsersPage() {
                         key={cat}
                         type="button"
                         onClick={() => handleToggleCategory(cat)}
-                        className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition ${
+                        className={`cursor-pointer px-3 py-1.5 rounded-lg border text-xs font-medium transition ${
                           checked
                             ? "bg-amber-50 text-amber-700 border-amber-300"
                             : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"
@@ -1467,7 +1467,7 @@ export default function UsersPage() {
                   type="button"
                   onClick={closeModal}
                   disabled={submitting}
-                  className="flex-1 py-2.5 rounded-xl border border-slate-300 text-slate-600 hover:bg-slate-50 text-sm font-medium"
+                  className="cursor-pointer flex-1 py-2.5 rounded-xl border border-slate-300 text-slate-600 hover:bg-slate-50 text-sm font-medium"
                 >
                   Cancel
                 </button>
@@ -1475,10 +1475,14 @@ export default function UsersPage() {
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-sm font-medium flex items-center justify-center gap-2"
+                  className="cursor-pointer flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-sm font-medium flex items-center justify-center gap-2"
                 >
                   {submitting && <FaSpinner className="animate-spin" />}
-                  {editingUser ? "Save Changes" : "Create User"}
+                  {submitting
+                    ? "Saving..."
+                    : editingUser
+                    ? "Save Changes"
+                    : "Create User"}
                 </button>
               </div>
             </form>

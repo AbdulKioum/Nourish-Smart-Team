@@ -56,7 +56,7 @@ const EMPTY_VISIT_FORM: any = {
 
 const EMPTY_FARMER_FORM: any = {
   farmer_name: "",
-  mobile: "",
+  phone: "",
   district: "",
   upazila: "",
   farm_category: "Aqua",
@@ -169,7 +169,7 @@ function parseList(v: any): string[] {
 // hatch date, when one is known. Each helper returns the alert message or null.
 function validateMortality(mortality: number, cap: number): string | null {
   if (mortality > cap) {
-    return "Mortality total bird er cheye beshi hote parbe na.";
+    return "Mortality cannot be more than total birds.";
   }
   return null;
 }
@@ -180,10 +180,10 @@ function validateReportDate(
 ): string | null {
   const today = new Date().toISOString().split("T")[0];
   if (reportDate > today) {
-    return "Agami date e report dewa jabe na.";
+    return "You cannot add a report for a future date.";
   }
   if (hatchDate && reportDate < hatchDate) {
-    return "Hatch date er age report dewa jabe na.";
+    return "Report date cannot be before the hatch date.";
   }
   return null;
 }
@@ -195,8 +195,6 @@ export default function AquaVisitsPage() {
 
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [assignedCategories, setAssignedCategories] = useState<string[]>([]);
-  const [_assignedUpazilas, setAssignedUpazilas] = useState<string[]>([]);
-  const [_assignedDistricts, setAssignedDistricts] = useState<string[]>([]);
 
   const [farmers, setFarmers] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
@@ -266,8 +264,6 @@ export default function AquaVisitsPage() {
         uCats = parseList(uProf.assigned_categories);
       }
     }
-    setAssignedUpazilas(uUpa);
-    setAssignedDistricts(uDist);
     setAssignedCategories(uCats);
 
     const [{ data: farmersData }, { data: agentsData }, { data: compData }, { data: visitData }] =
@@ -418,22 +414,23 @@ export default function AquaVisitsPage() {
 
   async function handleSaveVisit(e: React.FormEvent) {
     e.preventDefault();
+    if (saving) return;
     // Handler-level guard (not just the button): Add/Edit/Delete on the
     // Aqua page needs the Aqua category, and edits need ownership.
     if (!canAddAqua) {
-      alert("Apnar Aqua category assign kora nei — Aqua visit add/edit korte parben na.");
+      alert("Aqua is not assigned to you — you cannot add or edit Aqua visits.");
       return;
     }
     if (editingRow && !canEditRecord(roleStr, editingRow.created_by, currentUserId)) {
-      alert("Ei visit apni add koren ni — edit korte parben na.");
+      alert("You did not add this visit — you cannot edit it.");
       return;
     }
     if (!form.farmer_id) {
-      alert("Farmer select korun.");
+      alert("Please select a farmer.");
       return;
     }
     if (!form.visit_date) {
-      alert("Visit date din.");
+      alert("Please enter the visit date.");
       return;
     }
     const species =
@@ -441,7 +438,7 @@ export default function AquaVisitsPage() {
         ? String(form.species_other || "").trim()
         : form.species;
     if (!species) {
-      alert("Species din.");
+      alert("Please select a species.");
       return;
     }
     // Report validation — before any DB write, on both add and edit
@@ -511,14 +508,14 @@ export default function AquaVisitsPage() {
   async function handleDeleteVisit(row: any) {
     // Handler-level guard: Aqua category + ownership.
     if (!canAddAqua) {
-      alert("Apnar Aqua category assign kora nei — delete korte parben na.");
+      alert("Aqua is not assigned to you — you cannot delete.");
       return;
     }
     if (!canEditRecord(roleStr, row.created_by, currentUserId)) {
-      alert("Ei visit apni add koren ni — delete korte parben na.");
+      alert("You did not add this visit — you cannot delete it.");
       return;
     }
-    if (!window.confirm("Ei Aqua visit ta delete korben?")) return;
+    if (!window.confirm("Delete this Aqua visit?")) return;
     const { error } = await supabase.from("aqua_visits").delete().eq("id", row.id);
     if (error) {
       alert(error.message || "Delete failed.");
@@ -534,7 +531,7 @@ export default function AquaVisitsPage() {
     const lat = s?.latitude ?? farmer?.latitude;
     const lng = s?.longitude ?? farmer?.longitude;
     if (lat == null || lng == null || lat === "" || lng === "") {
-      alert("Ei farmer er location save kora nei.");
+      alert("No location saved for this farmer.");
       return;
     }
     window.open(
@@ -598,7 +595,7 @@ export default function AquaVisitsPage() {
       const next = [...prev];
       if (next.length === 0) {
         const name = window.prompt(
-          "Ager pond/shed er nam din (khali rakhle 'Shed 1' hobe):",
+          "Name the previous pond/shed (leave empty for 'Shed 1'):",
           ""
         );
         next.push({
@@ -615,12 +612,13 @@ export default function AquaVisitsPage() {
 
   async function handleSaveFarmer(e: React.FormEvent) {
     e.preventDefault();
+    if (savingFarmer) return;
     if (!canAddFarmerHere) {
-      alert("Apni farmer add korte parben na.");
+      alert("You do not have permission to add farmers.");
       return;
     }
     if (!farmerForm.farmer_name.trim()) {
-      alert("Farmer name din.");
+      alert("Please enter the farmer name.");
       return;
     }
     setSavingFarmer(true);
@@ -629,7 +627,7 @@ export default function AquaVisitsPage() {
         .from("farmers")
         .insert({
           farmer_name: farmerForm.farmer_name.trim(),
-          mobile: farmerForm.mobile.trim() || null,
+          phone: farmerForm.phone.trim() || null,
           district: farmerForm.district.trim() || null,
           upazila: farmerForm.upazila.trim() || null,
           farm_category: "Aqua",
@@ -672,15 +670,91 @@ export default function AquaVisitsPage() {
     "w-full border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500";
   const labelCls = "block text-[11px] font-semibold text-slate-600 mb-0.5";
   const btnPrimary =
-    "inline-flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg";
+    "inline-flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg cursor-pointer disabled:opacity-60";
   const btnGhost =
-    "inline-flex items-center gap-1 bg-white border border-slate-300 text-slate-700 text-xs font-semibold px-3 py-1.5 rounded-lg";
+    "inline-flex items-center gap-1 bg-white border border-slate-300 text-slate-700 text-xs font-semibold px-3 py-1.5 rounded-lg cursor-pointer";
 
   if (loading) {
     return (
       <div className="p-4 text-xs text-slate-500">Loading Aqua Visits...</div>
     );
   }
+
+  // TEMP: page parked for now — delete this block to restore the full page.
+  return (
+    <div className="min-h-[70vh] p-3 md:p-4 max-w-6xl mx-auto flex items-center justify-center overflow-hidden">
+      <style>{`
+        @keyframes aq-float { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-12px); } }
+        @keyframes aq-bubble { 0% { transform: translateY(0) scale(1); opacity: 0.6; } 100% { transform: translateY(-110px) scale(1.5); opacity: 0; } }
+        @keyframes aq-shimmer { 0% { background-position: -200% center; } 100% { background-position: 200% center; } }
+        @keyframes aq-ring { 0% { transform: scale(0.9); opacity: 0.7; } 100% { transform: scale(1.6); opacity: 0; } }
+      `}</style>
+      <div
+        className="relative w-full max-w-lg text-center"
+        style={{ perspective: "1000px" }}
+      >
+        {/* rising bubbles */}
+        <span
+          className="absolute left-[10%] bottom-6 w-3 h-3 rounded-full bg-cyan-300/70"
+          style={{ animation: "aq-bubble 4s ease-in infinite" }}
+        />
+        <span
+          className="absolute left-[22%] bottom-2 w-2 h-2 rounded-full bg-sky-300/70"
+          style={{ animation: "aq-bubble 5s ease-in 1s infinite" }}
+        />
+        <span
+          className="absolute right-[14%] bottom-8 w-4 h-4 rounded-full bg-blue-300/60"
+          style={{ animation: "aq-bubble 4.5s ease-in 0.5s infinite" }}
+        />
+        <span
+          className="absolute right-[26%] bottom-0 w-2 h-2 rounded-full bg-cyan-200/80"
+          style={{ animation: "aq-bubble 3.5s ease-in 1.5s infinite" }}
+        />
+        {/* 3D floating card */}
+        <div style={{ animation: "aq-float 5s ease-in-out infinite" }}>
+          <div
+            className="relative rounded-3xl bg-gradient-to-br from-sky-500 via-cyan-500 to-blue-700 p-[2px] shadow-[0_30px_60px_-15px_rgba(2,132,199,0.55)]"
+            style={{ transform: "rotateX(10deg)" }}
+          >
+            <div className="rounded-3xl bg-white/95 backdrop-blur px-6 py-10 sm:px-10">
+              <div className="relative mx-auto w-20 h-20 mb-5">
+                <span
+                  className="absolute inset-0 rounded-full bg-cyan-400/40"
+                  style={{ animation: "aq-ring 2s ease-out infinite" }}
+                />
+                <span className="relative flex items-center justify-center w-20 h-20 rounded-full bg-gradient-to-br from-cyan-400 to-blue-600 text-4xl shadow-lg shadow-cyan-500/40">
+                  🐟
+                </span>
+              </div>
+              <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-slate-800">
+                Aqua Visit
+              </h1>
+              <p
+                className="mt-2 text-2xl sm:text-3xl font-black tracking-[0.2em] bg-gradient-to-r from-cyan-500 via-sky-400 to-cyan-500 bg-[length:200%_auto] bg-clip-text text-transparent"
+                style={{ animation: "aq-shimmer 3s linear infinite" }}
+              >
+                COMING SOON
+              </p>
+              <p className="mt-3 text-sm text-slate-500">
+                We&apos;re getting this page ready for you.
+              </p>
+              <div className="mt-6 flex items-center justify-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-cyan-500 animate-bounce" />
+                <span
+                  className="w-2 h-2 rounded-full bg-sky-500 animate-bounce"
+                  style={{ animationDelay: "0.15s" }}
+                />
+                <span
+                  className="w-2 h-2 rounded-full bg-blue-500 animate-bounce"
+                  style={{ animationDelay: "0.3s" }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="p-3 md:p-4 space-y-3 max-w-6xl mx-auto">
@@ -772,7 +846,7 @@ export default function AquaVisitsPage() {
               setFilterSpecies("all");
               setFilterDate("");
             }}
-            className="text-[11px] text-emerald-700 font-semibold"
+            className="text-[11px] text-emerald-700 font-semibold cursor-pointer"
           >
             Clear
           </button>
@@ -839,7 +913,7 @@ export default function AquaVisitsPage() {
                         <div className="flex items-center justify-end gap-1">
                           <button
                             onClick={() => openMapForFarmer(f)}
-                            className="p-1 rounded-md text-teal-600 hover:bg-teal-50"
+                            className="p-1 rounded-md text-teal-600 hover:bg-teal-50 cursor-pointer"
                             title="Map (everyone)"
                           >
                             <MapPin size={14} />
@@ -848,14 +922,14 @@ export default function AquaVisitsPage() {
                             <>
                               <button
                                 onClick={() => openEditForm(v)}
-                                className="p-1 rounded-md text-blue-600 hover:bg-blue-50"
+                                className="p-1 rounded-md text-blue-600 hover:bg-blue-50 cursor-pointer"
                                 title="Edit"
                               >
                                 <Pencil size={14} />
                               </button>
                               <button
                                 onClick={() => handleDeleteVisit(v)}
-                                className="p-1 rounded-md text-red-600 hover:bg-red-50"
+                                className="p-1 rounded-md text-red-600 hover:bg-red-50 cursor-pointer"
                                 title="Delete"
                               >
                                 <Trash2 size={14} />
@@ -883,7 +957,7 @@ export default function AquaVisitsPage() {
               </h2>
               <button
                 onClick={() => setShowForm(false)}
-                className="p-1 rounded-md text-slate-500 hover:bg-slate-100"
+                className="p-1 rounded-md text-slate-500 hover:bg-slate-100 cursor-pointer"
               >
                 <X size={16} />
               </button>
@@ -976,7 +1050,7 @@ export default function AquaVisitsPage() {
                     onChange={(e) =>
                       setForm((p: any) => ({ ...p, species_other: e.target.value }))
                     }
-                    placeholder="Species name likhun"
+                    placeholder="Enter species name"
                     className={inputCls}
                   />
                 </div>
@@ -1131,7 +1205,7 @@ export default function AquaVisitsPage() {
               <h2 className="text-sm font-bold text-slate-800">Add Farmer (Aqua)</h2>
               <button
                 onClick={() => setShowFarmerForm(false)}
-                className="p-1 rounded-md text-slate-500 hover:bg-slate-100"
+                className="p-1 rounded-md text-slate-500 hover:bg-slate-100 cursor-pointer"
               >
                 <X size={16} />
               </button>
@@ -1150,11 +1224,11 @@ export default function AquaVisitsPage() {
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className={labelCls}>Mobile</label>
+                  <label className={labelCls}>Phone</label>
                   <input
-                    value={farmerForm.mobile}
+                    value={farmerForm.phone}
                     onChange={(e) =>
-                      setFarmerForm((p: any) => ({ ...p, mobile: e.target.value }))
+                      setFarmerForm((p: any) => ({ ...p, phone: e.target.value }))
                     }
                     className={inputCls}
                   />
@@ -1201,7 +1275,7 @@ export default function AquaVisitsPage() {
                           )
                         );
                       }}
-                      placeholder="Shed 2 or Bridge par"
+                      placeholder="Shed 2 or Bridge side"
                       className={inputCls}
                     />
                   </div>
@@ -1210,7 +1284,7 @@ export default function AquaVisitsPage() {
               <button
                 type="button"
                 onClick={addExtraShed}
-                className="text-[11px] font-semibold text-emerald-700"
+                className="text-[11px] font-semibold text-emerald-700 cursor-pointer"
               >
                 + Add Pond / Shed
               </button>

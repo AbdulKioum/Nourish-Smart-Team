@@ -305,6 +305,38 @@ function MapFocusController({
   return null;
 }
 
+// In-memory page cache (same pattern as DocTrackingPage): returning to
+// this page shows the cached lists instantly instead of re-fetching.
+// Access inputs are cached too — the officer scoping (upazila/district
+// filter) and the Edit/Delete gate (canEditRecord vs currentUserId) both
+// depend on them, so a cache hit must restore them, not just the data.
+// userRole is the useAuth role the cache was built under: the mount effect
+// re-loads when it differs, so a role that populates after first render
+// rebuilds the scoping under the real role instead of staying filtered
+// as an officer. No background refresh on a cache hit — staleness until
+// remount is the accepted tradeoff, same as DocTracking.
+let cachedPageState: {
+  initialized: boolean;
+  userId: string;
+  userName: string;
+  userRole: string;
+  assignedUpazilas: string[];
+  assignedDistricts: string[];
+  assignedCategories: string[];
+  agents: any[];
+  companies: any[];
+  districts: any[];
+  bazars: any[];
+  search: string;
+  companyFilter: string;
+  districtFilter: string;
+  upazilaFilter: string;
+  unionFilter: string;
+  bazarFilter: string;
+  exclusivityFilter: string;
+  showFilters: boolean;
+} | null = null;
+
 export default function AgentsPage() {
   const { role } = useAuth();
   const mapSectionRef = useRef<HTMLDivElement | null>(null);
@@ -326,18 +358,34 @@ export default function AgentsPage() {
     canEditRecord(role, agent?.created_by, currentUserId);
 
   // User Profile & Assigned Areas
-  const [currentUserId, setCurrentUserId] = useState("");
-  const [currentUserName, setCurrentUserName] = useState("User");
-  const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>([]);
-  const [, setAssignedCategories] = useState<string[]>([]);
+  const [currentUserId, setCurrentUserId] = useState(
+    cachedPageState?.userId || ""
+  );
+  const [currentUserName, setCurrentUserName] = useState(
+    cachedPageState?.userName || "User"
+  );
+  const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>(
+    cachedPageState?.assignedUpazilas || []
+  );
+  // Assigned categories are not read by any gate on this page (agent add
+  // is not category-gated, rule 5) — the value stays discarded as before,
+  // but the state is still seeded from the cache so the access inputs
+  // round-trip with the rest of the profile.
+  const [, setAssignedCategories] = useState<string[]>(
+    cachedPageState?.assignedCategories || []
+  );
 
   // Master Data
-  const [agents, setAgents] = useState<any[]>([]);
-  const [companies, setCompanies] = useState<any[]>([]);
-  const [districts, setDistricts] = useState<any[]>([]);
+  const [agents, setAgents] = useState<any[]>(cachedPageState?.agents || []);
+  const [companies, setCompanies] = useState<any[]>(
+    cachedPageState?.companies || []
+  );
+  const [districts, setDistricts] = useState<any[]>(
+    cachedPageState?.districts || []
+  );
   const [upazilas, setUpazilas] = useState<any[]>([]);
   const [unions, setUnions] = useState<any[]>([]);
-  const [bazars, setBazars] = useState<any[]>([]);
+  const [bazars, setBazars] = useState<any[]>(cachedPageState?.bazars || []);
 
   // Form & Modals
   const [showForm, setShowForm] = useState(false);
@@ -352,7 +400,9 @@ export default function AgentsPage() {
   const [companyPickerId, setCompanyPickerId] = useState("");
   const [nonExPopupAgentId, setNonExPopupAgentId] = useState<number | null>(null);
   const [nonExPopupPos, setNonExPopupPos] = useState<{ top: number; left: number } | null>(null);
-  const [showFilters, setShowFilters] = useState(true);
+  const [showFilters, setShowFilters] = useState(
+    cachedPageState?.showFilters ?? true
+  );
   const [selectedMapAgentId, setSelectedMapAgentId] = useState<number | null>(null);
 
   // Close the non-ex. popover with Escape.
@@ -385,13 +435,25 @@ export default function AgentsPage() {
   const [savingAgent, setSavingAgent] = useState(false);
 
   // Filters
-  const [search, setSearch] = useState("");
-  const [companyFilter, setCompanyFilter] = useState("");
-  const [districtFilter, setDistrictFilter] = useState("");
-  const [upazilaFilter, setUpazilaFilter] = useState("");
-  const [unionFilter, setUnionFilter] = useState("");
-  const [bazarFilter, setBazarFilter] = useState("");
-  const [exclusivityFilter, setExclusivityFilter] = useState("");
+  const [search, setSearch] = useState(cachedPageState?.search || "");
+  const [companyFilter, setCompanyFilter] = useState(
+    cachedPageState?.companyFilter || ""
+  );
+  const [districtFilter, setDistrictFilter] = useState(
+    cachedPageState?.districtFilter || ""
+  );
+  const [upazilaFilter, setUpazilaFilter] = useState(
+    cachedPageState?.upazilaFilter || ""
+  );
+  const [unionFilter, setUnionFilter] = useState(
+    cachedPageState?.unionFilter || ""
+  );
+  const [bazarFilter, setBazarFilter] = useState(
+    cachedPageState?.bazarFilter || ""
+  );
+  const [exclusivityFilter, setExclusivityFilter] = useState(
+    cachedPageState?.exclusivityFilter || ""
+  );
 
   const [filterUpazilas, setFilterUpazilas] = useState<any[]>([]);
   const [filterUnions, setFilterUnions] = useState<any[]>([]);
@@ -446,8 +508,10 @@ export default function AgentsPage() {
       data: { user },
     } = await supabase.auth.getUser();
 
+    let uid = user?.id || "";
     let uDistricts: string[] = [];
     let uUpazilas: string[] = [];
+    let uCats: string[] = [];
     let uName = user?.email?.split("@")[0] || "Officer";
 
     if (user) {
@@ -477,7 +541,8 @@ export default function AgentsPage() {
         uName = profile.full_name || profile.email || uName;
         uDistricts = parseList(profile.districts);
         uUpazilas = parseList(profile.upazilas);
-        setAssignedCategories(parseList(profile.assigned_categories));
+        uCats = parseList(profile.assigned_categories);
+        setAssignedCategories(uCats);
       }
     }
 
@@ -578,19 +643,61 @@ export default function AgentsPage() {
 
     setDistricts(allowedDists);
 
+    // Effective district filter: the default below ("Mymensingh" for full
+    // access, single district otherwise) is what the cache must store —
+    // on a return visit the load is skipped, so the default would
+    // otherwise be lost and the filter would come back blank.
+    let effectiveDistrictFilter = districtFilter;
     if (!districtFilter) {
       if (allowedDists.length === 1) {
-        setDistrictFilter(allowedDists[0].name);
+        effectiveDistrictFilter = allowedDists[0].name;
       } else if (
         allowedDists.some((d: any) => d.name === "Mymensingh") &&
         isFullAccess
       ) {
-        setDistrictFilter("Mymensingh");
+        effectiveDistrictFilter = "Mymensingh";
       }
     }
+    if (effectiveDistrictFilter !== districtFilter) {
+      setDistrictFilter(effectiveDistrictFilter);
+    }
+
+    // Save the page cache: data lists (agents carry their
+    // agent_companies links) + the access inputs the scoping and the
+    // Edit/Delete gate depend on + the filter states. Save/delete
+    // reloads flow through loadData too, so the cache refreshes there.
+    cachedPageState = {
+      initialized: true,
+      userId: uid,
+      userName: uName,
+      userRole: role,
+      assignedUpazilas: uUpazilas,
+      assignedDistricts: uDistricts,
+      assignedCategories: uCats,
+      agents: agentsWithLinks,
+      companies: companyData || [],
+      districts: allowedDists,
+      bazars: bazarData || [],
+      search,
+      companyFilter,
+      districtFilter: effectiveDistrictFilter,
+      upazilaFilter,
+      unionFilter,
+      bazarFilter,
+      exclusivityFilter,
+      showFilters,
+    };
   }
 
   useEffect(() => {
+    // Cache hit under the same role: show the cached lists instantly,
+    // no reload. A role change re-loads so the officer/manager scoping
+    // is rebuilt under the new role (role can populate after first
+    // render — a plain initialized-check would freeze a manager on the
+    // first, officer-scoped load).
+    if (cachedPageState?.initialized && cachedPageState.userRole === role) {
+      return;
+    }
     loadData();
   }, [role]);
 

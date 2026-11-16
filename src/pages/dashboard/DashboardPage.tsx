@@ -28,14 +28,39 @@ function parseArray(field: any): string[] {
   return [];
 }
 
+// Page cache (same pattern as DocTrackingPage): the first visit loads once,
+// returning to the page renders instantly from memory with no loading
+// spinner. The cache lives for the browser session; a full refresh reloads
+// fresh data. The access inputs (role + assigned upazilas) are cached too,
+// so the officer scoping stays correct on a return visit.
+let cachedPageState: {
+  initialized: boolean;
+  userId: string;
+  role: string;
+  assignedUpazilas: string[];
+  supplies: any[];
+  trackings: any[];
+  selectedMonth: string;
+  visibleMonthsCount: number;
+} | null = null;
+
 export default function Dashboard() {
-  const [loading, setLoading] = useState(true);
-  const [supplies, setSupplies] = useState<any[]>([]);
-  const [trackings, setTrackings] = useState<any[]>([]);
-  const [selectedMonth, setSelectedMonth] = useState<string>("all");
-  const [visibleMonthsCount, setVisibleMonthsCount] = useState<number>(2);
+  const [loading, setLoading] = useState(!cachedPageState?.initialized);
+  const [supplies, setSupplies] = useState<any[]>(
+    cachedPageState?.supplies || []
+  );
+  const [trackings, setTrackings] = useState<any[]>(
+    cachedPageState?.trackings || []
+  );
+  const [selectedMonth, setSelectedMonth] = useState<string>(
+    cachedPageState?.selectedMonth || "all"
+  );
+  const [visibleMonthsCount, setVisibleMonthsCount] = useState<number>(
+    cachedPageState?.visibleMonthsCount ?? 2
+  );
 
   useEffect(() => {
+    if (cachedPageState?.initialized) return;
     loadDashboardData();
   }, []);
 
@@ -72,9 +97,12 @@ export default function Dashboard() {
         supabase.from("doc_trackings").select("*"),
       ]);
 
+      let finalSupplies: any[] = [];
+      let finalTrackings: any[] = [];
+
       if (isFullAccess || uUpazilas.length === 0) {
-        setSupplies(supData || []);
-        setTrackings(trkData || []);
+        finalSupplies = supData || [];
+        finalTrackings = trkData || [];
       } else {
         const { data: agData } = await supabase
           .from("doc_agents")
@@ -82,16 +110,27 @@ export default function Dashboard() {
           .in("upazila", uUpazilas);
 
         const allowedDocIds = new Set((agData || []).map((a) => a.doc_id));
-        const filteredSup = (supData || []).filter((s) =>
+        finalSupplies = (supData || []).filter((s) =>
           allowedDocIds.has(s.doc_id)
         );
-        const filteredTrk = (trkData || []).filter((t) =>
+        finalTrackings = (trkData || []).filter((t) =>
           allowedDocIds.has(t.doc_id)
         );
-
-        setSupplies(filteredSup);
-        setTrackings(filteredTrk);
       }
+
+      setSupplies(finalSupplies);
+      setTrackings(finalTrackings);
+
+      cachedPageState = {
+        initialized: true,
+        userId: user?.id || "",
+        role,
+        assignedUpazilas: uUpazilas,
+        supplies: finalSupplies,
+        trackings: finalTrackings,
+        selectedMonth,
+        visibleMonthsCount,
+      };
     } catch (err) {
       console.error("Failed to load dashboard data:", err);
     } finally {

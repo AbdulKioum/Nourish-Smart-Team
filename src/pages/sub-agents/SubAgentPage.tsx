@@ -122,6 +122,31 @@ function FitBounds({ positions }: { positions: [number, number][] }) {
   return null;
 }
 
+// Page cache (same pattern as DocTrackingPage): returning to this page
+// shows the last loaded data instantly instead of refetching. The mount
+// effect skips loadData on a cache hit; a save/delete reload flows through
+// loadData and refreshes the cache. No background refresh on a cache hit —
+// staleness until remount is the accepted tradeoff, same as DocTracking.
+let cachedPageState: {
+  initialized: boolean;
+  userId: string;
+  userRole: string;
+  assignedUpazilas: string[];
+  assignedDistricts: string[];
+  subAgents: any[];
+  agents: any[];
+  companies: any[];
+  districts: any[];
+  bazars: any[];
+  search: string;
+  companyFilter: string;
+  agentFilter: string;
+  districtFilter: string;
+  upazilaFilter: string;
+  unionFilter: string;
+  bazarFilter: string;
+} | null = null;
+
 export default function SubAgentPage() {
   const { role } = useAuth();
   const mapSectionRef = useRef<HTMLDivElement | null>(null);
@@ -131,17 +156,31 @@ export default function SubAgentPage() {
 
   // Assigned Areas
 
-  const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>([]);
-  const [currentUserId, setCurrentUserId] = useState("");
+  const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>(
+    cachedPageState?.assignedUpazilas || []
+  );
+  const [currentUserId, setCurrentUserId] = useState(
+    cachedPageState?.userId || ""
+  );
 
   // Master Data
-  const [subAgents, setSubAgents] = useState<any[]>([]);
-  const [agents, setAgents] = useState<any[]>([]);
-  const [companies, setCompanies] = useState<any[]>([]);
-  const [districts, setDistricts] = useState<any[]>([]);
+  const [subAgents, setSubAgents] = useState<any[]>(
+    cachedPageState?.subAgents || []
+  );
+  const [agents, setAgents] = useState<any[]>(
+    cachedPageState?.agents || []
+  );
+  const [companies, setCompanies] = useState<any[]>(
+    cachedPageState?.companies || []
+  );
+  const [districts, setDistricts] = useState<any[]>(
+    cachedPageState?.districts || []
+  );
   const [upazilas, setUpazilas] = useState<any[]>([]);
   const [unions, setUnions] = useState<any[]>([]);
-  const [bazars, setBazars] = useState<any[]>([]);
+  const [bazars, setBazars] = useState<any[]>(
+    cachedPageState?.bazars || []
+  );
 
   // Form & Modals
   const [showForm, setShowForm] = useState(false);
@@ -161,13 +200,25 @@ export default function SubAgentPage() {
   const [locatingInPicker, setLocatingInPicker] = useState(false);
 
   // Filters
-  const [search, setSearch] = useState("");
-  const [companyFilter, setCompanyFilter] = useState("");
-  const [agentFilter, setAgentFilter] = useState("");
-  const [districtFilter, setDistrictFilter] = useState("");
-  const [upazilaFilter, setUpazilaFilter] = useState("");
-  const [unionFilter, setUnionFilter] = useState("");
-  const [bazarFilter, setBazarFilter] = useState("");
+  const [search, setSearch] = useState(cachedPageState?.search || "");
+  const [companyFilter, setCompanyFilter] = useState(
+    cachedPageState?.companyFilter || ""
+  );
+  const [agentFilter, setAgentFilter] = useState(
+    cachedPageState?.agentFilter || ""
+  );
+  const [districtFilter, setDistrictFilter] = useState(
+    cachedPageState?.districtFilter || ""
+  );
+  const [upazilaFilter, setUpazilaFilter] = useState(
+    cachedPageState?.upazilaFilter || ""
+  );
+  const [unionFilter, setUnionFilter] = useState(
+    cachedPageState?.unionFilter || ""
+  );
+  const [bazarFilter, setBazarFilter] = useState(
+    cachedPageState?.bazarFilter || ""
+  );
 
   const [filterUpazilas, setFilterUpazilas] = useState<any[]>([]);
   const [filterUnions, setFilterUnions] = useState<any[]>([]);
@@ -280,19 +331,52 @@ export default function SubAgentPage() {
 
     setDistricts(allowedDists);
 
+    let effectiveDistrictFilter = districtFilter;
     if (!districtFilter) {
       if (allowedDists.length === 1) {
+        effectiveDistrictFilter = allowedDists[0].name;
         setDistrictFilter(allowedDists[0].name);
       } else if (
         allowedDists.some((d: any) => d.name === "Mymensingh") &&
         isFullAccess
       ) {
+        effectiveDistrictFilter = "Mymensingh";
         setDistrictFilter("Mymensingh");
       }
     }
+
+    cachedPageState = {
+      initialized: true,
+      userId: user?.id || "",
+      userRole: role,
+      assignedUpazilas: uUpazilas,
+      assignedDistricts: uDistricts,
+      subAgents: allowedSubAgents,
+      agents: allowedAgents,
+      companies: companyData || [],
+      districts: allowedDists,
+      bazars: bazarData || [],
+      search,
+      companyFilter,
+      agentFilter,
+      districtFilter: effectiveDistrictFilter,
+      upazilaFilter,
+      unionFilter,
+      bazarFilter,
+    };
   }
 
   useEffect(() => {
+    // Cache hit: skip the load and show the cached data instantly. The
+    // role check matters because role arrives async from useAuth — a
+    // first-mount load under a not-yet-loaded role must not freeze
+    // officer-filtered data in front of a manager (or vice versa).
+    if (
+      cachedPageState?.initialized &&
+      cachedPageState.userRole === role
+    ) {
+      return;
+    }
     loadData();
   }, [role]);
 

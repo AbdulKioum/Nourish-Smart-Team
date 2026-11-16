@@ -51,26 +51,57 @@ interface UpazilaItem {
   district?: string;
 }
 
+// In-memory page cache (same pattern as DocTrackingPage): returning to this
+// page shows the last loaded users instantly with no loading spinner.
+// Access inputs (current user id/email) are cached too — they drive the
+// self-delete guard and the "You" badge, so a stale/empty value on a cache
+// hit would wrongly allow deleting your own account.
+let cachedPageState: {
+  initialized: boolean;
+  userId: string | null;
+  userEmail: string;
+  users: UserRecord[];
+  districts: DistrictItem[];
+  upazilas: UpazilaItem[];
+  search: string;
+  roleFilter: string;
+  statusFilter: string;
+} | null = null;
+
 export default function UsersPage() {
-  const [users, setUsers] = useState<UserRecord[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [users, setUsers] = useState<UserRecord[]>(
+    cachedPageState?.users || []
+  );
+  const [loading, setLoading] = useState(!cachedPageState?.initialized);
   const [submitting, setSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const [currentEmail, setCurrentEmail] = useState("");
+  const [currentUserId, setCurrentUserId] = useState<string | null>(
+    cachedPageState?.userId ?? null
+  );
+  const [currentEmail, setCurrentEmail] = useState(
+    cachedPageState?.userEmail || ""
+  );
 
-  const [districtsList, setDistrictsList] = useState<DistrictItem[]>([]);
-  const [upazilasList, setUpazilasList] = useState<UpazilaItem[]>([]);
+  const [districtsList, setDistrictsList] = useState<DistrictItem[]>(
+    cachedPageState?.districts || []
+  );
+  const [upazilasList, setUpazilasList] = useState<UpazilaItem[]>(
+    cachedPageState?.upazilas || []
+  );
   const [loadingLocations, setLoadingLocations] = useState(false);
 
   const [isDistrictDropdownOpen, setIsDistrictDropdownOpen] = useState(false);
   const [isUpazilaDropdownOpen, setIsUpazilaDropdownOpen] = useState(false);
 
-  const [search, setSearch] = useState("");
-  const [roleFilter, setRoleFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
+  const [search, setSearch] = useState(cachedPageState?.search || "");
+  const [roleFilter, setRoleFilter] = useState(
+    cachedPageState?.roleFilter || ""
+  );
+  const [statusFilter, setStatusFilter] = useState(
+    cachedPageState?.statusFilter || ""
+  );
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<UserRecord | null>(null);
@@ -102,9 +133,19 @@ export default function UsersPage() {
   });
 
   useEffect(() => {
-    loadCurrentUser();
-    loadUsers();
-    loadLocations();
+    if (cachedPageState?.initialized) {
+      return;
+    }
+    // loadUsers saves the cache, so it runs after the other two loads and
+    // receives their fresh values — otherwise a parallel load finishing
+    // after the save would lock a stale/empty user id into the cache.
+    (async () => {
+      const [me, locs] = await Promise.all([
+        loadCurrentUser(),
+        loadLocations(),
+      ]);
+      await loadUsers(me, locs);
+    })();
   }, []);
 
   async function loadCurrentUser() {
@@ -112,8 +153,11 @@ export default function UsersPage() {
       data: { user },
     } = await supabase.auth.getUser();
 
-    setCurrentUserId(user?.id || null);
-    setCurrentEmail(user?.email || "");
+    const uid = user?.id || null;
+    const email = user?.email || "";
+    setCurrentUserId(uid);
+    setCurrentEmail(email);
+    return { userId: uid, userEmail: email };
   }
 
   async function loadLocations() {
@@ -136,14 +180,19 @@ export default function UsersPage() {
 
       setDistrictsList(distData || []);
       setUpazilasList(upaData || []);
+      return { districts: distData || [], upazilas: upaData || [] };
     } catch (error: any) {
       console.error("Failed to load locations:", error?.message);
+      return { districts: [], upazilas: [] };
     } finally {
       setLoadingLocations(false);
     }
   }
 
-  async function loadUsers() {
+  async function loadUsers(
+    me?: { userId: string | null; userEmail: string },
+    locs?: { districts: DistrictItem[]; upazilas: UpazilaItem[] }
+  ) {
     try {
       setLoading(true);
       setErrorMsg("");
@@ -164,6 +213,22 @@ export default function UsersPage() {
       }));
 
       setUsers(merged);
+
+      // Save the page cache (single save site): reloads after a save/delete
+      // or role/status change flow through this same function and refresh it.
+      // On the mount path me/locs carry the fresh values; on reload paths
+      // they are undefined and the current state values are used instead.
+      cachedPageState = {
+        initialized: true,
+        userId: me?.userId ?? currentUserId,
+        userEmail: me?.userEmail ?? currentEmail,
+        users: merged,
+        districts: locs?.districts ?? districtsList,
+        upazilas: locs?.upazilas ?? upazilasList,
+        search,
+        roleFilter,
+        statusFilter,
+      };
     } catch (error: any) {
       setErrorMsg(error?.message || "Failed to load users.");
     } finally {

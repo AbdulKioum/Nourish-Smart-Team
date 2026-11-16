@@ -146,47 +146,127 @@ function getShedForVisit(visit: any, farmer: any): any | null {
   return sheds.length === 1 ? sheds[0] : null;
 }
 
+let cachedPageState: {
+  initialized: boolean;
+  userRole: string;
+  assignedUpazilas: string[];
+  assignedDistricts: string[];
+  agents: any[];
+  farmers: any[];
+  subAgents: any[];
+  visitsMap: Record<string, any>;
+  beforeReports: any[];
+  afterReports: any[];
+  layerReports: any[];
+  broilerStds: Record<number, any>;
+  sonaliStds: Record<number, any>;
+  layerStds: Record<string, any>;
+  selectedCategory: "all" | "Broiler" | "Layer" | "Sonali";
+  reportType: "all" | "before_sale" | "after_sale";
+  upazilaFilter: string;
+  agentFilter: string;
+  farmerFilter: string;
+  feedTypeFilter: string;
+  isMultiAge: boolean;
+  ageFilter: string;
+  ageFrom: string;
+  ageTo: string;
+  monthFilter: string;
+  isMultiDate: boolean;
+  fromDate: string;
+  toDate: string;
+} | null = null;
+
 export default function ReportsPage() {
   const [selectedCategory, setSelectedCategory] = useState<
     "all" | "Broiler" | "Layer" | "Sonali"
-  >("all");
+  >(cachedPageState?.selectedCategory || "all");
   const [reportType, setReportType] = useState<
     "all" | "before_sale" | "after_sale"
-  >("all");
+  >(cachedPageState?.reportType || "all");
 
-  const [userRole, setUserRole] = useState<string>("officer");
-  const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>([]);
-  const [_assignedDistricts, setAssignedDistricts] = useState<string[]>([]);
+  const [userRole, setUserRole] = useState<string>(
+    cachedPageState?.userRole || "officer"
+  );
+  const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>(
+    cachedPageState?.assignedUpazilas || []
+  );
+  const [_assignedDistricts, setAssignedDistricts] = useState<string[]>(
+    cachedPageState?.assignedDistricts || []
+  );
 
-  const [agents, setAgents] = useState<any[]>([]);
-  const [farmers, setFarmers] = useState<any[]>([]);
-  const [subAgents, setSubAgents] = useState<any[]>([]);
-  const [visitsMap, setVisitsMap] = useState<Record<string, any>>({});
-  const [beforeReports, setBeforeReports] = useState<any[]>([]);
-  const [afterReports, setAfterReports] = useState<any[]>([]);
-  const [layerReports, setLayerReports] = useState<any[]>([]);
-  const [broilerStds, setBroilerStds] = useState<Record<number, any>>({});
-  const [sonaliStds, setSonaliStds] = useState<Record<number, any>>({});
-  const [layerStds, setLayerStds] = useState<Record<string, any>>({});
-  const [loading, setLoading] = useState(true);
+  const [agents, setAgents] = useState<any[]>(cachedPageState?.agents || []);
+  const [farmers, setFarmers] = useState<any[]>(
+    cachedPageState?.farmers || []
+  );
+  const [subAgents, setSubAgents] = useState<any[]>(
+    cachedPageState?.subAgents || []
+  );
+  const [visitsMap, setVisitsMap] = useState<Record<string, any>>(
+    cachedPageState?.visitsMap || {}
+  );
+  const [beforeReports, setBeforeReports] = useState<any[]>(
+    cachedPageState?.beforeReports || []
+  );
+  const [afterReports, setAfterReports] = useState<any[]>(
+    cachedPageState?.afterReports || []
+  );
+  const [layerReports, setLayerReports] = useState<any[]>(
+    cachedPageState?.layerReports || []
+  );
+  const [broilerStds, setBroilerStds] = useState<Record<number, any>>(
+    cachedPageState?.broilerStds || {}
+  );
+  const [sonaliStds, setSonaliStds] = useState<Record<number, any>>(
+    cachedPageState?.sonaliStds || {}
+  );
+  const [layerStds, setLayerStds] = useState<Record<string, any>>(
+    cachedPageState?.layerStds || {}
+  );
+  const [loading, setLoading] = useState(!cachedPageState?.initialized);
 
   // Filters
-  const [upazilaFilter, setUpazilaFilter] = useState<string>("all");
-  const [agentFilter, setAgentFilter] = useState<string>("all");
-  const [farmerFilter, setFarmerFilter] = useState<string>("all");
-  const [feedTypeFilter, setFeedTypeFilter] = useState<string>("all");
-  const [isMultiAge, setIsMultiAge] = useState<boolean>(false);
-  const [ageFilter, setAgeFilter] = useState<string>("all");
-  const [ageFrom, setAgeFrom] = useState<string>("");
-  const [ageTo, setAgeTo] = useState<string>("");
-  const [monthFilter, setMonthFilter] = useState<string>("");
-  const [isMultiDate, setIsMultiDate] = useState<boolean>(false);
-  const [fromDate, setFromDate] = useState<string>("");
-  const [toDate, setToDate] = useState<string>("");
+  const [upazilaFilter, setUpazilaFilter] = useState<string>(
+    cachedPageState?.upazilaFilter || "all"
+  );
+  const [agentFilter, setAgentFilter] = useState<string>(
+    cachedPageState?.agentFilter || "all"
+  );
+  const [farmerFilter, setFarmerFilter] = useState<string>(
+    cachedPageState?.farmerFilter || "all"
+  );
+  const [feedTypeFilter, setFeedTypeFilter] = useState<string>(
+    cachedPageState?.feedTypeFilter || "all"
+  );
+  const [isMultiAge, setIsMultiAge] = useState<boolean>(
+    cachedPageState?.isMultiAge || false
+  );
+  const [ageFilter, setAgeFilter] = useState<string>(
+    cachedPageState?.ageFilter || "all"
+  );
+  const [ageFrom, setAgeFrom] = useState<string>(
+    cachedPageState?.ageFrom || ""
+  );
+  const [ageTo, setAgeTo] = useState<string>(cachedPageState?.ageTo || "");
+  const [monthFilter, setMonthFilter] = useState<string>(
+    cachedPageState?.monthFilter || ""
+  );
+  const [isMultiDate, setIsMultiDate] = useState<boolean>(
+    cachedPageState?.isMultiDate || false
+  );
+  const [fromDate, setFromDate] = useState<string>(
+    cachedPageState?.fromDate || ""
+  );
+  const [toDate, setToDate] = useState<string>(
+    cachedPageState?.toDate || ""
+  );
 
   const isFullAccess = userRole === "super_admin" || userRole === "manager";
 
   useEffect(() => {
+    if (cachedPageState?.initialized) {
+      return;
+    }
     loadReportsData();
   }, []);
 
@@ -253,16 +333,18 @@ export default function ReportsPage() {
       supabase.from("layer_standards").select("*"),
     ]);
 
+    // Hoisted so the cache save at the end of this load can use it.
+    let sMap: Record<number, any> = {};
     try {
       const { data: sStd } = await supabase
         .from("sonali_standards")
         .select("*");
-      const sMap: Record<number, any> = {};
       (sStd || []).forEach((s: any) => {
         if (s.age_days !== undefined) sMap[Number(s.age_days)] = s;
       });
       setSonaliStds(sMap);
     } catch {
+      sMap = {};
       setSonaliStds({});
     }
 
@@ -351,6 +433,45 @@ export default function ReportsPage() {
       }
     });
     setLayerStds(lMap);
+
+    // Save the page state so returning to this page shows data instantly
+    // with no loading spinner. Access inputs are cached alongside the data
+    // (this page has no assignedCategories gate — access is role +
+    // upazilas/districts only; the users query selects just those three).
+    // savedUpazilaFilter mirrors the single-upazila auto-select above so
+    // the restored filter matches what the user actually saw.
+    const savedUpazilaFilter =
+      !fullAccess && uUpazilas.length === 1 ? uUpazilas[0] : upazilaFilter;
+    cachedPageState = {
+      initialized: true,
+      userRole: role,
+      assignedUpazilas: uUpazilas,
+      assignedDistricts: uDistricts,
+      agents: allowedAgents,
+      farmers: allowedFarmers,
+      subAgents: subAgentRows,
+      visitsMap: vMap,
+      beforeReports: bRep || [],
+      afterReports: aRep || [],
+      layerReports: lRep || [],
+      broilerStds: bMap,
+      sonaliStds: sMap,
+      layerStds: lMap,
+      selectedCategory,
+      reportType,
+      upazilaFilter: savedUpazilaFilter,
+      agentFilter,
+      farmerFilter,
+      feedTypeFilter,
+      isMultiAge,
+      ageFilter,
+      ageFrom,
+      ageTo,
+      monthFilter,
+      isMultiDate,
+      fromDate,
+      toDate,
+    };
 
     setLoading(false);
   }
@@ -621,7 +742,7 @@ export default function ReportsPage() {
     ).entries()
   )
     .map(([label, days]) => ({ label: label as string, days: days as number }))
-    .sort((a, b) => a.days - b.days || (a.label < b.label ? -1 : 1));
+    .sort((a, b) => b.days - a.days || (a.label < b.label ? -1 : 1));
 
   const filteredReports =
     afterFeedType.filter((r: any) => {

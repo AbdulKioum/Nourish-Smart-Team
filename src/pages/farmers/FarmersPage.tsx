@@ -545,6 +545,36 @@ function shedFormToDb(shed: any, farmerId: number, farmerName: string, index: nu
   return db;
 }
 
+// In-memory page cache (same pattern as DocTrackingPage): returning to
+// this page shows the last loaded data instantly with no reload. The
+// cache lives only for the session; a full refresh loads fresh.
+// Access inputs are cached too (userId, assignedUpazilas,
+// assignedCategories) — the edit/delete gates depend on them, so a
+// cache hit must not leave them empty. This page has NO category gate
+// (farmer add is not category-gated, rule 5), but assignedCategories
+// is still cached so the loaded profile state stays complete.
+let cachedPageState: {
+  initialized: boolean;
+  userId: string;
+  userName: string;
+  assignedUpazilas: string[];
+  assignedCategories: string[];
+  farmers: any[];
+  visitRows: any[];
+  companies: any[];
+  agents: any[];
+  subAgents: any[];
+  districts: any[];
+  search: string;
+  companyFilter: string;
+  agentFilter: string;
+  subAgentFilter: string;
+  districtFilter: string;
+  upazilaFilter: string;
+  unionFilter: string;
+  farmCategoryFilter: string;
+} | null = null;
+
 export default function FarmersPage() {
   const { role } = useAuth();
   const navigate = useNavigate();
@@ -564,20 +594,38 @@ export default function FarmersPage() {
   const canEditFarmer = (farmer: any) =>
     canEditRecord(role, farmer?.created_by, currentUserId);
 
-  const [currentUserId, setCurrentUserId] = useState("");
-  const [currentUserName, setCurrentUserName] = useState("User");
-  const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>([]);
-  const [, setAssignedCategories] = useState<string[]>([]);
+  const [currentUserId, setCurrentUserId] = useState(
+    cachedPageState?.userId || ""
+  );
+  const [currentUserName, setCurrentUserName] = useState(
+    cachedPageState?.userName || "User"
+  );
+  const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>(
+    cachedPageState?.assignedUpazilas || []
+  );
+  const [, setAssignedCategories] = useState<string[]>(
+    cachedPageState?.assignedCategories || []
+  );
 
-  const [farmers, setFarmers] = useState<any[]>([]);
+  const [farmers, setFarmers] = useState<any[]>(
+    cachedPageState?.farmers || []
+  );
   // vet_visits rows (for per-shed status: a shed with a Running visit
   // is Running; otherwise its status comes from its own last sale).
-  const [visitRows, setVisitRows] = useState<any[]>([]);
-  const [companies, setCompanies] = useState<any[]>([]);
-  const [agents, setAgents] = useState<any[]>([]);
-  const [subAgents, setSubAgents] = useState<any[]>([]);
+  const [visitRows, setVisitRows] = useState<any[]>(
+    cachedPageState?.visitRows || []
+  );
+  const [companies, setCompanies] = useState<any[]>(
+    cachedPageState?.companies || []
+  );
+  const [agents, setAgents] = useState<any[]>(
+    cachedPageState?.agents || []
+  );
+  const [subAgents, setSubAgents] = useState<any[]>(
+    cachedPageState?.subAgents || []
+  );
 
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(cachedPageState?.search || "");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [selectedFarmer, setSelectedFarmer] = useState<any>(null);
   const [showMap, setShowMap] = useState(false);
@@ -604,15 +652,31 @@ export default function FarmersPage() {
   const [loadingNotes, setLoadingNotes] = useState(false);
   const [savingNote, setSavingNote] = useState(false);
 
-  const [companyFilter, setCompanyFilter] = useState("");
-  const [agentFilter, setAgentFilter] = useState("");
-  const [subAgentFilter, setSubAgentFilter] = useState("");
-  const [districtFilter, setDistrictFilter] = useState("");
-  const [upazilaFilter, setUpazilaFilter] = useState("");
-  const [unionFilter, setUnionFilter] = useState("");
-  const [farmCategoryFilter, setFarmCategoryFilter] = useState("");
+  const [companyFilter, setCompanyFilter] = useState(
+    cachedPageState?.companyFilter || ""
+  );
+  const [agentFilter, setAgentFilter] = useState(
+    cachedPageState?.agentFilter || ""
+  );
+  const [subAgentFilter, setSubAgentFilter] = useState(
+    cachedPageState?.subAgentFilter || ""
+  );
+  const [districtFilter, setDistrictFilter] = useState(
+    cachedPageState?.districtFilter || ""
+  );
+  const [upazilaFilter, setUpazilaFilter] = useState(
+    cachedPageState?.upazilaFilter || ""
+  );
+  const [unionFilter, setUnionFilter] = useState(
+    cachedPageState?.unionFilter || ""
+  );
+  const [farmCategoryFilter, setFarmCategoryFilter] = useState(
+    cachedPageState?.farmCategoryFilter || ""
+  );
 
-  const [districts, setDistricts] = useState<any[]>([]);
+  const [districts, setDistricts] = useState<any[]>(
+    cachedPageState?.districts || []
+  );
   const [upazilas, setUpazilas] = useState<any[]>([]);
   const [unions, setUnions] = useState<any[]>([]);
   const [filterUpazilas, setFilterUpazilas] = useState<any[]>([]);
@@ -653,11 +717,14 @@ export default function FarmersPage() {
       data: { user },
     } = await supabase.auth.getUser();
 
+    let uId = user?.id || "";
     let uDistricts: string[] = [];
     let uUpazilas: string[] = [];
+    let uCats: string[] = [];
     let uName = user?.email?.split("@")[0] || "Officer";
 
     if (user) {
+      uId = user.id;
       setCurrentUserId(user.id);
       // assigned_categories comes from the permissions migration;
       // fall back gracefully if the column is not there yet.
@@ -684,7 +751,8 @@ export default function FarmersPage() {
         uName = profile.full_name || profile.email || uName;
         uDistricts = parseList(profile.districts);
         uUpazilas = parseList(profile.upazilas);
-        setAssignedCategories(parseList(profile.assigned_categories));
+        uCats = parseList(profile.assigned_categories);
+        setAssignedCategories(uCats);
       }
     }
 
@@ -781,11 +849,15 @@ export default function FarmersPage() {
     // own Running/Active/Inactive status (same rule as VisitsPage).
     // Best effort — if the query fails, shed rows fall back to the
     // stored shed.status.
+    let loadedVisitRows: any[] = visitRows;
     try {
       const { data: visitData, error: visitErr } = await supabase
         .from("vet_visits")
         .select("id, farmer_id, shed_id, status, closed_date, created_at");
-      if (!visitErr && visitData) setVisitRows(visitData as any[]);
+      if (!visitErr && visitData) {
+        loadedVisitRows = visitData as any[];
+        setVisitRows(loadedVisitRows);
+      }
     } catch {
       // vet_visits not readable — stored shed status applies.
     }
@@ -818,6 +890,7 @@ export default function FarmersPage() {
     // missing, the sub-agent select/filter stay empty. latitude/longitude
     // are fetched too (map picker centre); if those columns do not exist
     // yet, fall back to the plain select so the list still loads.
+    let loadedSubAgents: any[] = subAgents;
     try {
       let subAgentData: any[] | null = null;
       {
@@ -832,7 +905,10 @@ export default function FarmersPage() {
           .select("id, sub_agent_name, agent_id");
         if (!retry.error && retry.data) subAgentData = retry.data;
       }
-      if (subAgentData) setSubAgents(subAgentData as any[]);
+      if (subAgentData) {
+        loadedSubAgents = subAgentData as any[];
+        setSubAgents(loadedSubAgents);
+      }
     } catch {
       // sub_agents table not created yet — no sub-agent options.
     }
@@ -866,21 +942,50 @@ export default function FarmersPage() {
 
     setDistricts(allowedDists);
 
+    // The district default is applied via setState (async), so track
+    // the effective value in a local for the cache save below.
+    let effectiveDistrictFilter = districtFilter;
     if (!districtFilter) {
       if (allowedDists.length === 1) {
-        setDistrictFilter(allowedDists[0].name);
+        effectiveDistrictFilter = allowedDists[0].name;
+        setDistrictFilter(effectiveDistrictFilter);
       } else if (allowedDists.length > 0 && !isFullAccess) {
-        setDistrictFilter(allowedDists[0].name);
+        effectiveDistrictFilter = allowedDists[0].name;
+        setDistrictFilter(effectiveDistrictFilter);
       } else if (
         allowedDists.some((d: any) => d.name === "Mymensingh") &&
         isFullAccess
       ) {
-        setDistrictFilter("Mymensingh");
+        effectiveDistrictFilter = "Mymensingh";
+        setDistrictFilter(effectiveDistrictFilter);
       }
     }
+
+    cachedPageState = {
+      initialized: true,
+      userId: uId,
+      userName: uName,
+      assignedUpazilas: uUpazilas,
+      assignedCategories: uCats,
+      farmers: allowedFarmers,
+      visitRows: loadedVisitRows,
+      companies: companyData || [],
+      agents: allowedAgents,
+      subAgents: loadedSubAgents,
+      districts: allowedDists,
+      search,
+      companyFilter,
+      agentFilter,
+      subAgentFilter,
+      districtFilter: effectiveDistrictFilter,
+      upazilaFilter,
+      unionFilter,
+      farmCategoryFilter,
+    };
   }
 
   useEffect(() => {
+    if (cachedPageState?.initialized) return;
     loadData();
   }, [role]);
 

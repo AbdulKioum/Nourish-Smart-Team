@@ -753,6 +753,44 @@ function isWhiteLayerBreedName(breedName?: string): boolean {
   );
 }
 
+// In-memory page cache (same pattern as DocTrackingPage): returning to
+// this page shows the table instantly with no loading spinner. The load
+// is skipped on a cache hit; staleness until remount is the accepted
+// tradeoff. Access inputs (userId, assignedCategories, assignedUpazilas,
+// assignedDistricts) MUST stay in the cache — without assignedCategories
+// the Poultry gate (canAddReport) is false and officers lose their
+// Add/Edit/Delete buttons until a refresh.
+let cachedPageState: {
+  initialized: boolean;
+  userId: string;
+  userProfile: {
+    fullName: string;
+    designation: string;
+    region: string;
+  };
+  assignedCategories: string[];
+  assignedUpazilas: string[];
+  assignedDistricts: string[];
+  companies: any[];
+  allAgents: any[];
+  subAgents: any[];
+  vaccines: any[];
+  broilerStds: Record<number, any>;
+  sonaliStds: Record<number, any>;
+  layerStds: Record<string, any>;
+  geoDistricts: any[];
+  statusFarmers: any[];
+  visitsData: any[];
+  visitReportMeta: Record<string, { count: number; lastDate: string }>;
+  farmerReportMeta: Record<string, { count: number; lastDate: string }>;
+  selectedUpazila: string;
+  selectedAgent: string;
+  selectedSubAgent: string;
+  selectedCategoryFilter: string;
+  selectedStatusFilter: StatusTab;
+  searchQuery: string;
+} | null = null;
+
 export default function VetVisitsPage() {
   const { role } = useAuth();
   const isSuperAdmin = role === "super_admin";
@@ -763,8 +801,12 @@ export default function VetVisitsPage() {
   // created_by null are editable by area officers — the save stamps
   // the creator). Farmer add is NOT category-gated. View / history /
   // export / Map stay open to everyone.
-  const [currentUserId, setCurrentUserId] = useState("");
-  const [assignedCategories, setAssignedCategories] = useState<string[]>([]);
+  const [currentUserId, setCurrentUserId] = useState(
+    cachedPageState?.userId || ""
+  );
+  const [assignedCategories, setAssignedCategories] = useState<string[]>(
+    cachedPageState?.assignedCategories || []
+  );
   const canAddPoultryReport = canAddReport(role, assignedCategories, "Poultry");
   const canAddFarmerHere = canAddFarmer(role);
   const canEditPoultryReport = (rec: any) =>
@@ -775,41 +817,65 @@ export default function VetVisitsPage() {
     canEditRecord(role, r?.farmer?.created_by, currentUserId) &&
     (!r?.visit || canEditPoultryReport(r.visit));
 
-  const [currentUserProfile, setCurrentUserProfile] = useState({
-    fullName: "Officer",
-    designation: "Customer Service Officer",
-    region: "Mymensingh Zone",
-  });
-  const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>([]);
-  const [assignedDistricts, setAssignedDistricts] = useState<string[]>([]);
+  const [currentUserProfile, setCurrentUserProfile] = useState(
+    cachedPageState?.userProfile || {
+      fullName: "Officer",
+      designation: "Customer Service Officer",
+      region: "Mymensingh Zone",
+    }
+  );
+  const [assignedUpazilas, setAssignedUpazilas] = useState<string[]>(
+    cachedPageState?.assignedUpazilas || []
+  );
+  const [assignedDistricts, setAssignedDistricts] = useState<string[]>(
+    cachedPageState?.assignedDistricts || []
+  );
 
-  const [companies, setCompanies] = useState<any[]>([]);
-  const [allAgents, setAllAgents] = useState<any[]>([]);
-  const [subAgents, setSubAgents] = useState<any[]>([]);
+  const [companies, setCompanies] = useState<any[]>(
+    cachedPageState?.companies || []
+  );
+  const [allAgents, setAllAgents] = useState<any[]>(
+    cachedPageState?.allAgents || []
+  );
+  const [subAgents, setSubAgents] = useState<any[]>(
+    cachedPageState?.subAgents || []
+  );
   const [selectedCompany, setSelectedCompany] = useState<string>("all");
-  const [selectedUpazila, setSelectedUpazila] = useState<string>("all");
-  const [selectedAgent, setSelectedAgent] = useState<string>("all");
-  const [selectedSubAgent, setSelectedSubAgent] = useState<string>("all");
+  const [selectedUpazila, setSelectedUpazila] = useState<string>(
+    cachedPageState?.selectedUpazila || "all"
+  );
+  const [selectedAgent, setSelectedAgent] = useState<string>(
+    cachedPageState?.selectedAgent || "all"
+  );
+  const [selectedSubAgent, setSelectedSubAgent] = useState<string>(
+    cachedPageState?.selectedSubAgent || "all"
+  );
   const [selectedCategoryFilter, setSelectedCategoryFilter] =
-    useState<string>("all");
+    useState<string>(cachedPageState?.selectedCategoryFilter || "all");
   const [selectedStatusFilter, setSelectedStatusFilter] =
-    useState<StatusTab>("all");
-  const [searchQuery, setSearchQuery] = useState<string>("");
+    useState<StatusTab>(cachedPageState?.selectedStatusFilter || "all");
+  const [searchQuery, setSearchQuery] = useState<string>(
+    cachedPageState?.searchQuery || ""
+  );
 
-  const [_visitsData, setVisitsData] = useState<any[]>([]);
+  const [_visitsData, setVisitsData] = useState<any[]>(
+    cachedPageState?.visitsData || []
+  );
   const location = useLocation();
   const companyInitRef = useRef(false);
-  const [statusFarmers, setStatusFarmers] = useState<any[]>([]);
+  const [statusFarmers, setStatusFarmers] = useState<any[]>(
+    cachedPageState?.statusFarmers || []
+  );
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
   const [focusVisitId, setFocusVisitId] = useState<string | null>(null);
   const [focusFarmerId, setFocusFarmerId] = useState<string | null>(null);
 
   const [visitReportMeta, setVisitReportMeta] = useState<
     Record<string, { count: number; lastDate: string }>
-  >({});
+  >(cachedPageState?.visitReportMeta || {});
   const [farmerReportMeta, setFarmerReportMeta] = useState<
     Record<string, { count: number; lastDate: string }>
-  >({});
+  >(cachedPageState?.farmerReportMeta || {});
 
   // Activate / Run Farm / Add Batch
   const [showActivateModal, setShowActivateModal] = useState(false);
@@ -853,7 +919,9 @@ export default function VetVisitsPage() {
   const [savingLayer, setSavingLayer] = useState(false);
   const [savingAddVaccine, setSavingAddVaccine] = useState(false);
   const [formSheds, setFormSheds] = useState<any[]>([{ ...EMPTY_SHED_FORM }]);
-  const [geoDistricts, setGeoDistricts] = useState<any[]>([]);
+  const [geoDistricts, setGeoDistricts] = useState<any[]>(
+    cachedPageState?.geoDistricts || []
+  );
   const [geoUpazilas, setGeoUpazilas] = useState<any[]>([]);
   const [geoUnions, setGeoUnions] = useState<any[]>([]);
   const [showMapPicker, setShowMapPicker] = useState(false);
@@ -866,11 +934,19 @@ export default function VetVisitsPage() {
   const [editingReportId, setEditingReportId] = useState<any>(null);
   const [editingReportCreatedBy, setEditingReportCreatedBy] = useState<string | null>(null);
 
-  const [vaccines, setVaccines] = useState<any[]>([]);
-  const [broilerStds, setBroilerStds] = useState<Record<number, any>>({});
-  const [sonaliStds, setSonaliStds] = useState<Record<number, any>>({});
-  const [layerStds, setLayerStds] = useState<Record<string, any>>({});
-  const [_loading, setLoading] = useState(true);
+  const [vaccines, setVaccines] = useState<any[]>(
+    cachedPageState?.vaccines || []
+  );
+  const [broilerStds, setBroilerStds] = useState<Record<number, any>>(
+    cachedPageState?.broilerStds || {}
+  );
+  const [sonaliStds, setSonaliStds] = useState<Record<number, any>>(
+    cachedPageState?.sonaliStds || {}
+  );
+  const [layerStds, setLayerStds] = useState<Record<string, any>>(
+    cachedPageState?.layerStds || {}
+  );
+  const [_loading, setLoading] = useState(!cachedPageState?.initialized);
 
   // Master Vaccine Schedule Modal
   const [showVaccineModal, setShowVaccineModal] = useState(false);
@@ -1020,6 +1096,9 @@ export default function VetVisitsPage() {
   });
 
   useEffect(() => {
+    if (cachedPageState?.initialized) {
+      return;
+    }
     loadInitialData();
   }, []);
 
@@ -1155,8 +1234,15 @@ export default function VetVisitsPage() {
     let uUpazilas: string[] = [];
     let uDistricts: string[] = [];
     let uCats: string[] = [];
+    let uid = "";
+    let uProfile = {
+      fullName: "Officer",
+      designation: "Customer Service Officer",
+      region: "Mymensingh Zone",
+    };
 
     if (user) {
+      uid = user.id;
       setCurrentUserId(user.id);
       // assigned_categories comes from the permissions migration;
       // fall back gracefully if the column is not there yet.
@@ -1180,12 +1266,13 @@ export default function VetVisitsPage() {
       }
 
       if (uProf) {
-        setCurrentUserProfile({
+        uProfile = {
           fullName: uProf.full_name || uProf.email?.split("@")[0] || "Officer",
           designation:
             uProf.designation || "Customer Service Officer (Poultry)",
           region: uProf.region || "Mymensingh Zone",
-        });
+        };
+        setCurrentUserProfile(uProfile);
         uUpazilas = parseList(uProf.upazilas);
         uDistricts = parseList(uProf.districts);
         uCats = parseList(uProf.assigned_categories);
@@ -1218,6 +1305,7 @@ export default function VetVisitsPage() {
       supabase.from("districts").select("*").order("name"),
     ]);
 
+    let sonaliMap: Record<number, any> = {};
     try {
       const { data: sStdData } = await supabase
         .from("sonali_standards")
@@ -1226,10 +1314,11 @@ export default function VetVisitsPage() {
       (sStdData || []).forEach((s: any) => {
         if (s.age_days !== undefined) sMap[Number(s.age_days)] = s;
       });
-      setSonaliStds(sMap);
+      sonaliMap = sMap;
     } catch {
-      setSonaliStds({});
+      sonaliMap = {};
     }
+    setSonaliStds(sonaliMap);
 
     const allDists = distData || [];
     const allowedDists = isFullAccess
@@ -1286,15 +1375,15 @@ export default function VetVisitsPage() {
 
     setLayerStds(lMap);
 
+    let vaccinesList: any[] = vacData || [];
     if (!vacData || vacData.length === 0) {
       const { data: insertedVac } = await supabase
         .from("vaccines")
         .insert(DEFAULT_VACCINES)
         .select();
-      setVaccines(insertedVac || DEFAULT_VACCINES);
-    } else {
-      setVaccines(vacData);
+      vaccinesList = insertedVac || DEFAULT_VACCINES;
     }
+    setVaccines(vaccinesList);
 
     const comps = compData || [];
     setCompanies(comps);
@@ -1330,7 +1419,42 @@ export default function VetVisitsPage() {
       setSelectedCompany(String(comps[0].id));
     }
 
-    await loadVetVisits(uUpazilas, uDistricts);
+    const vetResult = await loadVetVisits(uUpazilas, uDistricts);
+    if (vetResult) {
+      cachedPageState = {
+        initialized: true,
+        userId: uid,
+        userProfile: uProfile,
+        assignedCategories: uCats,
+        assignedUpazilas: uUpazilas,
+        assignedDistricts: uDistricts,
+        companies: comps,
+        allAgents: agData || [],
+        subAgents: vetResult.subAgents,
+        vaccines: vaccinesList,
+        broilerStds: bMap,
+        sonaliStds: sonaliMap,
+        layerStds: lMap,
+        geoDistricts: allowedDists,
+        statusFarmers: vetResult.statusFarmers,
+        visitsData: vetResult.visitsData,
+        visitReportMeta: vetResult.visitReportMeta,
+        farmerReportMeta: vetResult.farmerReportMeta,
+        // selectedCompany is NOT cached: the company-init effect
+        // re-derives it to Nourish on every mount. selectedUpazila
+        // mirrors the single-upazila default set above (the state
+        // variable still reads the pre-load value in this closure).
+        selectedUpazila:
+          !isFullAccess && uUpazilas.length === 1
+            ? uUpazilas[0]
+            : selectedUpazila,
+        selectedAgent,
+        selectedSubAgent,
+        selectedCategoryFilter,
+        selectedStatusFilter,
+        searchQuery,
+      };
+    }
     setLoading(false);
   }
 
@@ -1660,6 +1784,15 @@ export default function VetVisitsPage() {
     uDist = assignedDistricts
   ) {
     setLoading(true);
+    // Returned to loadInitialData so it can save the page cache; other
+    // callers (save/delete reloads) ignore the return value.
+    let vetResult: {
+      statusFarmers: any[];
+      visitsData: any[];
+      visitReportMeta: Record<string, { count: number; lastDate: string }>;
+      farmerReportMeta: Record<string, { count: number; lastDate: string }>;
+      subAgents: any[];
+    } | null = null;
     try {
       const [
         { data: visits, error: visitErr },
@@ -1740,7 +1873,8 @@ export default function VetVisitsPage() {
 
       setVisitReportMeta(vMetaMap);
       setFarmerReportMeta(fMetaMap);
-      setSubAgents((subAgentsData as any[]) || []);
+      const subAgentsList = (subAgentsData as any[]) || [];
+      setSubAgents(subAgentsList);
 
       const allVisits = visits || [];
       const agentsList = agentsData || [];
@@ -1896,16 +2030,23 @@ export default function VetVisitsPage() {
         };
       });
 
+      const visitsRunning = allVisits
+        .filter((v: any) => v.status === "Activated" || v.status === "Running")
+        .map(enrich);
       setStatusFarmers(processed);
-      setVisitsData(
-        allVisits
-          .filter((v: any) => v.status === "Activated" || v.status === "Running")
-          .map(enrich)
-      );
+      setVisitsData(visitsRunning);
+      vetResult = {
+        statusFarmers: processed,
+        visitsData: visitsRunning,
+        visitReportMeta: vMetaMap,
+        farmerReportMeta: fMetaMap,
+        subAgents: subAgentsList,
+      };
     } catch (err) {
       console.error("Error loading vet visits:", err);
     }
     setLoading(false);
+    return vetResult;
   }
 
   function getAgeDays(hatchDateStr?: string, refDateStr?: string): number {

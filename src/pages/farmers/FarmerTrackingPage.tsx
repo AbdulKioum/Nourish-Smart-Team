@@ -1557,6 +1557,35 @@ function FarmerTrackingGroupCard({
 /*  Main Page                                                                  */
 /* -------------------------------------------------------------------------- */
 
+/* Page-state cache (same pattern as DocTrackingPage): returning to this
+   page reuses the last loaded data + access inputs + filter states with no
+   loading spinner. No background refresh on a cache hit — data can be stale
+   until the next full remount, same tradeoff as DocTracking. */
+let cachedPageState: {
+  initialized: boolean;
+  userId: string;
+  userName: string;
+  assignedCategories: string[];
+  assignedDistricts: string[];
+  assignedUpazilas: string[];
+  allUsers: any[];
+  farmers: any[];
+  trackings: any[];
+  selDistrict: string;
+  selUpazila: string;
+  selCompany: string;
+  selAgent: string;
+  farmerQuery: string;
+  statusTab: "all" | "risky" | "weak";
+  isMultiDate: boolean;
+  dateFrom: string;
+  dateTo: string;
+  logSearch: string;
+  logUser: string;
+  logDistrict: string;
+  logUpazila: string;
+} | null = null;
+
 export default function FarmerTrackingPage() {
   const { role } = useAuth();
   if (role === "viewer") {
@@ -1571,22 +1600,42 @@ function TrackingContent({ role }: { role: any }) {
   // categories, so there is NO category gate here — only ownership
   // (canEditRecord on user_id). View stays open to everyone.
 
-  const [currentUserId, setCurrentUserId] = useState("");
-  const [currentUserName, setCurrentUserName] = useState("User");
-  const [, setAssignedCategories] = useState<string[]>([]);
-  const [allUsers, setAllUsers] = useState<any[]>([]);
-  const [farmers, setFarmers] = useState<any[]>([]);
-  const [trackings, setTrackings] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [currentUserId, setCurrentUserId] = useState(
+    cachedPageState?.userId || ""
+  );
+  const [currentUserName, setCurrentUserName] = useState(
+    cachedPageState?.userName || "User"
+  );
+  const [, setAssignedCategories] = useState<string[]>(
+    cachedPageState?.assignedCategories || []
+  );
+  const [allUsers, setAllUsers] = useState<any[]>(
+    cachedPageState?.allUsers || []
+  );
+  const [farmers, setFarmers] = useState<any[]>(
+    cachedPageState?.farmers || []
+  );
+  const [trackings, setTrackings] = useState<any[]>(
+    cachedPageState?.trackings || []
+  );
+  const [loading, setLoading] = useState(!cachedPageState?.initialized);
   const [toast, setToast] = useState("");
 
   // Collapsible "Track a Farmer" panel state
   const [trackOpen, setTrackOpen] = useState(false);
-  const [selDistrict, setSelDistrict] = useState("");
-  const [selUpazila, setSelUpazila] = useState("");
-  const [selCompany, setSelCompany] = useState("");
-  const [selAgent, setSelAgent] = useState("");
-  const [farmerQuery, setFarmerQuery] = useState("");
+  const [selDistrict, setSelDistrict] = useState(
+    cachedPageState?.selDistrict || ""
+  );
+  const [selUpazila, setSelUpazila] = useState(
+    cachedPageState?.selUpazila || ""
+  );
+  const [selCompany, setSelCompany] = useState(
+    cachedPageState?.selCompany || ""
+  );
+  const [selAgent, setSelAgent] = useState(cachedPageState?.selAgent || "");
+  const [farmerQuery, setFarmerQuery] = useState(
+    cachedPageState?.farmerQuery || ""
+  );
   const [comboOpen, setComboOpen] = useState(false);
   const [pickedFarmer, setPickedFarmer] = useState<any>(null);
   const [noteText, setNoteText] = useState("");
@@ -1599,17 +1648,25 @@ function TrackingContent({ role }: { role: any }) {
   const pickedTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Category Tabs: All Tracked vs Risky Farmer vs Weak to Nourish
-  const [statusTab, setStatusTab] = useState<"all" | "risky" | "weak">("all");
+  const [statusTab, setStatusTab] = useState<"all" | "risky" | "weak">(
+    cachedPageState?.statusTab || "all"
+  );
 
   // Tracking Log Filters (Default: no date selected)
-  const [isMultiDate, setIsMultiDate] = useState(false);
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  const [isMultiDate, setIsMultiDate] = useState(
+    cachedPageState?.isMultiDate || false
+  );
+  const [dateFrom, setDateFrom] = useState(cachedPageState?.dateFrom || "");
+  const [dateTo, setDateTo] = useState(cachedPageState?.dateTo || "");
   const [filterOpen, setFilterOpen] = useState(false);
-  const [logSearch, setLogSearch] = useState("");
-  const [logUser, setLogUser] = useState("");
-  const [logDistrict, setLogDistrict] = useState("");
-  const [logUpazila, setLogUpazila] = useState("");
+  const [logSearch, setLogSearch] = useState(cachedPageState?.logSearch || "");
+  const [logUser, setLogUser] = useState(cachedPageState?.logUser || "");
+  const [logDistrict, setLogDistrict] = useState(
+    cachedPageState?.logDistrict || ""
+  );
+  const [logUpazila, setLogUpazila] = useState(
+    cachedPageState?.logUpazila || ""
+  );
   const [visibleFarmersCount, setVisibleFarmersCount] = useState(20);
 
   // Modals
@@ -1638,6 +1695,7 @@ function TrackingContent({ role }: { role: any }) {
       from += pageSize;
     }
     setTrackings(all);
+    return all;
   }
 
   async function loadData() {
@@ -1648,6 +1706,7 @@ function TrackingContent({ role }: { role: any }) {
 
     let uDistricts: string[] = [];
     let uUpazilas: string[] = [];
+    let uCats: string[] = [];
     let uName = user?.email?.split("@")[0] || "Officer";
 
     if (user) {
@@ -1676,7 +1735,8 @@ function TrackingContent({ role }: { role: any }) {
         uName = profile.full_name || profile.email || uName;
         uDistricts = parseList(profile.districts);
         uUpazilas = parseList(profile.upazilas);
-        setAssignedCategories(parseList(profile.assigned_categories));
+        uCats = parseList(profile.assigned_categories);
+        setAssignedCategories(uCats);
       }
     }
     setCurrentUserName(uName);
@@ -1701,17 +1761,49 @@ function TrackingContent({ role }: { role: any }) {
     setFarmers(allowed);
 
     const ds = uniqSorted(allowed.map((f: any) => f.district));
+    let finalSelDistrict = selDistrict;
+    let finalSelUpazila = selUpazila;
     if (ds.length === 1) {
+      finalSelDistrict = ds[0];
       setSelDistrict(ds[0]);
       const us = uniqSorted(allowed.map((f: any) => f.upazila));
-      if (us.length === 1) setSelUpazila(us[0]);
+      if (us.length === 1) {
+        finalSelUpazila = us[0];
+        setSelUpazila(us[0]);
+      }
     }
 
-    await loadTrackings();
+    const loadedTrackings = await loadTrackings();
+
+    cachedPageState = {
+      initialized: true,
+      userId: user?.id || "",
+      userName: uName,
+      assignedCategories: uCats,
+      assignedDistricts: uDistricts,
+      assignedUpazilas: uUpazilas,
+      allUsers: usersList || [],
+      farmers: allowed,
+      trackings: loadedTrackings,
+      selDistrict: finalSelDistrict,
+      selUpazila: finalSelUpazila,
+      selCompany,
+      selAgent,
+      farmerQuery,
+      statusTab,
+      isMultiDate,
+      dateFrom,
+      dateTo,
+      logSearch,
+      logUser,
+      logDistrict,
+      logUpazila,
+    };
     setLoading(false);
   }
 
   useEffect(() => {
+    if (cachedPageState?.initialized) return;
     loadData();
   }, [role]);
 

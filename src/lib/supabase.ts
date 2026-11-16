@@ -25,6 +25,13 @@ export const SYNC_TABLES = [
   "doc_trackings",
   "vet_visits",
   "vaccines",
+  "farmer_sheds",
+  "agent_companies",
+  "farmer_trackings",
+  "agent_trackings",
+  "unions",
+  "upazilas",
+  "districts",
 ];
 
 export interface SyncMutation {
@@ -66,6 +73,27 @@ export async function pullAllTablesToLocal(): Promise<boolean> {
   } catch (err) {
     console.error("Failed to pull tables:", err);
     return false;
+  }
+}
+
+// Cache-first background refresh: re-fetch one table from the network and
+// refresh its IndexedDB copy without blocking the caller. A page that just
+// rendered from cache stays fast; the next mount sees the fresh data.
+const refreshingTables = new Set<string>();
+
+async function refreshTableInBackground(table: string): Promise<void> {
+  if (!navigator.onLine || refreshingTables.has(table)) return;
+  refreshingTables.add(table);
+  try {
+    const { data, error } = await rawSupabase.from(table).select("*");
+    if (!error && Array.isArray(data)) {
+      await set(`table_${table}`, data);
+      window.dispatchEvent(new CustomEvent("fams-data-synced"));
+    }
+  } catch {
+    // Background refresh must never throw or block the caller.
+  } finally {
+    refreshingTables.delete(table);
   }
 }
 
@@ -138,6 +166,20 @@ export async function processMutationQueue(): Promise<void> {
   } finally {
     isSyncingQueue = false;
   }
+}
+
+// App-start warm-up: flush any queued offline writes first, then pull every
+// synced table into IndexedDB so pages can render from cache immediately.
+// Guarded so repeated calls are safe; call once from the app shell after login.
+// The guard only engages when online — an offline first call must not burn it,
+// so the shell's "online" listener can retry the warm-up when back online.
+let cacheWarmStarted = false;
+export async function warmOfflineCache(): Promise<void> {
+  if (cacheWarmStarted) return;
+  if (!navigator.onLine) return;
+  cacheWarmStarted = true;
+  await processMutationQueue();
+  await pullAllTablesToLocal();
 }
 
 async function addToMutationQueue(
@@ -375,6 +417,47 @@ class OfflineQueryBuilder {
     return query;
   }
 
+  // Cache-first read: returns the locally cached rows for this query, or
+  // null when the table has never been cached (the caller falls back to
+  // the network). Shape matches the old offline fallback exactly.
+  private async readLocalRows(): Promise<{
+    data: any;
+    error: any;
+    count?: number | null;
+  } | null> {
+    const storageKey = `table_${this.table}`;
+    const cached: any = await get(storageKey);
+    if (!Array.isArray(cached)) return null;
+    let localRows: any[] = cached;
+    localRows = localRows.filter((r) => this.matchesFilters(r));
+    localRows = await this.attachRelations(localRows);
+
+    for (const ob of this.orderBys) {
+      const { col, ascending } = ob;
+      localRows.sort((a, b) => {
+        const valA = a[col] ?? "";
+        const valB = b[col] ?? "";
+        if (valA < valB) return ascending ? -1 : 1;
+        if (valA > valB) return ascending ? 1 : -1;
+        return 0;
+      });
+    }
+
+    if (this.rangeBounds) {
+      localRows = localRows.slice(
+        this.rangeBounds.from,
+        this.rangeBounds.to + 1
+      );
+    } else if (this.limitCount !== null) {
+      localRows = localRows.slice(0, this.limitCount);
+    }
+
+    if (this.isSingle || this.isMaybeSingle) {
+      return { data: localRows[0] || null, error: null };
+    }
+    return { data: localRows, error: null, count: localRows.length };
+  }
+
   private async execute(): Promise<{
     data: any;
     error: any;
@@ -386,6 +469,25 @@ class OfflineQueryBuilder {
     // READ (SELECT)
     // =====================================
     if (this.action === "select") {
+      // Cache-first: serve from IndexedDB immediately when this table was
+      // synced before, and refresh it in the background. A cached table
+      // answers at once — even an empty filtered result is a valid answer.
+      const cached = await this.readLocalRows();
+      if (cached !== null) {
+        if (this.isSingle || this.isMaybeSingle) {
+          if (cached.data) {
+            void refreshTableInBackground(this.table);
+            return cached;
+          }
+          // Single row not in the local cache: fall through to the network
+          // when online; offline there is nothing more to show.
+          if (!navigator.onLine) return { data: null, error: null };
+        } else {
+          void refreshTableInBackground(this.table);
+          return cached;
+        }
+      }
+
       if (navigator.onLine) {
         try {
           let q: any = rawSupabase
@@ -426,34 +528,14 @@ class OfflineQueryBuilder {
       }
 
       // OFFLINE READ FROM INDEXEDDB
-      let localRows: any[] = (await get(storageKey)) || [];
-      localRows = localRows.filter((r) => this.matchesFilters(r));
-      localRows = await this.attachRelations(localRows);
-
-      for (const ob of this.orderBys) {
-        const { col, ascending } = ob;
-        localRows.sort((a, b) => {
-          const valA = a[col] ?? "";
-          const valB = b[col] ?? "";
-          if (valA < valB) return ascending ? -1 : 1;
-          if (valA > valB) return ascending ? 1 : -1;
-          return 0;
-        });
-      }
-
-      if (this.rangeBounds) {
-        localRows = localRows.slice(
-          this.rangeBounds.from,
-          this.rangeBounds.to + 1
-        );
-      } else if (this.limitCount !== null) {
-        localRows = localRows.slice(0, this.limitCount);
-      }
-
+      const local = await this.readLocalRows();
+      if (local !== null) return local;
+      // Table never cached: same answer as the old fallback — null for a
+      // single row, an empty list otherwise.
       if (this.isSingle || this.isMaybeSingle) {
-        return { data: localRows[0] || null, error: null };
+        return { data: null, error: null };
       }
-      return { data: localRows, error: null, count: localRows.length };
+      return { data: [], error: null, count: 0 };
     }
 
     // =====================================
@@ -567,7 +649,7 @@ const offlineAuth = new Proxy(rawSupabase.auth, {
               return res;
             }
           } catch {
-            // Fall back to cached user
+            // Fall Back to cached user
           }
         }
         const cachedUser = await get("fams_cached_user");
@@ -585,7 +667,7 @@ const offlineAuth = new Proxy(rawSupabase.auth, {
               return res;
             }
           } catch {
-            // Fall back to cached session
+            // Fall Back to cached session
           }
         }
         const cachedSession = await get("fams_cached_session");

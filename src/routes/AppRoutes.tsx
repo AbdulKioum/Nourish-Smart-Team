@@ -7,7 +7,7 @@ import {
 import { useEffect, useState, useRef } from "react";
 import { PushNotifications } from "@capacitor/push-notifications";
 import { Capacitor } from "@capacitor/core";
-import { supabase } from "../lib/supabase";
+import { supabase, warmOfflineCache } from "../lib/supabase";
 
 import MainLayout from "../layouts/MainLayout";
 import LoginPage from "../pages/auth/LoginPage";
@@ -180,6 +180,17 @@ export default function AppRoutes() {
     };
 
     initPush();
+  }, [session?.user?.id]);
+
+  // Warm the offline cache right after login so pages render instantly
+  // from IndexedDB (see src/lib/supabase.ts warmOfflineCache). Retries
+  // when back online if the first call happened while offline.
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    warmOfflineCache();
+    const onOnline = () => warmOfflineCache();
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
   }, [session?.user?.id]);
 
   if (loading) {

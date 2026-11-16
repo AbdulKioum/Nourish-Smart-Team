@@ -174,6 +174,11 @@ export default function ReportsPage() {
   const [upazilaFilter, setUpazilaFilter] = useState<string>("all");
   const [agentFilter, setAgentFilter] = useState<string>("all");
   const [farmerFilter, setFarmerFilter] = useState<string>("all");
+  const [feedTypeFilter, setFeedTypeFilter] = useState<string>("all");
+  const [isMultiAge, setIsMultiAge] = useState<boolean>(false);
+  const [ageFilter, setAgeFilter] = useState<string>("all");
+  const [ageFrom, setAgeFrom] = useState<string>("");
+  const [ageTo, setAgeTo] = useState<string>("");
   const [monthFilter, setMonthFilter] = useState<string>("");
   const [isMultiDate, setIsMultiDate] = useState<boolean>(false);
   const [fromDate, setFromDate] = useState<string>("");
@@ -494,7 +499,7 @@ export default function ReportsPage() {
   }
 
   // Enrich and Filter Reports
-  const filteredReports = rawCombinedReports
+  const filteredReportsBase = rawCombinedReports
     .map((r) => {
       const visit = visitsMap[String(r.vet_visit_id)] || {};
       const farmer =
@@ -526,6 +531,13 @@ export default function ReportsPage() {
       const subAgentName = subAgent?.sub_agent_name || "";
       const seq = visitSeqMap[String(r.vet_visit_id)] || 1;
       const batchLabel = visit.batch_label || `Batch ${seq}`;
+      // Age exactly as the table shows it: days for meat ("28d"),
+      // weeks for Layer ("8w"). ageNum is the number shown, ageDays the
+      // underlying days (used only to sort the dropdown chronologically).
+      const ageDays = calcAgeDays(visit?.hatch_date, r.visit_date);
+      const ageWks = Math.max(1, Math.floor(ageDays / 7));
+      const ageLabel = r._repKind === "layer" ? `${ageWks}w` : `${ageDays}d`;
+      const ageNum = r._repKind === "layer" ? ageWks : ageDays;
 
       return {
         ...r,
@@ -542,6 +554,9 @@ export default function ReportsPage() {
         subAgentName,
         batchSeq: seq,
         batchLabel,
+        ageDays,
+        ageLabel,
+        ageNum,
       };
     })
     .filter((item) => {
@@ -581,6 +596,51 @@ export default function ReportsPage() {
       String(b.visit_date || "").localeCompare(String(a.visit_date || ""))
     );
 
+  // Feed Type options come from the rows left AFTER all other filters,
+  // so the dropdown only ever lists types actually on screen.
+  const feedTypeOptions = Array.from(
+    new Set(
+      filteredReportsBase
+        .map((r: any) => String(r.feed_type || "").trim())
+        .filter(Boolean)
+    )
+  ).sort();
+
+  const afterFeedType =
+    feedTypeFilter === "all"
+      ? filteredReportsBase
+      : filteredReportsBase.filter(
+          (r: any) => String(r.feed_type || "").trim() === feedTypeFilter
+        );
+
+  // Age options come from the rows left after the feed-type filter, in
+  // the same labels the table shows ("28d" / "8w"), oldest-first by days.
+  const ageOptions = Array.from(
+    new Map(
+      afterFeedType.map((r: any) => [r.ageLabel, Number(r.ageDays)])
+    ).entries()
+  )
+    .map(([label, days]) => ({ label: label as string, days: days as number }))
+    .sort((a, b) => a.days - b.days || (a.label < b.label ? -1 : 1));
+
+  const filteredReports =
+    afterFeedType.filter((r: any) => {
+      if (isMultiAge) {
+        const fromRaw = ageFrom.trim() === "" ? null : Number(ageFrom);
+        const toRaw = ageTo.trim() === "" ? null : Number(ageTo);
+        const from =
+          fromRaw !== null && !isNaN(fromRaw) ? fromRaw : null;
+        const to = toRaw !== null && !isNaN(toRaw) ? toRaw : null;
+        if (from === null && to === null) return true;
+        const n = Number(r.ageNum);
+        if (from !== null && n < from) return false;
+        if (to !== null && n > to) return false;
+        return true;
+      }
+      if (ageFilter === "all") return true;
+      return r.ageLabel === ageFilter;
+    });
+
   // Egg columns only when a Layer report is actually shown: a Broiler /
   // Sonali selection has no layer rows, so the two egg columns hide.
   const showEggColumns = filteredReports.some(
@@ -592,6 +652,28 @@ export default function ReportsPage() {
   const showFcrColumns = filteredReports.some(
     (r: any) => r._repKind === "before_sale" || r._repKind === "after_sale"
   );
+
+  // If another filter change leaves the picked feed type with no rows,
+  // fall back to All instead of showing an empty table.
+  useEffect(() => {
+    if (
+      feedTypeFilter !== "all" &&
+      !feedTypeOptions.includes(feedTypeFilter)
+    ) {
+      setFeedTypeFilter("all");
+    }
+  }, [feedTypeOptions, feedTypeFilter]);
+
+  // Same for the single-age dropdown.
+  useEffect(() => {
+    if (
+      !isMultiAge &&
+      ageFilter !== "all" &&
+      !ageOptions.some((a) => a.label === ageFilter)
+    ) {
+      setAgeFilter("all");
+    }
+  }, [ageOptions, ageFilter, isMultiAge]);
 
   // Collect Available Months from all reports
   const allMonths = Array.from(
@@ -1066,7 +1148,7 @@ async function saveBufferOrBlob(
       <div className="bg-white border border-slate-300 rounded-xl p-2.5 shadow-sm">
         <div
           className={`grid grid-cols-2 sm:grid-cols-3 ${
-            isMultiDate ? "lg:grid-cols-7" : "lg:grid-cols-6"
+            isMultiAge ? "lg:grid-cols-10" : "lg:grid-cols-9"
           } gap-2 items-center text-xs`}
         >
           {/* Assigned Upazila Dropdown */}
@@ -1121,6 +1203,98 @@ async function saveBufferOrBlob(
             ]}
           />
 
+          {/* Feed Type Dropdown — options from the rows left after the other filters */}
+          <SearchableSelect
+            value={feedTypeFilter}
+            onChange={setFeedTypeFilter}
+            placeholder="All Feed Types"
+            options={[
+              {
+                value: "all",
+                label: `All Feed Types (${feedTypeOptions.length})`,
+              },
+              ...feedTypeOptions.map((t) => ({ value: t, label: t })),
+            ]}
+          />
+
+          {/* Age Filter: single dropdown, or From/To range when Multi is checked */}
+          <div
+            className={`${
+              isMultiAge ? "col-span-2 sm:col-span-2 lg:col-span-2" : ""
+            } flex items-center gap-1.5 min-w-0`}
+          >
+            {!isMultiAge ? (
+              <div className="flex-1 min-w-0">
+                <SearchableSelect
+                  value={ageFilter}
+                  onChange={setAgeFilter}
+                  placeholder="All Ages"
+                  options={[
+                    {
+                      value: "all",
+                      label: `All Ages (${ageOptions.length})`,
+                    },
+                    ...ageOptions.map((a) => ({
+                      value: a.label,
+                      label: a.label,
+                    })),
+                  ]}
+                />
+              </div>
+            ) : (
+              <div className="flex-1 min-w-0 grid grid-cols-2 gap-1.5">
+                <div className="min-w-0 flex items-center border border-slate-300 rounded-lg px-2 py-1 bg-white overflow-hidden">
+                  <span className="text-[10px] font-bold text-slate-400 mr-1 shrink-0">
+                    From:
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={ageFrom}
+                    onChange={(e) => setAgeFrom(e.target.value)}
+                    placeholder="Age"
+                    className="w-full min-w-0 outline-none bg-transparent text-slate-700"
+                  />
+                </div>
+                <div className="min-w-0 flex items-center border border-slate-300 rounded-lg px-2 py-1 bg-white overflow-hidden">
+                  <span className="text-[10px] font-bold text-slate-400 mr-1 shrink-0">
+                    To:
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={ageTo}
+                    onChange={(e) => setAgeTo(e.target.value)}
+                    placeholder="Age"
+                    className="w-full min-w-0 outline-none bg-transparent text-slate-700"
+                  />
+                </div>
+              </div>
+            )}
+
+            <label
+              title="Age range (From - To)"
+              className="shrink-0 inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 text-[10px] font-semibold text-slate-700 cursor-pointer select-none"
+            >
+              <input
+                type="checkbox"
+                checked={isMultiAge}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setIsMultiAge(checked);
+                  if (checked) {
+                    setAgeFilter("all");
+                  } else {
+                    setAgeFrom("");
+                    setAgeTo("");
+                  }
+                }}
+                className="w-3.5 h-3.5 accent-emerald-600"
+              />
+              <span>Multi</span>
+            </label>
+          </div>
+
           {/* Month Filter */}
           <SearchableSelect
             value={monthFilter}
@@ -1137,7 +1311,7 @@ async function saveBufferOrBlob(
             className={`${
               isMultiDate
                 ? "col-span-2 sm:col-span-3 lg:col-span-2"
-                : "col-span-2 sm:col-span-2 lg:col-span-1"
+                : "col-span-2 sm:col-span-2 lg:col-span-2"
             } flex items-center gap-1.5 min-w-0`}
           >
             {!isMultiDate ? (
@@ -1224,6 +1398,11 @@ async function saveBufferOrBlob(
               );
               setAgentFilter("all");
               setFarmerFilter("all");
+              setFeedTypeFilter("all");
+              setIsMultiAge(false);
+              setAgeFilter("all");
+              setAgeFrom("");
+              setAgeTo("");
               setMonthFilter("");
               setIsMultiDate(false);
               setFromDate("");

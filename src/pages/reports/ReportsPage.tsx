@@ -1324,7 +1324,15 @@ ${currentUserProfile.region}`;
     sheet.columns.forEach((column) => {
       let maxLen = 11;
       column.eachCell?.({ includeEmpty: true }, (cell) => {
-        const val = cell.value ? String(cell.value) : "";
+        // Rich-text cells (Agent with the small "(sub agent)" suffix)
+        // store an object — measure the joined run texts, not
+        // "[object Object]".
+        const rawVal = cell.value as any;
+        const val = rawVal
+          ? rawVal.richText
+            ? rawVal.richText.map((t: any) => t.text || "").join("")
+            : String(rawVal)
+          : "";
         if (val.length > maxLen) maxLen = val.length;
       });
       column.width = Math.min(Math.max(maxLen + 4, 12), 38);
@@ -1394,6 +1402,29 @@ async function saveBufferOrBlob(
   }
 }
 
+  // Export cell values: Farmer carries the shed inside its own cell
+  // ("Raju Ahmed Shed 1"); Agent carries the sub-agent with a small
+  // "(sub agent)" suffix (rich text, so only the suffix is small).
+  const exportFarmerCell = (r: any) =>
+    r.shedShort
+      ? `${r.farmer?.farmer_name || "-"} ${r.shedShort}`
+      : r.farmer?.farmer_name || "-";
+  const exportAgentCell = (r: any) =>
+    r.subAgentName
+      ? {
+          richText: [
+            {
+              text: r.subAgentName,
+              font: { size: 10, color: { argb: "FF0F172A" } },
+            },
+            {
+              text: " (sub agent)",
+              font: { size: 8, italic: true, color: { argb: "FF64748B" } },
+            },
+          ],
+        }
+      : r.agent?.agent_name || "-";
+
   async function exportFilteredReportsExcel() {
     if (filteredReports.length === 0) {
       alert("No reports found to export.");
@@ -1413,13 +1444,10 @@ async function saveBufferOrBlob(
       const s = workbook.addWorksheet("Before_Sale_Reports");
       s.addRow([
         "Visit Date",
-        "Category",
         "Upazila",
         "Agent",
         "Farmer",
-        "Shed",
-        "Batch",
-        "Sub Agent",
+        "Category",
         "Hatchery",
         "Breed",
         "H.Date",
@@ -1446,13 +1474,10 @@ async function saveBufferOrBlob(
         const std = getMeatStd(r.category, d);
         s.addRow([
           r.visit_date || "-",
-          r.category || "-",
           r.upazila || "-",
-          r.agent?.agent_name || "-",
-          r.farmer?.farmer_name || "-",
-          r.shedShort || "",
-          r.batchLabel,
-          r.subAgentName || "",
+          exportAgentCell(r),
+          exportFarmerCell(r),
+          r.category || "-",
           r.hatchery || "-",
           r.breed || "-",
           r.visit?.hatch_date || "-",
@@ -1478,7 +1503,7 @@ async function saveBufferOrBlob(
       formatExcelSheet(
         s,
         "FF059669",
-        [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+        [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
       );
     }
 
@@ -1486,13 +1511,10 @@ async function saveBufferOrBlob(
       const s = workbook.addWorksheet("After_Sale_Reports");
       s.addRow([
         "Sale Date",
-        "Category",
         "Upazila",
         "Agent",
         "Farmer",
-        "Shed",
-        "Batch",
-        "Sub Agent",
+        "Category",
         "Hatchery",
         "Breed",
         "H.Date",
@@ -1525,13 +1547,10 @@ async function saveBufferOrBlob(
             : "-");
         s.addRow([
           r.visit_date || "-",
-          r.category || "-",
           r.upazila || "-",
-          r.agent?.agent_name || "-",
-          r.farmer?.farmer_name || "-",
-          r.shedShort || "",
-          r.batchLabel,
-          r.subAgentName || "",
+          exportAgentCell(r),
+          exportFarmerCell(r),
+          r.category || "-",
           r.hatchery || "-",
           r.breed || "-",
           r.visit?.hatch_date || "-",
@@ -1557,7 +1576,7 @@ async function saveBufferOrBlob(
       formatExcelSheet(
         s,
         "FFDC2626",
-        [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+        [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
       );
     }
 
@@ -1568,9 +1587,7 @@ async function saveBufferOrBlob(
         "Upazila",
         "Agent",
         "Farmer",
-        "Shed",
-        "Batch",
-        "Sub Agent",
+        "Category",
         "Hatchery",
         "Breed",
         "H.Date",
@@ -1602,11 +1619,9 @@ async function saveBufferOrBlob(
         s.addRow([
           r.visit_date || "-",
           r.upazila || "-",
-          r.agent?.agent_name || "-",
-          r.farmer?.farmer_name || "-",
-          r.shedShort || "",
-          r.batchLabel,
-          r.subAgentName || "",
+          exportAgentCell(r),
+          exportFarmerCell(r),
+          r.category || "-",
           r.hatchery || "-",
           r.breed || "-",
           r.visit?.hatch_date || "-",
@@ -1633,7 +1648,7 @@ async function saveBufferOrBlob(
       formatExcelSheet(
         s,
         "FF4F46E5",
-        [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+        [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
       );
     }
 

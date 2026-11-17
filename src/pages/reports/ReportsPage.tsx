@@ -2304,7 +2304,7 @@ async function saveBufferOrBlob(
                             onClick={() =>
                               navigate(
                                 r.visit?.id
-                                  ? `/visits?focus=${r.visit.id}&focusFarmer=${r.farmer_id}`
+                                  ? `/visits?focus=${r.visit.id}&focusFarmer=${r.farmer_id}&focusReport=${r.id}&focusKind=${r._repKind}`
                                   : `/visits?focusFarmer=${r.farmer_id}`
                               )
                             }

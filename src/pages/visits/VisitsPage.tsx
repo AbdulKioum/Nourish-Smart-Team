@@ -879,6 +879,13 @@ export default function VetVisitsPage() {
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
   const [focusVisitId, setFocusVisitId] = useState<string | null>(null);
   const [focusFarmerId, setFocusFarmerId] = useState<string | null>(null);
+  // Coming from a ReportsPage row: the exact report to indicate inside
+  // History (id + kind: before_sale / after_sale / layer).
+  const [focusReportId, setFocusReportId] = useState<string | null>(null);
+  const [focusReportKind, setFocusReportKind] = useState<string | null>(
+    null
+  );
+  const historyAutoOpenedRef = useRef(false);
 
   const [visitReportMeta, setVisitReportMeta] = useState<
     Record<string, { count: number; lastDate: string }>
@@ -1128,9 +1135,13 @@ export default function VetVisitsPage() {
     const focusParams = new URLSearchParams(location.search);
     const fid = focusParams.get("focus");
     const farmerFid = focusParams.get("focusFarmer");
+    const repId = focusParams.get("focusReport");
+    const repKind = focusParams.get("focusKind");
     if (!fid && !farmerFid) return;
     if (fid) setFocusVisitId(fid);
     if (farmerFid) setFocusFarmerId(farmerFid);
+    if (repId) setFocusReportId(repId);
+    if (repKind) setFocusReportKind(repKind);
     setSelectedCompany("all");
     setSelectedUpazila("all");
     setSelectedAgent("all");
@@ -1144,7 +1155,8 @@ export default function VetVisitsPage() {
     const t = setTimeout(() => {
       const el =
         (focusVisitId &&
-          (document.getElementById("after-sale-btn-" + focusVisitId) ||
+          (document.getElementById("history-btn-" + focusVisitId) ||
+            document.getElementById("after-sale-btn-" + focusVisitId) ||
             document.getElementById("visit-row-" + focusVisitId))) ||
         (focusFarmerId &&
           document.querySelector(`[data-farmer-id="${focusFarmerId}"]`)) ||
@@ -1153,6 +1165,58 @@ export default function VetVisitsPage() {
     }, 400);
     return () => clearTimeout(t);
   }, [focusVisitId, focusFarmerId, statusFarmers, _loading]);
+
+  // Coming from a ReportsPage row: once the data is ready, open that
+  // batch's History so the exact report is indicated inside it. Only
+  // when a focusReport came along (FarmersPage Visit sends no report,
+  // so it only scrolls to the row as before). Fires once per landing.
+  useEffect(() => {
+    if (
+      !focusVisitId ||
+      !focusReportId ||
+      _loading ||
+      historyAutoOpenedRef.current
+    )
+      return;
+    const farmer = focusFarmerId
+      ? statusFarmers.find(
+          (f: any) => String(f.id) === String(focusFarmerId)
+        )
+      : statusFarmers.find((f: any) =>
+          (f.allBatches || []).some(
+            (b: any) => String(b.id) === String(focusVisitId)
+          )
+        );
+    const batch =
+      farmer?.allBatches?.find(
+        (b: any) => String(b.id) === String(focusVisitId)
+      ) || { id: focusVisitId, farmer_id: focusFarmerId };
+    historyAutoOpenedRef.current = true;
+    const t = setTimeout(() => {
+      handleHistoryClick(batch, farmer);
+    }, 700);
+    return () => clearTimeout(t);
+  }, [focusVisitId, focusReportId, focusFarmerId, statusFarmers, _loading]);
+
+  // Scroll the indicated report row into view inside the open History
+  // modal (runs again once the fetched reports render).
+  useEffect(() => {
+    if (!showHistoryModal || !focusReportId || !focusReportKind) return;
+    const t = setTimeout(() => {
+      document
+        .getElementById(
+          `history-report-${focusReportKind}-${focusReportId}`
+        )
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [
+    showHistoryModal,
+    focusReportId,
+    focusReportKind,
+    allReportsForFarmer,
+    selectedHistoryVisit,
+  ]);
 
   const selectedFormDistrict = geoDistricts.find(
     (d) => d.name === farmerForm.district
@@ -4380,6 +4444,14 @@ ${currentUserProfile.region}`;
     (r) => String(r.vet_visit_id) === String(selectedHistoryVisit?.id)
   );
 
+  // The report landed on from ReportsPage (if any): indicated with a
+  // different colour inside History, for every kind — before_sale,
+  // after_sale and layer alike.
+  const isFocusReport = (kind: string, rep: any) =>
+    focusReportId != null &&
+    focusReportKind === kind &&
+    String(rep?.id) === String(focusReportId);
+
   const selectedBatchCulledReason = (() => {
     if (!selectedHistoryVisit) return "";
     if (selectedHistoryVisit.culled_reason) {
@@ -5938,10 +6010,6 @@ ${currentUserProfile.region}`;
                           : days === 0
                           ? "today"
                           : `${days}d ago`;
-                      const afterBtnRing = isFocused
-                        ? "ring-4 ring-yellow-400 animate-pulse"
-                        : "";
-
                       // History is ONLY active if reports exist for this specific batch (or farmer when not running)
                       const repMeta = isBatch
                         ? visitReportMeta[String(visit.id)]
@@ -6134,7 +6202,7 @@ ${currentUserProfile.region}`;
                                     onClick={() =>
                                       openReportModal("layer_report", visit)
                                     }
-                                    className={`bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-0.5 rounded text-[10px] font-semibold ${afterBtnRing}`}
+                                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-0.5 rounded text-[10px] font-semibold"
                                   >
                                     Layer Report
                                   </button>
@@ -6146,7 +6214,7 @@ ${currentUserProfile.region}`;
                                       onClick={() =>
                                         openReportModal("after_sale", visit)
                                       }
-                                      className={`bg-red-600 hover:bg-red-700 text-white px-2 py-0.5 rounded text-[10px] font-bold shadow-sm ${afterBtnRing}`}
+                                      className="bg-red-600 hover:bg-red-700 text-white px-2 py-0.5 rounded text-[10px] font-bold shadow-sm"
                                     >
                                       After Sale
                                     </button>
@@ -6177,7 +6245,7 @@ ${currentUserProfile.region}`;
                                       onClick={() =>
                                         openReportModal("after_sale", visit)
                                       }
-                                      className={`bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300 px-1.5 py-0.5 rounded text-[10px] ${afterBtnRing}`}
+                                      className="bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300 px-1.5 py-0.5 rounded text-[10px]"
                                     >
                                       After Sale
                                     </button>
@@ -6198,6 +6266,11 @@ ${currentUserProfile.region}`;
                           <td className="border border-slate-300 px-2 py-1 text-center whitespace-nowrap">
                             <button
                               type="button"
+                              id={
+                                isBatch
+                                  ? `history-btn-${visit.id}`
+                                  : undefined
+                              }
                               disabled={!hasVisitHistory}
                               onClick={() => {
                                 if (!hasVisitHistory) return;
@@ -6219,6 +6292,10 @@ ${currentUserProfile.region}`;
                                 hasVisitHistory
                                   ? "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 cursor-pointer"
                                   : "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-60"
+                              } ${
+                                isFocused && hasVisitHistory
+                                  ? "ring-4 ring-yellow-400 animate-pulse"
+                                  : ""
                               }`}
                             >
                               History
@@ -9201,7 +9278,11 @@ ${currentUserProfile.region}`;
                   Export Excel
                 </button>
                 <button
-                  onClick={() => setShowHistoryModal(false)}
+                  onClick={() => {
+                    setShowHistoryModal(false);
+                    setFocusReportId(null);
+                    setFocusReportKind(null);
+                  }}
                   className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold"
                 >
                   ✖
@@ -9321,7 +9402,8 @@ ${currentUserProfile.region}`;
                           return (
                             <tr
                               key={i}
-                              className="hover:bg-slate-50 whitespace-nowrap"
+                              id={isFocusReport("layer", rep) ? `history-report-layer-${rep.id}` : undefined}
+                              className={isFocusReport("layer", rep) ? "bg-orange-200 hover:bg-orange-200 whitespace-nowrap" : "hover:bg-slate-50 whitespace-nowrap"}
                             >
                               <td className="border border-slate-300 px-1.5 py-0.5">
                                 {rep.visit_date || "-"}
@@ -9496,7 +9578,8 @@ ${currentUserProfile.region}`;
                               return (
                                 <tr
                                   key={i}
-                                  className="hover:bg-slate-50 whitespace-nowrap"
+                                  id={isFocusReport("before_sale", rep) ? `history-report-before_sale-${rep.id}` : undefined}
+                                  className={isFocusReport("before_sale", rep) ? "bg-orange-200 hover:bg-orange-200 whitespace-nowrap" : "hover:bg-slate-50 whitespace-nowrap"}
                                 >
                                   <td className="border border-slate-300 px-1.5 py-0.5">
                                     {rep.visit_date}
@@ -9685,7 +9768,8 @@ ${currentUserProfile.region}`;
                             return (
                               <tr
                                 key={i}
-                                className="hover:bg-slate-50 whitespace-nowrap"
+                                id={isFocusReport("after_sale", rep) ? `history-report-after_sale-${rep.id}` : undefined}
+                                className={isFocusReport("after_sale", rep) ? "bg-orange-200 hover:bg-orange-200 whitespace-nowrap" : "hover:bg-slate-50 whitespace-nowrap"}
                               >
                                 <td className="border border-slate-300 px-1.5 py-0.5">
                                   {rep.visit_date}

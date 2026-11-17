@@ -8930,66 +8930,164 @@ ${currentUserProfile.region}`;
               </form>
             )}
 
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse border border-slate-300 text-xs">
-                <thead className="bg-slate-100">
-                  <tr>
-                    <th className="border border-slate-300 px-2.5 py-1.5 text-left">
-                      Category
-                    </th>
-                    <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                      Age (Days)
-                    </th>
-                    <th className="border border-slate-300 px-2.5 py-1.5 text-left">
-                      Vaccine Name
-                    </th>
-                    <th className="border border-slate-300 px-2.5 py-1.5 text-left">
-                      Vaccine Type
-                    </th>
-                    <th className="border border-slate-300 px-2.5 py-1.5 text-left">
-                      Route
-                    </th>
-                    {isSuperAdmin && (
-                      <th className="border border-slate-300 px-2.5 py-1.5 text-center">
-                        Delete
-                      </th>
-                    )}
-                  </tr>
-                </thead>
-                <tbody>
-                  {vaccines.map((v, i) => (
-                    <tr key={v.id || i} className="hover:bg-slate-50">
-                      <td className="border border-slate-300 px-2.5 py-1 font-semibold">
-                        {v.category}
-                      </td>
-                      <td className="border border-slate-300 px-2.5 py-1 text-center font-bold text-emerald-700">
-                        Day {v.age_days}
-                      </td>
-                      <td className="border border-slate-300 px-2.5 py-1 font-bold">
-                        {v.vaccine_name}
-                      </td>
-                      <td className="border border-slate-300 px-2.5 py-1">
-                        {v.vaccine_type}
-                      </td>
-                      <td className="border border-slate-300 px-2.5 py-1">
-                        {v.route}
-                      </td>
-                      {isSuperAdmin && (
-                        <td className="border border-slate-300 px-2.5 py-1 text-center">
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteVaccine(v.id)}
-                            className="text-red-600 hover:underline font-semibold"
-                          >
+            {/* Category-wise schedules: Broiler, Sonali, Layer */}
+            {(["Broiler", "Sonali", "Layer"] as const).map((cat) => {
+              const catVaccines = vaccines.filter((v) => v.category === cat);
+              const headerColor =
+                cat === "Broiler"
+                  ? "text-emerald-700"
+                  : cat === "Sonali"
+                    ? "text-amber-700"
+                    : "text-sky-700";
+              return (
+                <div key={cat} className="space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <h4 className={`text-sm font-bold ${headerColor}`}>
+                      {cat}
+                    </h4>
+                    <span className="text-[10px] font-bold bg-slate-100 border border-slate-300 rounded-full px-2 py-0.5 text-slate-600">
+                      {catVaccines.length} vaccine
+                      {catVaccines.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  {catVaccines.length === 0 ? (
+                    <p className="text-xs text-slate-400 py-1">
+                      No vaccines scheduled for {cat}.
+                    </p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full border-collapse border border-slate-300 text-xs">
+                        <thead className="bg-slate-100">
+                          <tr>
+                            <th className="border border-slate-300 px-2.5 py-1.5 text-center">
+                              Age (Days)
+                            </th>
+                            <th className="border border-slate-300 px-2.5 py-1.5 text-left">
+                              Vaccine Name
+                            </th>
+                            <th className="border border-slate-300 px-2.5 py-1.5 text-left">
+                              Vaccine Type
+                            </th>
+                            <th className="border border-slate-300 px-2.5 py-1.5 text-left">
+                              Route
+                            </th>
+                            {isSuperAdmin && (
+                              <th className="border border-slate-300 px-2.5 py-1.5 text-center">
+                                Delete
+                              </th>
+                            )}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {catVaccines.map((v, i) => (
+                            <tr key={v.id || i} className="hover:bg-slate-50">
+                              <td className="border border-slate-300 px-2.5 py-1 text-center font-bold text-emerald-700">
+                                Day {v.age_days}
+                              </td>
+                              <td className="border border-slate-300 px-2.5 py-1 font-bold">
+                                {v.vaccine_name}
+                              </td>
+                              <td className="border border-slate-300 px-2.5 py-1">
+                                {v.vaccine_type}
+                              </td>
+                              <td className="border border-slate-300 px-2.5 py-1">
+                                {v.route}
+                              </td>
+                              {isSuperAdmin && (
+                                <td className="border border-slate-300 px-2.5 py-1 text-center">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteVaccine(v.id)}
+                                    className="text-red-600 hover:underline font-semibold"
+                                  >
+                                    Delete
+                                  </button>
+                                </td>
+                              )}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {/* Any vaccine stored under a different category still shows here, so no row is lost */}
+            {vaccines.some(
+              (v) => !["Broiler", "Sonali", "Layer"].includes(v.category)
+            ) && (
+              <div className="space-y-1.5">
+                <h4 className="text-sm font-bold text-slate-700">Other</h4>
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse border border-slate-300 text-xs">
+                    <thead className="bg-slate-100">
+                      <tr>
+                        <th className="border border-slate-300 px-2.5 py-1.5 text-left">
+                          Category
+                        </th>
+                        <th className="border border-slate-300 px-2.5 py-1.5 text-center">
+                          Age (Days)
+                        </th>
+                        <th className="border border-slate-300 px-2.5 py-1.5 text-left">
+                          Vaccine Name
+                        </th>
+                        <th className="border border-slate-300 px-2.5 py-1.5 text-left">
+                          Vaccine Type
+                        </th>
+                        <th className="border border-slate-300 px-2.5 py-1.5 text-left">
+                          Route
+                        </th>
+                        {isSuperAdmin && (
+                          <th className="border border-slate-300 px-2.5 py-1.5 text-center">
                             Delete
-                          </button>
-                        </td>
-                      )}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                          </th>
+                        )}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {vaccines
+                        .filter(
+                          (v) =>
+                            !["Broiler", "Sonali", "Layer"].includes(
+                              v.category
+                            )
+                        )
+                        .map((v, i) => (
+                          <tr key={v.id || i} className="hover:bg-slate-50">
+                            <td className="border border-slate-300 px-2.5 py-1 font-semibold">
+                              {v.category}
+                            </td>
+                            <td className="border border-slate-300 px-2.5 py-1 text-center font-bold text-emerald-700">
+                              Day {v.age_days}
+                            </td>
+                            <td className="border border-slate-300 px-2.5 py-1 font-bold">
+                              {v.vaccine_name}
+                            </td>
+                            <td className="border border-slate-300 px-2.5 py-1">
+                              {v.vaccine_type}
+                            </td>
+                            <td className="border border-slate-300 px-2.5 py-1">
+                              {v.route}
+                            </td>
+                            {isSuperAdmin && (
+                              <td className="border border-slate-300 px-2.5 py-1 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteVaccine(v.id)}
+                                  className="text-red-600 hover:underline font-semibold"
+                                >
+                                  Delete
+                                </button>
+                              </td>
+                            )}
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

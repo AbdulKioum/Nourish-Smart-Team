@@ -161,6 +161,8 @@ let cachedPageState: {
   broilerStds: Record<number, any>;
   sonaliStds: Record<number, any>;
   layerStds: Record<string, any>;
+  companies: any[];
+  companyFilter: string;
   selectedCategory: "all" | "Broiler" | "Layer" | "Sonali";
   reportType: "all" | "before_sale" | "after_sale";
   upazilaFilter: string;
@@ -202,6 +204,9 @@ export default function ReportsPage() {
   const [subAgents, setSubAgents] = useState<any[]>(
     cachedPageState?.subAgents || []
   );
+  const [companies, setCompanies] = useState<any[]>(
+    cachedPageState?.companies || []
+  );
   const [visitsMap, setVisitsMap] = useState<Record<string, any>>(
     cachedPageState?.visitsMap || {}
   );
@@ -226,6 +231,9 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(!cachedPageState?.initialized);
 
   // Filters
+  const [companyFilter, setCompanyFilter] = useState<string>(
+    cachedPageState?.companyFilter || "Nourish"
+  );
   const [upazilaFilter, setUpazilaFilter] = useState<string>(
     cachedPageState?.upazilaFilter || "all"
   );
@@ -372,6 +380,20 @@ export default function ReportsPage() {
     }
     setSubAgents(subAgentRows);
 
+    // Companies (for the Company filter): try/catch so the page keeps
+    // working if the table is unreachable — the filter then passes all rows.
+    let companyRows: any[] = [];
+    try {
+      const { data: coData } = await supabase
+        .from("companies")
+        .select("id, company_name")
+        .order("company_name");
+      companyRows = coData || [];
+    } catch {
+      companyRows = [];
+    }
+    setCompanies(companyRows);
+
     const allFarmers = (frmData || []).map((f: any) => ({
       ...f,
       farmer_sheds: shedRows.filter(
@@ -457,6 +479,8 @@ export default function ReportsPage() {
       broilerStds: bMap,
       sonaliStds: sMap,
       layerStds: lMap,
+      companies: companyRows,
+      companyFilter,
       selectedCategory,
       reportType,
       upazilaFilter: savedUpazilaFilter,
@@ -524,6 +548,28 @@ export default function ReportsPage() {
     setFromDate(`${ym}-01`);
     setToDate(`${ym}-${String(lastDay).padStart(2, "0")}`);
   }
+
+  // Company filter data: name lookup by company id, whether a company
+  // named Nourish exists, and the dropdown list (all companies except
+  // Nourish, sorted by name — Nourish sits first as its own option).
+  const companyNameById: Record<string, string> = {};
+  companies.forEach((c: any) => {
+    companyNameById[String(c.id)] = String(c.company_name || "");
+  });
+  const nourishExists = companies.some(
+    (c: any) =>
+      String(c.company_name || "").trim().toLowerCase() === "nourish"
+  );
+  const otherCompanies = companies
+    .filter(
+      (c: any) =>
+        String(c.company_name || "").trim().toLowerCase() !== "nourish"
+    )
+    .sort((a: any, b: any) =>
+      String(a.company_name || "").localeCompare(
+        String(b.company_name || "")
+      )
+    );
 
   // Upazila options strictly scoped to user's assigned upazilas
   const upazilaOptions = Array.from(
@@ -708,6 +754,25 @@ export default function ReportsPage() {
       ) {
         return false;
       }
+      // Company filter: "Nourish" by default; "__others__" = every company
+      // except Nourish; otherwise a single company name. If no company
+      // named Nourish exists in the loaded list, the filter is skipped so
+      // the table never goes empty because of it.
+      if (companyFilter === "__others__") {
+        const nm = (
+          companyNameById[String(item.farmer?.company_id || "")] || ""
+        )
+          .trim()
+          .toLowerCase();
+        if (!nm || nm === "nourish") return false;
+      } else if (nourishExists) {
+        const nm = (
+          companyNameById[String(item.farmer?.company_id || "")] || ""
+        )
+          .trim()
+          .toLowerCase();
+        if (nm !== companyFilter.trim().toLowerCase()) return false;
+      }
       const vDate = String(item.visit_date || "").slice(0, 10);
       if (fromDate && vDate < fromDate) return false;
       if (toDate && vDate > toDate) return false;
@@ -795,6 +860,20 @@ export default function ReportsPage() {
       setAgeFilter("all");
     }
   }, [ageOptions, ageFilter, isMultiAge]);
+
+  // Same for the company dropdown: if the picked company disappears from
+  // the list, fall back to the Nourish default.
+  useEffect(() => {
+    if (companies.length === 0) return;
+    if (companyFilter === "__others__") return;
+    if (companyFilter.trim().toLowerCase() === "nourish") return;
+    const exists = companies.some(
+      (c: any) =>
+        String(c.company_name || "").trim().toLowerCase() ===
+        companyFilter.trim().toLowerCase()
+    );
+    if (!exists) setCompanyFilter("Nourish");
+  }, [companies, companyFilter]);
 
   // Collect Available Months from all reports
   const allMonths = Array.from(
@@ -1265,13 +1344,31 @@ async function saveBufferOrBlob(
         </button>
       </div>
 
-      {/* Filter Bar: Assigned Upazila, Agent, Farmer, Month, Single/Multi Date Picker, Reset */}
+      {/* Filter Bar: Company, Assigned Upazila, Agent, Farmer, Month, Single/Multi Date Picker, Reset */}
       <div className="bg-white border border-slate-300 rounded-xl p-2.5 shadow-sm">
         <div
           className={`grid grid-cols-2 sm:grid-cols-3 ${
-            isMultiAge ? "lg:grid-cols-10" : "lg:grid-cols-9"
+            isMultiAge ? "lg:grid-cols-11" : "lg:grid-cols-10"
           } gap-2 items-center text-xs`}
         >
+          {/* Company Dropdown — Nourish first (default), then All Others, then the company list */}
+          <SearchableSelect
+            value={companyFilter}
+            onChange={setCompanyFilter}
+            placeholder="Select Company"
+            options={[
+              { value: "Nourish", label: "Nourish" },
+              {
+                value: "__others__",
+                label: `All Others (${otherCompanies.length})`,
+              },
+              ...otherCompanies.map((c: any) => ({
+                value: String(c.company_name),
+                label: String(c.company_name),
+              })),
+            ]}
+          />
+
           {/* Assigned Upazila Dropdown */}
           <SearchableSelect
             value={upazilaFilter}
@@ -1512,6 +1609,7 @@ async function saveBufferOrBlob(
           <button
             type="button"
             onClick={() => {
+              setCompanyFilter("Nourish");
               setUpazilaFilter(
                 !isFullAccess && assignedUpazilas.length === 1
                   ? assignedUpazilas[0]
@@ -1549,13 +1647,12 @@ async function saveBufferOrBlob(
         <div className="bg-white border border-slate-300 rounded-xl overflow-hidden shadow-sm">
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-xs whitespace-nowrap">
-              <thead className="bg-slate-50">
+              <thead className="bg-slate-200">
                 <tr>
                   <th className="border border-slate-300 px-2.5 py-1.5 text-left">Sl</th>
                   <th className="border border-slate-300 px-2.5 py-1.5 text-left">Visit Date</th>
                   <th className="border border-slate-300 px-2.5 py-1.5 text-left">Agent</th>
                   <th className="border border-slate-300 px-2.5 py-1.5 text-left">Farmer</th>
-                  <th className="border border-slate-300 px-2.5 py-1.5 text-center">Status</th>
                   <th className="border border-slate-300 px-2.5 py-1.5 text-left">Category</th>
                   <th className="border border-slate-300 px-2.5 py-1.5 text-left">Type</th>
                   <th className="border border-slate-300 px-2.5 py-1.5 text-left">Hatchery</th>
@@ -1609,7 +1706,9 @@ async function saveBufferOrBlob(
                   return (
                     <tr
                       key={`${r._repKind}_${r.id ?? idx}`}
-                      className="hover:bg-slate-50 leading-tight"
+                      className={`${
+                        idx % 2 === 1 ? "bg-slate-100" : "bg-white"
+                      } hover:bg-emerald-100 leading-tight`}
                     >
                       <td className="border border-slate-300 px-2.5 py-1 text-center">
                         {idx + 1}
@@ -1639,13 +1738,6 @@ async function saveBufferOrBlob(
                             {r.shedShort}
                           </div>
                         )}
-                      </td>
-                      <td className="border border-slate-300 px-2.5 py-1 text-center">
-                        <span className="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-bold">
-                          {r.visit?.status === "Activated"
-                            ? "Running"
-                            : r.visit?.status || "-"}
-                        </span>
                       </td>
                       <td className="border border-slate-300 px-2.5 py-1">
                         {r.category}

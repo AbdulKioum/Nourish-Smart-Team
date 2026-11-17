@@ -811,6 +811,16 @@ export default function VetVisitsPage() {
   const canAddFarmerHere = canAddFarmer(role);
   const canEditPoultryReport = (rec: any) =>
     canAddPoultryReport && canEditRecord(role, rec?.created_by, currentUserId);
+  // WhatsApp ownership gating: a WhatsApp button shows only on a
+  // WhatsApp button: ONLY the user who added the report sees it
+  // (created_by === currentUserId), or a legacy report with no creator
+  // (created_by null). Strict owner-only — managers / super admins do
+  // NOT get it on someone else's report, and it is not category-gated:
+  // sending a message is not adding/editing a report. For a new report
+  // (editingReportCreatedBy null) this is true, so the button stays
+  // visible while adding.
+  const canWhatsAppReport = (rec: any) =>
+    rec?.created_by == null || rec?.created_by === currentUserId;
   // Full row edit (farmer + batch modal): farmer part follows the
   // farmer rule, batch part follows the Poultry report rule.
   const canFullEditRow = (r: any) =>
@@ -2506,6 +2516,16 @@ export default function VetVisitsPage() {
     vDate: string,
     isFromForm = false
   ) {
+    // WhatsApp ownership gating (also gates the popup below, whose
+    // only setters are these two generators): from the form the
+    // creator is editingReportCreatedBy (null for a new report, so
+    // allowed); from history it is the report row's created_by.
+    if (
+      !canWhatsAppReport({
+        created_by: isFromForm ? editingReportCreatedBy : rep?.created_by,
+      })
+    )
+      return;
     if (isFromForm && !validateBeforeSaleInputs(rep)) return;
 
     const farmer = visit.farmers || {};
@@ -2640,6 +2660,15 @@ ${currentUserProfile.region}`;
     rep: any,
     isFromForm = false
   ) {
+    // WhatsApp ownership gating (see generateBroilerWhatsAppText):
+    // from the form the creator is editingReportCreatedBy (null for a
+    // new report, so allowed); from history it is rep.created_by.
+    if (
+      !canWhatsAppReport({
+        created_by: isFromForm ? editingReportCreatedBy : rep?.created_by,
+      })
+    )
+      return;
     if (isFromForm && !validateLayerInputs(rep)) return;
 
     const farmer = visit.farmers || {};
@@ -7948,20 +7977,24 @@ ${currentUserProfile.region}`;
                     <Trash2 size={15} />
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={() =>
-                    generateBroilerWhatsAppText(
-                      activeReportVisit,
-                      beforeForm,
-                      reportVisitDate,
-                      true
-                    )
-                  }
-                  className="px-3.5 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-bold shadow-sm"
-                >
-                  WhatsApp Msg
-                </button>
+                {canWhatsAppReport({
+                  created_by: editingReportCreatedBy,
+                }) && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      generateBroilerWhatsAppText(
+                        activeReportVisit,
+                        beforeForm,
+                        reportVisitDate,
+                        true
+                      )
+                    }
+                    className="px-3.5 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-bold shadow-sm"
+                  >
+                    WhatsApp Msg
+                  </button>
+                )}
               </div>
 
               <div className="flex gap-2">
@@ -8772,19 +8805,23 @@ ${currentUserProfile.region}`;
                     <Trash2 size={15} />
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={() =>
-                    generateLayerWhatsAppText(
-                      activeReportVisit,
-                      layerForm,
-                      true
-                    )
-                  }
-                  className="px-3.5 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-bold shadow-sm"
-                >
-                  WhatsApp Msg
-                </button>
+                {canWhatsAppReport({
+                  created_by: editingReportCreatedBy,
+                }) && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      generateLayerWhatsAppText(
+                        activeReportVisit,
+                        layerForm,
+                        true
+                      )
+                    }
+                    className="px-3.5 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-bold shadow-sm"
+                  >
+                    WhatsApp Msg
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -9335,19 +9372,21 @@ ${currentUserProfile.region}`;
                                 {getRemarkText(rep) || "-"}
                               </td>
                               <td className="border border-slate-300 px-1.5 py-0.5 text-center whitespace-nowrap">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    generateLayerWhatsAppText(
-                                      selectedHistoryVisit,
-                                      rep,
-                                      false
-                                    )
-                                  }
-                                  className="bg-green-600 text-white px-1.5 py-0.5 rounded text-[10px] font-bold"
-                                >
-                                  WtsApp
-                                </button>
+                                {canWhatsAppReport(rep) && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      generateLayerWhatsAppText(
+                                        selectedHistoryVisit,
+                                        rep,
+                                        false
+                                      )
+                                    }
+                                    className="bg-green-600 text-white px-1.5 py-0.5 rounded text-[10px] font-bold"
+                                  >
+                                    WtsApp
+                                  </button>
+                                )}
                                 {canEditPoultryReport(rep) && (
                                 <button
                                   type="button"
@@ -9515,20 +9554,22 @@ ${currentUserProfile.region}`;
                                     {getRemarkText(rep) || "-"}
                                   </td>
                                   <td className="border border-slate-300 px-1.5 py-0.5 text-center whitespace-nowrap">
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        generateBroilerWhatsAppText(
-                                          selectedHistoryVisit,
-                                          rep,
-                                          rep.visit_date,
-                                          false
-                                        )
-                                      }
-                                      className="bg-green-600 text-white px-1.5 py-0.5 rounded text-[10px] font-bold"
-                                    >
-                                      WtsApp
-                                    </button>
+                                    {canWhatsAppReport(rep) && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          generateBroilerWhatsAppText(
+                                            selectedHistoryVisit,
+                                            rep,
+                                            rep.visit_date,
+                                            false
+                                          )
+                                        }
+                                        className="bg-green-600 text-white px-1.5 py-0.5 rounded text-[10px] font-bold"
+                                      >
+                                        WtsApp
+                                      </button>
+                                    )}
                                     {canEditPoultryReport(rep) && (
                                     <button
                                       type="button"

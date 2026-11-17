@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { Filter, ChevronDown, Stethoscope } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import ExcelJS from "exceljs";
 import SearchableSelect from "../../components/common/SearchableSelect";
@@ -162,9 +164,13 @@ let cachedPageState: {
   sonaliStds: Record<number, any>;
   layerStds: Record<string, any>;
   companies: any[];
+  usersList: any[];
+  currentUserId: string;
+  userProfile: { fullName: string; designation: string; region: string };
   companyFilter: string;
-  selectedCategory: "all" | "Broiler" | "Layer" | "Sonali";
+  selectedCategory: "all" | "Broiler" | "Layer" | "Sonali" | "Fish" | "Cattle";
   reportType: "all" | "before_sale" | "after_sale";
+  userFilter: string;
   upazilaFilter: string;
   agentFilter: string;
   farmerFilter: string;
@@ -180,8 +186,9 @@ let cachedPageState: {
 } | null = null;
 
 export default function ReportsPage() {
+  const navigate = useNavigate();
   const [selectedCategory, setSelectedCategory] = useState<
-    "all" | "Broiler" | "Layer" | "Sonali"
+    "all" | "Broiler" | "Layer" | "Sonali" | "Fish" | "Cattle"
   >(cachedPageState?.selectedCategory || "all");
   const [reportType, setReportType] = useState<
     "all" | "before_sale" | "after_sale"
@@ -195,6 +202,20 @@ export default function ReportsPage() {
   );
   const [_assignedDistricts, setAssignedDistricts] = useState<string[]>(
     cachedPageState?.assignedDistricts || []
+  );
+  const [currentUserId, setCurrentUserId] = useState<string>(
+    cachedPageState?.currentUserId || ""
+  );
+  // Footer lines for the WhatsApp message (same defaults as VisitsPage).
+  const [currentUserProfile, setCurrentUserProfile] = useState(
+    cachedPageState?.userProfile || {
+      fullName: "Officer",
+      designation: "Customer Service Officer",
+      region: "Mymensingh Zone",
+    }
+  );
+  const [usersList, setUsersList] = useState<any[]>(
+    cachedPageState?.usersList || []
   );
 
   const [agents, setAgents] = useState<any[]>(cachedPageState?.agents || []);
@@ -268,6 +289,18 @@ export default function ReportsPage() {
   const [toDate, setToDate] = useState<string>(
     cachedPageState?.toDate || ""
   );
+  const [userFilter, setUserFilter] = useState<string>(
+    cachedPageState?.userFilter || "all"
+  );
+
+  // WhatsApp Popup State (same as VisitsPage)
+  const [whatsappPopupText, setWhatsappPopupText] = useState<string>("");
+  const [copiedWa, setCopiedWa] = useState(false);
+
+  // Mobile filter collapse (UI-only, not cached): on mobile the Top Bar
+  // and Filter Bar hide behind one Filter button; on PC (md+) they stay
+  // open exactly as before.
+  const [showFilters, setShowFilters] = useState(false);
 
   const isFullAccess = userRole === "super_admin" || userRole === "manager";
 
@@ -289,17 +322,51 @@ export default function ReportsPage() {
     let uUpazilas: string[] = [];
     let uDistricts: string[] = [];
 
+    // Hoisted so the cache save at the end of this load can use it.
+    let uProfile = {
+      fullName: "Officer",
+      designation: "Customer Service Officer",
+      region: "Mymensingh Zone",
+    };
+    let uid = "";
+
     if (user) {
-      const { data: uProf } = await supabase
+      uid = user.id;
+      setCurrentUserId(user.id);
+      // Full name / designation / region feed the WhatsApp message
+      // footer (same as VisitsPage). If those columns are missing, fall
+      // back to the plain select so the load never breaks.
+      let uProf: any = null;
+      const { data: uProfData, error: uProfErr } = await supabase
         .from("users")
-        .select("role, upazilas, districts")
+        .select(
+          "role, upazilas, districts, full_name, email, designation, region"
+        )
         .eq("id", user.id)
         .single();
+      if (!uProfErr && uProfData) {
+        uProf = uProfData;
+      } else {
+        const retry = await supabase
+          .from("users")
+          .select("role, upazilas, districts")
+          .eq("id", user.id)
+          .single();
+        uProf = retry.data || null;
+      }
 
       if (uProf) {
         role = uProf.role || "officer";
         uUpazilas = parseList(uProf.upazilas);
         uDistricts = parseList(uProf.districts);
+        uProfile = {
+          fullName:
+            uProf.full_name || uProf.email?.split("@")[0] || "Officer",
+          designation:
+            uProf.designation || "Customer Service Officer (Poultry)",
+          region: uProf.region || "Mymensingh Zone",
+        };
+        setCurrentUserProfile(uProfile);
       }
     }
 
@@ -394,6 +461,20 @@ export default function ReportsPage() {
     }
     setCompanies(companyRows);
 
+    // Users list (for the User filter): try/catch so the page keeps
+    // working if the query fails — the filter then simply has no users.
+    let userRows: any[] = [];
+    try {
+      const { data: usData } = await supabase
+        .from("users")
+        .select("id, full_name, upazilas")
+        .order("full_name");
+      userRows = usData || [];
+    } catch {
+      userRows = [];
+    }
+    setUsersList(userRows);
+
     const allFarmers = (frmData || []).map((f: any) => ({
       ...f,
       farmer_sheds: shedRows.filter(
@@ -480,9 +561,13 @@ export default function ReportsPage() {
       sonaliStds: sMap,
       layerStds: lMap,
       companies: companyRows,
+      usersList: userRows,
+      currentUserId: uid,
+      userProfile: uProfile,
       companyFilter,
       selectedCategory,
       reportType,
+      userFilter,
       upazilaFilter: savedUpazilaFilter,
       agentFilter,
       farmerFilter,
@@ -533,6 +618,254 @@ export default function ReportsPage() {
       layerStds[`any_${w}`] ||
       null
     );
+  }
+
+  // ---------- WhatsApp message builders (copied from VisitsPage,
+  // adapted to the enriched report row: r.visit is the visit, r is the
+  // report, r.farmer / r.agent / r.subAgentName / r.shedDisplayName
+  // carry the rest). They build the message and open the popup below;
+  // they never open wa.me directly. ----------
+  function buildWhatsAppHeaderLine(
+    hatcheryName: string,
+    feedCompName: string,
+    categoryName: string,
+    defaultTitle: string
+  ): string {
+    const hClean = String(hatcheryName || "Nourish").trim();
+    const fClean = String(feedCompName || "Nourish").trim();
+    const bothNourish =
+      hClean.toLowerCase().includes("nourish") &&
+      fClean.toLowerCase().includes("nourish");
+
+    if (bothNourish) {
+      return `*${defaultTitle}*`;
+    }
+    const catLabel = categoryName || "Broiler";
+    if (catLabel.toLowerCase() === "layer") {
+      return `*${hClean} Layer chick and ${fClean} layer feed performance report:*`;
+    }
+    return `*${hClean} ${catLabel} chick and ${fClean} ${catLabel} feed Performance Report:*`;
+  }
+
+  // WhatsApp Agent line: a farmer under a sub-agent shows the sub-agent
+  // ("sub-agent : Name") instead of the mother agent; direct-agent
+  // farmers show the agent name as before.
+  function getWhatsAppAgentLine(
+    agent: any,
+    subAgentName?: string
+  ): string {
+    const subName = String(subAgentName || "").trim();
+    return subName ? `sub-agent : ${subName}` : agent?.agent_name || "-";
+  }
+
+  function generateBroilerWhatsAppText(r: any) {
+    const visit = r.visit || {};
+    const rep = r;
+    const farmer = r.farmer || {};
+    const agent = r.agent || {};
+    const vDate = r.visit_date || "";
+    const catName = r.category || visit.category || "Broiler";
+    const ageDays = calcAgeDays(visit.hatch_date, vDate);
+    const std = getMeatStd(catName, ageDays);
+    const hasStd = Boolean(std && Number(std.weight) > 0);
+
+    // After-sale rows store weight / mortality under different field
+    // names, and feed per bird is derived — fall back the same way the
+    // table does so the message shows real values for both kinds.
+    const tBirds = Number(visit.t_birds || 0);
+    const feedGmFallback =
+      tBirds > 0
+        ? ((Number(rep.feed_consumption_kg || 0) * 1000) / tBirds).toFixed(1)
+        : 0;
+    const actualWt = Number(rep.weight_gm_b ?? rep.weight ?? 0);
+    const stdWt = Number(std?.weight || 0);
+    const wtDiff = actualWt - stdWt;
+    const wtDiffText =
+      hasStd && stdWt > 0
+        ? `${Math.abs(wtDiff).toFixed(0)}gm ${wtDiff >= 0 ? "more" : "less"}`
+        : "";
+
+    const actualFeed = Number(rep.feed_gm_b ?? feedGmFallback ?? 0);
+    const stdFeed = Number(std?.feed_intake || 0);
+    const feedDiff = actualFeed - stdFeed;
+    const feedDiffText =
+      hasStd && stdFeed > 0
+        ? `${Math.abs(feedDiff).toFixed(0)}gm ${
+            feedDiff >= 0 ? "more" : "less"
+          }`
+        : "";
+
+    const findingsList: string[] = [];
+    if (rep.indigestion && String(rep.indigestion).trim() !== "") {
+      findingsList.push(
+        `${findingsList.length + 1}. Indigestion (%) - ${rep.indigestion}%`
+      );
+    }
+    if (rep.orange_feces && String(rep.orange_feces).trim() !== "") {
+      findingsList.push(
+        `${findingsList.length + 1}. Orange Faeces (%) - ${rep.orange_feces}%`
+      );
+    }
+    if (rep.watery_feces && String(rep.watery_feces).trim() !== "") {
+      findingsList.push(
+        `${findingsList.length + 1}. Watery Faeces (%) - ${rep.watery_feces}%`
+      );
+    }
+    if (rep.uneven && String(rep.uneven).trim() !== "") {
+      findingsList.push(
+        `${findingsList.length + 1}. Uneven (%) - ${rep.uneven}%`
+      );
+    }
+
+    const findingsBlock =
+      findingsList.length > 0
+        ? `--------------------------------------------\nFindings :\n${findingsList.join(
+            "\n"
+          )}\n`
+        : "";
+
+    const rmkText = getRemarkText(rep);
+    const remarksBlock = rmkText
+      ? `--------------------------------------------\nRemarks: ${rmkText}\n`
+      : "";
+
+    const headerTitle = buildWhatsAppHeaderLine(
+      visit.hatchery || "Nourish",
+      rep.feed_company || "Nourish",
+      catName,
+      `${catName} Farm visit Observation Report`
+    );
+
+    const actualFarmerName = r.shedDisplayName || visit.batch_label || "-";
+
+    const weightSection = hasStd
+      ? `Body Weight - ${actualWt} gm/bird.\nStd - ${stdWt} gm/bird.`
+      : `Body Weight - ${actualWt} gm/bird.`;
+
+    const feedSection = hasStd
+      ? `Feed Intake - ${actualFeed} gm/bird.\nStd - ${stdFeed} gm/bird.`
+      : `Feed Intake - ${actualFeed} gm/bird.`;
+
+    const fcrSection = hasStd
+      ? `FCR (without mortality): ${rep.fcr_w_out_m || "-"}\nStd - ${
+          std?.fcr || "-"
+        }\nFCR (with mortality): ${rep.fcr_with_m || "-"}`
+      : `FCR (without mortality): ${
+          rep.fcr_w_out_m || "-"
+        }\nFCR (with mortality): ${rep.fcr_with_m || "-"}`;
+
+    const summaryLine =
+      hasStd && wtDiffText && feedDiffText
+        ? `\n*Body weight (${wtDiffText}) than standard and Feed intake (${feedDiffText}) than standard*\n`
+        : "";
+
+    const msg = `Assalamu Alaikum sir.
+${headerTitle}
+Visit Date: ${formatDmy(vDate)}
+
+Agent: ${getWhatsAppAgentLine(agent, r.subAgentName)}
+Farmer Name - ${actualFarmerName}
+Farm Address - ${[farmer.village, farmer.upazila].filter(Boolean).join(", ")}
+--------------------------------------------
+Hatchery - ${visit.hatchery || "-"}
+Breed - ${visit.breed || "-"}
+H.Date: ${formatDmy(visit.hatch_date)}
+--------------------------------------------
+Total Bird (Pcs) - ${visit.t_birds || 0}
+Age (Day) - ${ageDays} days
+Mortality (Pcs) - ${rep.mortality_pcs ?? rep.mortality ?? 0} pcs
+
+${weightSection}
+
+${feedSection}
+
+${fcrSection}
+--------------------------------------------
+Feed - ${rep.feed_company || "-"}
+Feed Type - ${rep.feed_type || "-"}
+MFG: ${rep.pro_date ? formatDmy(rep.pro_date) : "-"}
+Batch: ${rep.batch_no || "-"}
+${findingsBlock}${remarksBlock}${summaryLine}
+Thanks.
+${currentUserProfile.fullName}
+${currentUserProfile.designation}
+${currentUserProfile.region}`;
+
+    setCopiedWa(false);
+    setWhatsappPopupText(msg);
+  }
+
+  // Layer WhatsApp Message: Disease line included, no Mortality line.
+  function generateLayerWhatsAppText(r: any) {
+    const visit = r.visit || {};
+    const rep = r;
+    const farmer = r.farmer || {};
+    const agent = r.agent || {};
+    const vDate = rep.visit_date || "";
+    const ageWks = Math.max(
+      1,
+      Math.floor(calcAgeDays(visit.hatch_date, vDate) / 7)
+    );
+
+    const breedName = visit.breed || rep.breed || "Shaver Star Cross 579 Brown";
+    const std = getLayerStd(breedName, ageWks);
+
+    const hatcheryName = visit.hatchery || rep.hatchery || "Nourish";
+    const feedCompName = rep.feed_company || "Nourish";
+
+    const headerTitle = buildWhatsAppHeaderLine(
+      hatcheryName,
+      feedCompName,
+      "Layer",
+      "Layer farm visit report"
+    );
+
+    const actualFarmerName = r.shedDisplayName || visit.batch_label || "-";
+    const displayBirds = Number(visit.t_birds || 0);
+
+    const rmkText = getRemarkText(rep);
+    const remarksLine = rmkText ? `\nRemarks: ${rmkText}\n` : "";
+
+    const msg = `Assalamu Alaikum sir.
+${headerTitle}
+Visit Date: ${formatDmy(vDate)}
+
+Agent Name: ${getWhatsAppAgentLine(agent, r.subAgentName)}
+Farmer: ${actualFarmerName}
+Address: ${[farmer.village, farmer.upazila].filter(Boolean).join(", ")}
+
+Hatchery: ${hatcheryName}
+Breed: ${breedName}
+H.Date: ${formatDmy(visit.hatch_date)}
+
+T.B.: ${displayBirds}
+Age: ${ageWks} weeks
+
+Weight: ${rep.b_weight_g || 0} gm
+Std Weight: ${std?.weight || "-"} gm
+
+Feed Intake(gm/birds): ${rep.feed_intake_g || 0} gm
+Std Feed: ${std?.feed_bird_day || "-"} gm
+
+Eggs Production: ${rep.egg_production || 0}%
+Std Egg Production: ${std?.egg_production || "-"}%
+
+Egg weight: ${rep.egg_weight || 0} gm
+Std Egg weight: ${std?.egg_weight || "-"} gm
+
+Feed: ${rep.feed_company || "-"}
+Type: ${rep.feed_type || "-"}
+MFG: ${rep.pro_date ? formatDmy(rep.pro_date) : "-"}
+Batch No.: ${rep.batch_no || "-"}
+Disease: ${rep.disease || "-"}
+${remarksLine}
+Thanks.
+${currentUserProfile.fullName}
+${currentUserProfile.designation}
+${currentUserProfile.region}`;
+
+    setCopiedWa(false);
+    setWhatsappPopupText(msg);
   }
 
   function handleMonthSelect(ym: string) {
@@ -599,6 +932,17 @@ export default function ReportsPage() {
     if (agentFilter !== "all" && String(f.agent_id) !== String(agentFilter))
       return false;
     return true;
+  });
+
+  // Users visible in the User filter: full-access (manager / super admin)
+  // sees every user; an officer sees users sharing at least one upazila
+  // with their own assigned upazilas — including themselves. An officer
+  // with no assigned upazilas is unrestricted, same as the area scoping.
+  const visibleUsers = usersList.filter((u: any) => {
+    if (isFullAccess || assignedUpazilas.length === 0) return true;
+    if (String(u.id) === String(currentUserId)) return true;
+    const uUpa = parseList(u.upazilas);
+    return uUpa.some((x: string) => assignedUpazilas.includes(x));
   });
 
   // Combine raw reports based on selectedCategory and reportType
@@ -754,6 +1098,15 @@ export default function ReportsPage() {
       ) {
         return false;
       }
+      // User filter: keeps only rows this user added. AND-ed with the
+      // area scoping above, so it never shows reports outside the
+      // viewer's own assigned area.
+      if (
+        userFilter !== "all" &&
+        String(item.created_by || "") !== String(userFilter)
+      ) {
+        return false;
+      }
       // Company filter: "Nourish" by default; "__others__" = every company
       // except Nourish; otherwise a single company name. If no company
       // named Nourish exists in the loaded list, the filter is skipped so
@@ -778,9 +1131,23 @@ export default function ReportsPage() {
       if (toDate && vDate > toDate) return false;
       return true;
     })
-    .sort((a, b) =>
-      String(b.visit_date || "").localeCompare(String(a.visit_date || ""))
-    );
+    // Newest first: visit_date desc, then created_at desc (latest report
+    // of the same date on top), then id desc as a final deterministic
+    // tiebreak for rows with equal or missing created_at.
+    .sort((a, b) => {
+      const d = String(b.visit_date || "").localeCompare(
+        String(a.visit_date || "")
+      );
+      if (d !== 0) return d;
+      const c = String(b.created_at || "").localeCompare(
+        String(a.created_at || "")
+      );
+      if (c !== 0) return c;
+      const ai = Number(a.id);
+      const bi = Number(b.id);
+      if (!isNaN(ai) && !isNaN(bi)) return bi - ai;
+      return String(b.id ?? "").localeCompare(String(a.id ?? ""));
+    });
 
   // Feed Type options come from the rows left AFTER all other filters,
   // so the dropdown only ever lists types actually on screen.
@@ -874,6 +1241,17 @@ export default function ReportsPage() {
     );
     if (!exists) setCompanyFilter("Nourish");
   }, [companies, companyFilter]);
+
+  // Same for the user dropdown: if the picked user disappears from the
+  // visible list, fall back to All Users.
+  useEffect(() => {
+    if (userFilter === "all") return;
+    if (usersList.length === 0) return;
+    const exists = visibleUsers.some(
+      (u: any) => String(u.id) === String(userFilter)
+    );
+    if (!exists) setUserFilter("all");
+  }, [visibleUsers, userFilter, usersList]);
 
   // Collect Available Months from all reports
   const allMonths = Array.from(
@@ -1274,10 +1652,39 @@ async function saveBufferOrBlob(
 
   return (
     <div className="p-3 sm:p-5 max-w-7xl mx-auto space-y-3.5">
+      {/* Filter Toggle Button — mobile only; on PC (md+) both filter sections stay open */}
+      <button
+        type="button"
+        onClick={() => setShowFilters((o) => !o)}
+        className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold shadow-sm transition-all duration-300 md:hidden ${
+          showFilters
+            ? "bg-slate-800 text-white"
+            : "bg-emerald-600 hover:bg-emerald-700 text-white"
+        }`}
+      >
+        <Filter size={13} />
+        <span>Filter</span>
+        <ChevronDown
+          size={14}
+          className={`transition-transform duration-300 ${
+            showFilters ? "rotate-180" : "rotate-0"
+          }`}
+        />
+      </button>
+
+      {/* Top Bar + Filter Bar — collapsed on mobile, forced open at md+ */}
+      <div
+        className={`grid transition-all duration-300 ease-in-out md:grid-rows-[1fr] md:opacity-100 md:translate-y-0 md:pointer-events-auto ${
+          showFilters
+            ? "grid-rows-[1fr] opacity-100 translate-y-0"
+            : "grid-rows-[0fr] opacity-0 -translate-y-1 pointer-events-none"
+        }`}
+      >
+        <div className="overflow-hidden space-y-3.5">
       {/* Top Bar: All + Category Tabs & Report Type Tabs */}
       <div className="flex flex-wrap items-center justify-between gap-2.5 bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 shadow-sm">
         <div className="flex flex-wrap items-center gap-1.5">
-          {(["all", "Broiler", "Layer", "Sonali"] as const).map((cat) => (
+          {(["all", "Broiler", "Layer", "Sonali", "Fish", "Cattle"] as const).map((cat) => (
             <button
               key={cat}
               type="button"
@@ -1348,7 +1755,7 @@ async function saveBufferOrBlob(
       <div className="bg-white border border-slate-300 rounded-xl p-2.5 shadow-sm">
         <div
           className={`grid grid-cols-2 sm:grid-cols-3 ${
-            isMultiAge ? "lg:grid-cols-11" : "lg:grid-cols-10"
+            isMultiAge ? "lg:grid-cols-12" : "lg:grid-cols-11"
           } gap-2 items-center text-xs`}
         >
           {/* Company Dropdown — Nourish first (default), then All Others, then the company list */}
@@ -1605,6 +2012,24 @@ async function saveBufferOrBlob(
             </label>
           </div>
 
+          {/* User Dropdown — after Date, before Reset; only users sharing
+              an upazila with the viewer (managers/admins see all) */}
+          <SearchableSelect
+            value={userFilter}
+            onChange={setUserFilter}
+            placeholder="All Users"
+            options={[
+              {
+                value: "all",
+                label: `All Users (${visibleUsers.length})`,
+              },
+              ...visibleUsers.map((u: any) => ({
+                value: String(u.id),
+                label: String(u.full_name || u.id),
+              })),
+            ]}
+          />
+
           {/* Reset Button */}
           <button
             type="button"
@@ -1618,6 +2043,7 @@ async function saveBufferOrBlob(
               setAgentFilter("all");
               setFarmerFilter("all");
               setFeedTypeFilter("all");
+              setUserFilter("all");
               setIsMultiAge(false);
               setAgeFilter("all");
               setAgeFrom("");
@@ -1631,6 +2057,8 @@ async function saveBufferOrBlob(
           >
             Reset
           </button>
+        </div>
+      </div>
         </div>
       </div>
 
@@ -1683,6 +2111,7 @@ async function saveBufferOrBlob(
                     <th className="border border-slate-300 px-2.5 py-1.5 text-left">Disease / Vaccine</th>
                   )}
                   <th className="border border-slate-300 px-2.5 py-1.5 text-left">Remarks</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-left">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -1868,11 +2297,90 @@ async function saveBufferOrBlob(
                       <td className="border border-slate-300 px-2.5 py-1">
                         {getRemarkText(r) || "-"}
                       </td>
+                      <td className="border border-slate-300 px-2.5 py-1">
+                        <div className="flex items-center gap-1">
+                          
+                          {(r.created_by === currentUserId ||
+                            r.created_by == null) && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                isLayer
+                                  ? generateLayerWhatsAppText(r)
+                                  : generateBroilerWhatsAppText(r)
+                              }
+                              className="bg-green-600 hover:bg-green-700 text-white px-2 py-0.5 rounded text-[11px] font-semibold whitespace-nowrap"
+                            >
+                              WtsApp
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              navigate(
+                                r.visit?.id
+                                  ? `/visits?focus=${r.visit.id}&focusFarmer=${r.farmer_id}`
+                                  : `/visits?focusFarmer=${r.farmer_id}`
+                              )
+                            }
+                            title="Visit"
+                            aria-label="Visit"
+                            className="bg-violet-600 hover:bg-violet-700 text-white px-2 py-0.5 rounded text-[11px] font-semibold inline-flex items-center gap-0.5"
+                          >
+                            <Stethoscope size={11} /> Visit
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+      {/* WhatsApp Popup (same as VisitsPage) */}
+      {whatsappPopupText && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-3">
+          <div className="bg-white rounded-2xl p-5 w-full max-w-md shadow-2xl border border-slate-300 space-y-3">
+            <div className="flex justify-between items-center border-b pb-2">
+              <h3 className="text-sm font-bold text-slate-800">
+                WhatsApp Observation Report
+              </h3>
+              <button
+                onClick={() => setWhatsappPopupText("")}
+                className="text-slate-500 font-bold"
+              >
+                ✖
+              </button>
+            </div>
+
+            <textarea
+              readOnly
+              rows={16}
+              value={whatsappPopupText}
+              className="w-full border border-slate-300 rounded-xl p-3 text-xs font-mono bg-slate-50 text-slate-800 outline-none"
+            />
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setWhatsappPopupText("")}
+                className="px-4 py-1.5 rounded-lg bg-slate-200 text-slate-700 text-xs font-semibold"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(whatsappPopupText);
+                  setCopiedWa(true);
+                }}
+                className="px-4 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-bold shadow-sm"
+              >
+                {copiedWa ? "✓ Copied!" : "Copy Message"}
+              </button>
+            </div>
           </div>
         </div>
       )}

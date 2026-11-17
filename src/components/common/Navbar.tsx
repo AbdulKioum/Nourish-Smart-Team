@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { FaBell, FaBars, FaTimes, FaHome } from "react-icons/fa";
+import { FaBell, FaBars, FaTimes, FaHome, FaSyncAlt } from "react-icons/fa";
 import { LocalNotifications } from "@capacitor/local-notifications";
 import { Capacitor } from "@capacitor/core";
 import { supabase } from "../../lib/supabase";
@@ -695,6 +695,14 @@ export default function Navbar({
           >
             <FaHome size={16} />
           </Link>
+          <button
+            onClick={() => window.location.reload()}
+            className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-600 flex items-center justify-center transition active:scale-95 shrink-0"
+            title="Refresh"
+            aria-label="Refresh"
+          >
+            <FaSyncAlt size={16} />
+          </button>
         </div>
 
         <div className="flex items-center">

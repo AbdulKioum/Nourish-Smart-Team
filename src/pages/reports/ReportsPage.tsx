@@ -2064,15 +2064,15 @@ async function saveBufferOrBlob(
 
       {/* Flat Reports Table (newest first) */}
       {loading ? (
-        <div className="bg-white border border-slate-300 rounded-xl p-8 text-center text-xs text-slate-500">
+        <div className="bg-white border-y sm:border border-slate-300 rounded-none sm:rounded-xl mx-[-12px] sm:mx-0 p-8 text-center text-xs text-slate-500">
           Loading reports...
         </div>
       ) : filteredReports.length === 0 ? (
-        <div className="bg-white border border-slate-300 rounded-xl p-8 text-center text-xs text-slate-400">
+        <div className="bg-white border-y sm:border border-slate-300 rounded-none sm:rounded-xl mx-[-12px] sm:mx-0 p-8 text-center text-xs text-slate-400">
           No reports found for the selected filters.
         </div>
       ) : (
-        <div className="bg-white border border-slate-300 rounded-xl overflow-hidden shadow-sm">
+        <div className="bg-white border-y sm:border border-slate-300 rounded-none sm:rounded-xl mx-[-12px] sm:mx-0 overflow-hidden shadow-sm">
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-xs whitespace-nowrap">
               <thead className="bg-slate-200">
@@ -2299,21 +2299,6 @@ async function saveBufferOrBlob(
                       </td>
                       <td className="border border-slate-300 px-2.5 py-1">
                         <div className="flex items-center gap-1">
-                          
-                          {(r.created_by === currentUserId ||
-                            r.created_by == null) && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                isLayer
-                                  ? generateLayerWhatsAppText(r)
-                                  : generateBroilerWhatsAppText(r)
-                              }
-                              className="bg-green-600 hover:bg-green-700 text-white px-2 py-0.5 rounded text-[11px] font-semibold whitespace-nowrap"
-                            >
-                              WtsApp
-                            </button>
-                          )}
                           <button
                             type="button"
                             onClick={() =>
@@ -2329,6 +2314,20 @@ async function saveBufferOrBlob(
                           >
                             <Stethoscope size={11} /> Visit
                           </button>
+                          {(r.created_by === currentUserId ||
+                            r.created_by == null) && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                isLayer
+                                  ? generateLayerWhatsAppText(r)
+                                  : generateBroilerWhatsAppText(r)
+                              }
+                              className="bg-green-600 hover:bg-green-700 text-white px-2 py-0.5 rounded text-[11px] font-semibold whitespace-nowrap"
+                            >
+                              WhatsApp Msg
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

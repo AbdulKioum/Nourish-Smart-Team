@@ -697,11 +697,11 @@ export default function Navbar({
           </Link>
           <button
             onClick={() => window.location.reload()}
-            className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-600 flex items-center justify-center transition active:scale-95 shrink-0"
+            className="w-6 h-6 rounded-lg bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-600 flex items-center justify-center transition active:scale-95 shrink-0"
             title="Refresh"
             aria-label="Refresh"
           >
-            <FaSyncAlt size={16} />
+            <FaSyncAlt size={11} />
           </button>
         </div>
 

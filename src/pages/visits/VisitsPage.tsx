@@ -5797,7 +5797,7 @@ ${currentUserProfile.region}`;
 
       {/* Agent-wise Table */}
       {filteredAgentsList.length === 0 ? (
-        <div className="bg-white border border-slate-300 rounded-xl p-8 text-center text-xs text-slate-400">
+        <div className="bg-white border-y sm:border border-slate-300 rounded-none sm:rounded-xl mx-[-12px] sm:mx-0 p-8 text-center text-xs text-slate-400">
           {_loading ? "Loading..." : "No farmers found for the selected filter."}
         </div>
       ) : (
@@ -5809,7 +5809,7 @@ ${currentUserProfile.region}`;
           return (
             <div
               key={idx}
-              className="bg-white border border-slate-300 rounded-xl shadow-sm overflow-hidden"
+              className="bg-white border-y sm:border border-slate-300 rounded-none sm:rounded-xl shadow-sm overflow-hidden mx-[-12px] sm:mx-0"
             >
               {/* Agent Header */}
               <div className="bg-slate-100 px-3 py-1.5 border-b border-slate-300 flex flex-wrap justify-between items-center gap-2">

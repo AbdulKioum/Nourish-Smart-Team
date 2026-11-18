@@ -56,13 +56,34 @@ function isNetworkFailure(error: any): boolean {
   );
 }
 
+// PostgREST returns at most 1000 rows per request by default, so a single
+// select("*") only ever caches the first 1000 rows of a big table
+// (unions has 4542). Page through the whole table in 1000-row chunks.
+const PAGE_SIZE = 1000;
+const MAX_PAGES = 50;
+
+async function fetchFullTable(table: string): Promise<any[] | null> {
+  const all: any[] = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const from = page * PAGE_SIZE;
+    const { data, error } = await rawSupabase
+      .from(table)
+      .select("*")
+      .range(from, from + PAGE_SIZE - 1);
+    if (error || !Array.isArray(data)) return null;
+    all.push(...data);
+    if (data.length < PAGE_SIZE) break;
+  }
+  return all;
+}
+
 export async function pullAllTablesToLocal(): Promise<boolean> {
   if (!navigator.onLine) return false;
   try {
     await Promise.all(
       SYNC_TABLES.map(async (table) => {
-        const { data, error } = await rawSupabase.from(table).select("*");
-        if (!error && data) {
+        const data = await fetchFullTable(table);
+        if (data) {
           await set(`table_${table}`, data);
         }
       })
@@ -85,8 +106,8 @@ async function refreshTableInBackground(table: string): Promise<void> {
   if (!navigator.onLine || refreshingTables.has(table)) return;
   refreshingTables.add(table);
   try {
-    const { data, error } = await rawSupabase.from(table).select("*");
-    if (!error && Array.isArray(data)) {
+    const data = await fetchFullTable(table);
+    if (Array.isArray(data)) {
       await set(`table_${table}`, data);
       window.dispatchEvent(new CustomEvent("fams-data-synced"));
     }

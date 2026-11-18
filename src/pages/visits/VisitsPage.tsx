@@ -885,6 +885,13 @@ export default function VetVisitsPage() {
   const [focusReportKind, setFocusReportKind] = useState<string | null>(
     null
   );
+  // Which button a focus landing should indicate: "history" when coming
+  // from a ReportsPage row (focusReport present), "after_sale" when coming
+  // from the navbar notification Sold button (action=after_sale), null
+  // otherwise (e.g. FarmersPage Visit sends focusFarmer only — no ring).
+  const [focusMode, setFocusMode] = useState<
+    "history" | "after_sale" | null
+  >(null);
   const historyAutoOpenedRef = useRef(false);
 
   const [visitReportMeta, setVisitReportMeta] = useState<
@@ -1137,11 +1144,18 @@ export default function VetVisitsPage() {
     const farmerFid = focusParams.get("focusFarmer");
     const repId = focusParams.get("focusReport");
     const repKind = focusParams.get("focusKind");
+    const act = focusParams.get("action");
     if (!fid && !farmerFid) return;
     if (fid) setFocusVisitId(fid);
     if (farmerFid) setFocusFarmerId(farmerFid);
     if (repId) setFocusReportId(repId);
     if (repKind) setFocusReportKind(repKind);
+    // Report landing wins: its ring sits on History and the History modal
+    // auto-opens. Notification Sold (action=after_sale, no report) rings
+    // the After Sale button instead. Anything else gets no ring.
+    if (repId) setFocusMode("history");
+    else if (act === "after_sale") setFocusMode("after_sale");
+    else setFocusMode(null);
     setSelectedCompany("all");
     setSelectedUpazila("all");
     setSelectedAgent("all");
@@ -1153,18 +1167,24 @@ export default function VetVisitsPage() {
   useEffect(() => {
     if ((!focusVisitId && !focusFarmerId) || _loading) return;
     const t = setTimeout(() => {
+      // Notification Sold landings scroll to the After Sale button;
+      // report landings scroll to the History button, as before.
       const el =
         (focusVisitId &&
-          (document.getElementById("history-btn-" + focusVisitId) ||
-            document.getElementById("after-sale-btn-" + focusVisitId) ||
-            document.getElementById("visit-row-" + focusVisitId))) ||
+          (focusMode === "after_sale"
+            ? document.getElementById(
+                "after-sale-btn-" + focusVisitId
+              ) || document.getElementById("visit-row-" + focusVisitId)
+            : document.getElementById("history-btn-" + focusVisitId) ||
+              document.getElementById("after-sale-btn-" + focusVisitId) ||
+              document.getElementById("visit-row-" + focusVisitId))) ||
         (focusFarmerId &&
           document.querySelector(`[data-farmer-id="${focusFarmerId}"]`)) ||
         null;
       el?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 400);
     return () => clearTimeout(t);
-  }, [focusVisitId, focusFarmerId, statusFarmers, _loading]);
+  }, [focusVisitId, focusFarmerId, focusMode, statusFarmers, _loading]);
 
   // Coming from a ReportsPage row: once the data is ready, open that
   // batch's History so the exact report is indicated inside it. Only
@@ -1484,13 +1504,23 @@ export default function VetVisitsPage() {
     }
     setAllAgents(agData || []);
 
-    const nourish = comps.find((c) =>
-      c.company_name?.toLowerCase().includes("nourish")
-    );
-    if (nourish) {
-      setSelectedCompany(String(nourish.id));
-    } else if (comps.length > 0) {
-      setSelectedCompany(String(comps[0].id));
+    // Focus landing (notification Sold / report Visit / farmer Visit):
+    // the param effect already set the company filter to "all" so the
+    // focused farmer is visible whatever company it belongs to — do not
+    // clobber it back to Nourish here. Normal visits still default to
+    // Nourish, as before.
+    const focusParams = new URLSearchParams(location.search);
+    const hasFocus =
+      focusParams.get("focus") || focusParams.get("focusFarmer");
+    if (!hasFocus) {
+      const nourish = comps.find((c) =>
+        c.company_name?.toLowerCase().includes("nourish")
+      );
+      if (nourish) {
+        setSelectedCompany(String(nourish.id));
+      } else if (comps.length > 0) {
+        setSelectedCompany(String(comps[0].id));
+      }
     }
 
     const vetResult = await loadVetVisits(uUpazilas, uDistricts);
@@ -6003,6 +6033,13 @@ ${currentUserProfile.region}`;
                         : row.shedDisplayName || farmer.farmer_name || "N/A";
                       const isFocused =
                         isBatch && focusVisitId === String(visit.id);
+                      // Pulsing ring on the Take Report button, only for
+                      // notification Sold landings (focusMode after_sale).
+                      // Report landings ring the History button instead.
+                      const afterBtnRing =
+                        isFocused && focusMode === "after_sale"
+                          ? "ring-4 ring-yellow-400 animate-pulse"
+                          : "";
                       const days = row.daysSinceSale ?? farmer.daysSinceSale;
                       const daysText =
                         days === null || days === undefined
@@ -6202,7 +6239,7 @@ ${currentUserProfile.region}`;
                                     onClick={() =>
                                       openReportModal("layer_report", visit)
                                     }
-                                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-0.5 rounded text-[10px] font-semibold"
+                                    className={`bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-0.5 rounded text-[10px] font-semibold ${afterBtnRing}`}
                                   >
                                     Layer Report
                                   </button>
@@ -6214,7 +6251,7 @@ ${currentUserProfile.region}`;
                                       onClick={() =>
                                         openReportModal("after_sale", visit)
                                       }
-                                      className="bg-red-600 hover:bg-red-700 text-white px-2 py-0.5 rounded text-[10px] font-bold shadow-sm"
+                                      className={`bg-red-600 hover:bg-red-700 text-white px-2 py-0.5 rounded text-[10px] font-bold shadow-sm ${afterBtnRing}`}
                                     >
                                       After Sale
                                     </button>
@@ -6245,7 +6282,7 @@ ${currentUserProfile.region}`;
                                       onClick={() =>
                                         openReportModal("after_sale", visit)
                                       }
-                                      className="bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300 px-1.5 py-0.5 rounded text-[10px]"
+                                      className={`bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300 px-1.5 py-0.5 rounded text-[10px] ${afterBtnRing}`}
                                     >
                                       After Sale
                                     </button>
@@ -6293,7 +6330,9 @@ ${currentUserProfile.region}`;
                                   ? "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 cursor-pointer"
                                   : "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-60"
                               } ${
-                                isFocused && hasVisitHistory
+                                isFocused &&
+                                focusMode === "history" &&
+                                hasVisitHistory
                                   ? "ring-4 ring-yellow-400 animate-pulse"
                                   : ""
                               }`}

@@ -302,6 +302,12 @@ export default function ReportsPage() {
   // open exactly as before.
   const [showFilters, setShowFilters] = useState(false);
 
+  // Selected report row (UI-only, not cached): tapping a row highlights it
+  // so it stays identifiable while scrolling left-right on the phone.
+  const [selectedReportKey, setSelectedReportKey] = useState<string | null>(
+    null
+  );
+
   const isFullAccess = userRole === "super_admin" || userRole === "manager";
 
   useEffect(() => {
@@ -2095,7 +2101,7 @@ async function saveBufferOrBlob(
                   <th className="border border-slate-300 px-2.5 py-1.5 text-left">Sl</th>
                   <th className="border border-slate-300 px-2.5 py-1.5 text-left">Visit Date</th>
                   <th className="border border-slate-300 px-2.5 py-1.5 text-left">Agent</th>
-                  <th className="border border-slate-300 px-2.5 py-1.5 text-left">Farmer</th>
+                  <th className="border border-slate-300 px-2.5 py-1.5 text-left md:sticky md:left-0 md:z-20 md:bg-slate-200">Farmer</th>
                   <th className="border border-slate-300 px-2.5 py-1.5 text-left">Category</th>
                   <th className="border border-slate-300 px-2.5 py-1.5 text-left">Type</th>
                   <th className="border border-slate-300 px-2.5 py-1.5 text-left">Hatchery</th>
@@ -2150,9 +2156,21 @@ async function saveBufferOrBlob(
                   return (
                     <tr
                       key={`${r._repKind}_${r.id ?? idx}`}
+                      onClick={() =>
+                        setSelectedReportKey((prev) =>
+                          prev === `${r._repKind}_${r.id ?? idx}`
+                            ? null
+                            : `${r._repKind}_${r.id ?? idx}`
+                        )
+                      }
                       className={`${
-                        idx % 2 === 1 ? "bg-slate-100" : "bg-white"
-                      } hover:bg-emerald-100 leading-tight`}
+                        selectedReportKey ===
+                        `${r._repKind}_${r.id ?? idx}`
+                          ? "bg-emerald-200 hover:bg-emerald-200"
+                          : idx % 2 === 1
+                            ? "bg-slate-100 hover:bg-emerald-100"
+                            : "bg-white hover:bg-emerald-100"
+                      } cursor-pointer leading-tight`}
                     >
                       <td className="border border-slate-300 px-2.5 py-1 text-center">
                         {idx + 1}
@@ -2173,7 +2191,7 @@ async function saveBufferOrBlob(
                         )}
                       </td>
                       <td
-                        className="border border-slate-300 px-2.5 py-1 font-semibold"
+                        className="border border-slate-300 px-2.5 py-1 font-semibold md:sticky md:left-0 md:z-10 md:bg-inherit"
                         title={r.shedDisplayName}
                       >
                         <div>{r.farmer?.farmer_name || "-"}</div>

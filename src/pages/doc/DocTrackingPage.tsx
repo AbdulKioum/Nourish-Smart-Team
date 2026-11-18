@@ -1243,8 +1243,12 @@ export default function DocTrackingPage() {
     }
 
     if (matchedFeedAgentIds.length > 0) {
-      const underFeedAgent = farmersList.filter((f) =>
-        matchedFeedAgentIds.includes(Number(f.agent_id))
+      // Feed agents are mother agents; a sub-agent farmer carries
+      // agent_id = the parent agent but belongs to its sub-agent only,
+      // so it must not appear in the mother agent's farmer list.
+      const underFeedAgent = farmersList.filter(
+        (f) =>
+          matchedFeedAgentIds.includes(Number(f.agent_id)) && !f.sub_agent_id
       );
       if (underFeedAgent.length > 0) return underFeedAgent;
     }
@@ -3350,7 +3354,9 @@ export default function DocTrackingPage() {
     if (otherAgentId.startsWith("sub-")) {
       return String(f.sub_agent_id) === otherAgentId.slice(4);
     }
-    return String(f.agent_id) === String(otherAgentId);
+    // Plain (mother) agent: a sub-agent farmer carries agent_id = the
+    // parent agent, but belongs to its sub-agent only — exclude it here.
+    return String(f.agent_id) === String(otherAgentId) && !f.sub_agent_id;
   });
 
   // Upazila options: agents' upazilas + sub-agents' OWN upazilas, so a

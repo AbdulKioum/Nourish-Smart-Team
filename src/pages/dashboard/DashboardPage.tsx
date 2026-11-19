@@ -1,15 +1,18 @@
-import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useState, type ComponentType, type ReactNode } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "../../lib/supabase";
 import {
-  FaClipboardList,
-  FaStethoscope,
   FaChartBar,
-  FaUserFriends,
+  FaTractor,
   FaUsers,
   FaCalendarAlt,
   FaMapMarkerAlt,
+  FaRoute,
+  FaFish,
+  FaPaw,
+  FaStethoscope,
 } from "react-icons/fa";
+import { GiChicken, GiRooster } from "react-icons/gi";
 
 function parseArray(field: any): string[] {
   if (!field) return [];
@@ -27,6 +30,28 @@ function parseArray(field: any): string[] {
   }
   return [];
 }
+// Visit picker types: one entry per farm category.
+type VisitType = {
+  key: string;
+  label: string;
+  path: string;
+  Icon: ComponentType<{ className?: string }>;
+  cardIconColor: string;
+  labelColor: string;
+  gradient: string;
+  edge: string;
+};
+
+type NavCard = {
+  title: string;
+  path: string;
+  icon: ReactNode;
+  bg: string;
+  edge: string;
+  glow: string;
+  textColor: string;
+  action?: () => void;
+};
 
 // Page cache (same pattern as DocTrackingPage): the first visit loads once,
 // returning to the page renders instantly from memory with no loading
@@ -38,6 +63,7 @@ let cachedPageState: {
   userId: string;
   role: string;
   assignedUpazilas: string[];
+  assignedCategories: string[];
   supplies: any[];
   trackings: any[];
   selectedMonth: string;
@@ -58,6 +84,14 @@ export default function Dashboard() {
   const [visibleMonthsCount, setVisibleMonthsCount] = useState<number>(
     cachedPageState?.visibleMonthsCount ?? 2
   );
+  const [userRole, setUserRole] = useState<string>(
+    cachedPageState?.role || "officer"
+  );
+  const [assignedCategories, setAssignedCategories] = useState<string[]>(
+    cachedPageState?.assignedCategories || []
+  );
+  const [showVisitPicker, setShowVisitPicker] = useState(false);
+  const navigate = useNavigate();
 
   useEffect(() => {
     if (cachedPageState?.initialized) return;
@@ -84,6 +118,25 @@ export default function Dashboard() {
         if (profile) {
           role = profile.role || "officer";
           uUpazilas = parseArray(profile.upazilas);
+        }
+      }
+
+      // Assigned categories (Poultry / Cattle / Aqua) drive the Visit
+      // card. Fetched separately in a guard so a missing column can
+      // never break the profile/role load above.
+      let uCategories: string[] = [];
+      if (user) {
+        try {
+          const { data: catData } = await supabase
+            .from("users")
+            .select("assigned_categories")
+            .eq("id", user.id)
+            .single();
+          uCategories = parseArray(catData?.assigned_categories).map((c) =>
+            c === "Fish" ? "Aqua" : c
+          );
+        } catch {
+          uCategories = [];
         }
       }
 
@@ -120,12 +173,15 @@ export default function Dashboard() {
 
       setSupplies(finalSupplies);
       setTrackings(finalTrackings);
+      setUserRole(role);
+      setAssignedCategories(uCategories);
 
       cachedPageState = {
         initialized: true,
         userId: user?.id || "",
         role,
         assignedUpazilas: uUpazilas,
+        assignedCategories: uCategories,
         supplies: finalSupplies,
         trackings: finalTrackings,
         selectedMonth,
@@ -190,75 +246,182 @@ export default function Dashboard() {
     return date.toLocaleString("en-US", { month: "short", year: "numeric" });
   }
 
-  const navCards = [
+  // Visit card: category-aware. One category -> its visit page opens
+  // directly. Two or three -> a picker shows only those categories.
+  // Managers / super admins (and officers with no category set) see
+  // all three.
+  const VISIT_TYPES: VisitType[] = [
     {
-      title: "DOC Tracking",
-      path: "/doc-tracking",
-      icon: (
-        <FaClipboardList className="text-emerald-600 text-2xl sm:text-3xl" />
-      ),
-      bg: "bg-emerald-50 hover:bg-emerald-100 border-emerald-200",
-      textColor: "text-emerald-900",
+      key: "Poultry",
+      label: "Poultry",
+      path: "/visits",
+      Icon: GiRooster,
+      cardIconColor: "text-indigo-600",
+      labelColor: "text-indigo-900",
+      gradient: "from-indigo-100 to-indigo-200",
+      edge: "border-indigo-300",
     },
     {
-      title: "Vet Visits",
+      key: "Aqua",
+      label: "Aqua",
+      path: "/aqua-visits",
+      Icon: FaFish,
+      cardIconColor: "text-sky-600",
+      labelColor: "text-sky-900",
+      gradient: "from-sky-100 to-sky-200",
+      edge: "border-sky-300",
+    },
+    {
+      key: "Cattle",
+      label: "Cattle",
+      path: "/cattle-visits",
+      Icon: FaPaw,
+      cardIconColor: "text-amber-600",
+      labelColor: "text-amber-900",
+      gradient: "from-amber-100 to-amber-200",
+      edge: "border-amber-300",
+    },
+  ];
+  const isFullAccess =
+    userRole === "super_admin" || userRole === "manager";
+  const effectiveVisitTypes =
+    isFullAccess || assignedCategories.length === 0
+      ? VISIT_TYPES
+      : VISIT_TYPES.filter((t) => assignedCategories.includes(t.key));
+  const singleVisit =
+    effectiveVisitTypes.length === 1 ? effectiveVisitTypes[0] : null;
+  const visitCardIcon = singleVisit ? (
+    <singleVisit.Icon
+      className={`${singleVisit.cardIconColor} text-2xl sm:text-3xl`}
+    />
+  ) : (
+    <FaStethoscope className="text-indigo-600 text-2xl sm:text-3xl" />
+  );
+  function handleVisitCardClick() {
+    if (effectiveVisitTypes.length === 1) {
+      navigate(effectiveVisitTypes[0].path);
+    } else {
+      setShowVisitPicker(true);
+    }
+  }
+
+  const navCards: NavCard[] = [
+    {
+      title: "Agents",
+      path: "/agents",
+      icon: <FaUsers className="text-purple-600 text-2xl sm:text-3xl" />,
+      bg: "from-purple-100 to-purple-200",
+      edge: "border-b-purple-300",
+      glow: "shadow-purple-300/30",
+      textColor: "text-purple-900",
+    },
+    {
+      title: "Farmers",
+      path: "/farmers",
+      icon: <FaTractor className="text-teal-600 text-2xl sm:text-3xl" />,
+      bg: "from-teal-100 to-teal-200",
+      edge: "border-b-teal-300",
+      glow: "shadow-teal-300/30",
+      textColor: "text-teal-900",
+    },
+    {
+      title: "Visit",
       path: "/visits",
-      icon: <FaStethoscope className="text-indigo-600 text-2xl sm:text-3xl" />,
-      bg: "bg-indigo-50 hover:bg-indigo-100 border-indigo-200",
+      icon: visitCardIcon,
+      bg: "from-indigo-100 to-indigo-200",
+      edge: "border-b-indigo-300",
+      glow: "shadow-indigo-300/30",
       textColor: "text-indigo-900",
+      action: handleVisitCardClick,
     },
     {
       title: "Reports",
       path: "/reports",
       icon: <FaChartBar className="text-amber-600 text-2xl sm:text-3xl" />,
-      bg: "bg-amber-50 hover:bg-amber-100 border-amber-200",
+      bg: "from-amber-100 to-amber-200",
+      edge: "border-b-amber-300",
+      glow: "shadow-amber-300/30",
       textColor: "text-amber-900",
     },
     {
-      title: "Farmers",
-      path: "/farmers",
-      icon: <FaUserFriends className="text-teal-600 text-2xl sm:text-3xl" />,
-      bg: "bg-teal-50 hover:bg-teal-100 border-teal-200",
-      textColor: "text-teal-900",
-    },
-    {
-      title: "Agents",
-      path: "/agents",
-      icon: <FaUsers className="text-purple-600 text-2xl sm:text-3xl" />,
-      bg: "bg-purple-50 hover:bg-purple-100 border-purple-200",
-      textColor: "text-purple-900",
+      title: "Agent Tracking",
+      path: "/agent-tracking",
+      icon: <FaRoute className="text-rose-600 text-2xl sm:text-3xl" />,
+      bg: "from-rose-100 to-rose-200",
+      edge: "border-b-rose-300",
+      glow: "shadow-rose-300/30",
+      textColor: "text-rose-900",
     },
     {
       title: "Farmer Tracking",
       path: "/farmer-tracking",
-      icon: <FaMapMarkerAlt className="text-orange-600 text-2xl sm:text-3xl" />, 
-      bg: "bg-emerald-50 hover:bg-emerald-100 border-emerald-200",
+      icon: <FaMapMarkerAlt className="text-orange-600 text-2xl sm:text-3xl" />,
+      bg: "from-orange-100 to-orange-200",
+      edge: "border-b-orange-300",
+      glow: "shadow-orange-300/30",
+      textColor: "text-orange-900",
+    },
+    {
+      title: "DOC Tracking",
+      path: "/doc-tracking",
+      icon: <GiChicken className="text-emerald-600 text-2xl sm:text-3xl" />,
+      bg: "from-emerald-100 to-emerald-200",
+      edge: "border-b-emerald-300",
+      glow: "shadow-emerald-300/30",
       textColor: "text-emerald-900",
-    }
+    },
   ];
+
+  // One card for the uniform grid — soft 3D style: light gradient
+  // face, soft bottom edge, gentle glow, lift on hover, press on tap.
+  // A card with an action renders as a button instead of a link.
+  // The wide card (last one) spans 2 columns.
+  function renderCard(card: NavCard, wide = false) {
+    const content = (
+      <>
+        <div className="p-4 sm:p-3.5 bg-white rounded-xl shadow-sm shrink-0">
+          {card.icon}
+        </div>
+        <div className="min-w-0 flex-1">
+          <h2
+            className={`text-xs sm:text-lg font-bold tracking-tight ${card.textColor}`}
+          >
+            {card.title}
+          </h2>
+        </div>
+      </>
+    );
+    const cls = `rounded-2xl bg-gradient-to-br ${card.bg} border-b-4 ${card.edge} shadow-lg ${card.glow} p-3 sm:p-5 transition transform hover:-translate-y-1 hover:shadow-xl active:translate-y-0 active:border-b-2 flex flex-col sm:flex-row items-center sm:items-center gap-2 sm:gap-4 text-center sm:text-left ${
+      wide ? "col-span-2 " : ""
+    }`;
+    if (card.action) {
+      return (
+        <button
+          type="button"
+          key={card.path}
+          onClick={card.action}
+          className={`${cls} cursor-pointer`}
+        >
+          {content}
+        </button>
+      );
+    }
+    return (
+      <Link key={card.path} to={card.path} className={cls}>
+        {content}
+      </Link>
+    );
+  }
 
   return (
     <div className="p-3 sm:p-6 max-w-7xl mx-auto space-y-5">
-      {/* 5 CARDS (2 COLUMNS EVEN ON MOBILE) */}
-      <div className="grid grid-cols-2 gap-3 sm:gap-5">
-        {navCards.map((card) => (
-          <Link
-            key={card.path}
-            to={card.path}
-            className={`border rounded-2xl p-3 sm:p-5 shadow-sm transition transform hover:-translate-y-0.5 flex flex-col sm:flex-row items-center sm:items-center gap-2 sm:gap-4 text-center sm:text-left ${card.bg}`}
-          >
-            <div className="p-4 sm:p-3.5 bg-white rounded-xl shadow-sm shrink-0">
-              {card.icon}
-            </div>
-            <div className="min-w-0 flex-1">
-              <h2
-                className={`text-xs sm:text-lg font-bold tracking-tight ${card.textColor}`}
-              >
-                {card.title}
-              </h2>
-            </div>
-          </Link>
-        ))}
+      {/* One uniform grid for all cards: 2 per row on mobile, 4 per
+          row on PC. The last card (DOC Tracking) spans 2 columns so
+          every row stays full. */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-5">
+        {navCards.map((card, i) =>
+          renderCard(card, i === navCards.length - 1)
+        )}
       </div>
 
       {/* TOTAL DOC BY MONTHS TABLE FORMAT (COMPACT MOBILE FIT) */}
@@ -362,6 +525,51 @@ export default function Dashboard() {
             </div>
           )}
       </div>
+      {/* Visit picker: only the user's categories, as 3D buttons. */}
+      {showVisitPicker && (
+        <div
+          className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowVisitPicker(false)}
+        >
+          <div
+            className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-base font-bold text-slate-800 text-center">
+              Choose Visit
+            </h3>
+            <p className="text-xs text-slate-500 text-center mt-1 mb-4">
+              Select which visit to open
+            </p>
+            <div
+              className={`grid gap-3 ${
+                effectiveVisitTypes.length === 2
+                  ? "grid-cols-2"
+                  : "grid-cols-3"
+              }`}
+            >
+              {effectiveVisitTypes.map((t) => (
+                <Link
+                  key={t.key}
+                  to={t.path}
+                  onClick={() => setShowVisitPicker(false)}
+                  className={`flex flex-col items-center gap-2 rounded-2xl bg-gradient-to-b ${t.gradient} py-4 px-2 shadow-lg border-b-4 ${t.edge} transition hover:-translate-y-1 hover:shadow-xl active:translate-y-0 active:border-b-2`}
+                >
+                  <t.Icon className={`text-3xl ${t.cardIconColor}`} />
+                  <span className={`text-xs font-bold ${t.labelColor}`}>{t.label}</span>
+                </Link>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowVisitPicker(false)}
+              className="mt-4 w-full py-2 rounded-xl border border-slate-300 text-slate-700 text-xs font-semibold"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

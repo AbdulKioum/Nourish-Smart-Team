@@ -9,6 +9,7 @@ import {
   deleteAgent,
 } from "../../services/agentService";
 import { useAuth } from "../../context/AuthContext";
+import { useNavigate } from "react-router-dom";
 import {
   canEditRecord,
   canAddFarmer,
@@ -40,6 +41,7 @@ import {
   X,
   CheckCircle2,
   Navigation,
+  Users,
 } from "lucide-react";
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
@@ -339,6 +341,7 @@ let cachedPageState: {
 
 export default function AgentsPage() {
   const { role } = useAuth();
+  const navigate = useNavigate();
   const mapSectionRef = useRef<HTMLDivElement | null>(null);
   const agentMarkerRefs = useRef<Record<number, L.Marker | null>>({});
   const myLocationMarkerRef = useRef<L.Marker | null>(null);
@@ -2522,6 +2525,15 @@ export default function AgentsPage() {
                             >
                               <MapPin size={10} className="shrink-0" />
                               <span>Map</span>
+                            </button>
+                            <button
+                              onClick={() =>
+                                navigate(`/farmers?focusAgent=${agent.id}`)
+                              }
+                              className="inline-flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-0.5 rounded text-[11px] cursor-pointer"
+                            >
+                              <Users size={10} className="shrink-0" />
+                              <span>View Farmers</span>
                             </button>
                           </td>
                         </tr>

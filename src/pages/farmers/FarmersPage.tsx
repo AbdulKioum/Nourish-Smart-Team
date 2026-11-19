@@ -8,7 +8,7 @@ import {
   deleteFarmer,
 } from "../../services/farmerService";
 import { useAuth } from "../../context/AuthContext";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import {
   canEditRecord,
   canAddFarmer,
@@ -578,6 +578,7 @@ let cachedPageState: {
 export default function FarmersPage() {
   const { role } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const mapSectionRef = useRef<HTMLDivElement | null>(null);
 
   if (role === "viewer") {
@@ -1825,6 +1826,32 @@ export default function FarmersPage() {
       return acc;
     }, {})
   );
+
+  // Focus from AgentsPage "View Farmers": ?focusAgent=<id> — clear the
+  // NOTE: this effect must stay AFTER agentGroupedFarmers below — its dep
+  // array reads that list, and using it before its declaration is an error.
+  // other filters, set the Agent filter to that agent, and scroll to the
+  // agent's group once it renders. Once per landing; the user can change
+  // the filters freely afterwards.
+  const focusAgentFilterRef = useRef(false);
+  const focusAgentScrolledRef = useRef(false);
+  useEffect(() => {
+    const focusAgentId = new URLSearchParams(location.search).get(
+      "focusAgent"
+    );
+    if (!focusAgentId || focusAgentScrolledRef.current) return;
+    if (!focusAgentFilterRef.current) {
+      focusAgentFilterRef.current = true;
+      clearFilters();
+      setAgentFilter(String(focusAgentId));
+    }
+    const el = document.getElementById(`farmer-group-agent-${focusAgentId}`);
+    if (!el) return;
+    focusAgentScrolledRef.current = true;
+    setTimeout(() => {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 200);
+  }, [location.search, agentGroupedFarmers]);
 
   // "+" on a group header: open the add-farmer form prefilled for that
   // group — a sub-agent group preselects the sub-agent (with its parent
@@ -3520,7 +3547,8 @@ export default function FarmersPage() {
           {agentGroupedFarmers.map((group: any) => (
             <div
               key={group.agentId}
-              className="bg-white border border-slate-300 rounded-lg overflow-hidden shadow-sm"
+              id={`farmer-group-${group.agentId}`}
+              className="bg-white border border-slate-300 rounded-lg overflow-hidden shadow-sm scroll-mt-20"
             >
               <div className="bg-slate-100 border-b border-slate-300 px-3 py-2 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">

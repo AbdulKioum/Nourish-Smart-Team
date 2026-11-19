@@ -6,19 +6,20 @@ import {
   FaUsers,
   FaSitemap,
   FaStore,
-  FaUserFriends,
-  FaClipboardList,
   FaChartBar,
   FaUserShield,
   FaTimes,
   FaSignOutAlt,
   FaUserCircle,
   FaMapMarkerAlt,
-  FaStethoscope,
   FaFish,
   FaPaw,
   FaDownload,
+  FaEgg,
+  FaTractor,
+  FaRoute,
 } from "react-icons/fa";
+import { GiChicken, GiRooster } from "react-icons/gi";
 import { Capacitor } from "@capacitor/core";
 import { supabase } from "../../lib/supabase";
 import {
@@ -209,7 +210,7 @@ export default function Sidebar({
             onClick={handleMenuClick}
             className={menuClass("/visits")}
           >
-            <FaStethoscope className="text-base shrink-0" />
+            <GiRooster className="text-base shrink-0" />
             <span>Poultry Visit</span>
           </Link>
 
@@ -249,7 +250,7 @@ export default function Sidebar({
             onClick={handleMenuClick}
             className={menuClass("/doc-tracking")}
           >
-            <FaClipboardList className="text-base shrink-0" />
+            <GiChicken className="text-base shrink-0" />
             <span>DOC Tracking</span>
           </Link>
 
@@ -267,7 +268,7 @@ export default function Sidebar({
             onClick={handleMenuClick}
             className={menuClass("/agent-tracking")}
           >
-            <FaClipboardList className="text-base shrink-0" />
+            <FaRoute className="text-base shrink-0" />
             <span>Agent Tracking</span>
           </Link>
 
@@ -280,7 +281,7 @@ export default function Sidebar({
             onClick={handleMenuClick}
             className={menuClass("/farmers")}
           >
-            <FaUserFriends className="text-base shrink-0" />
+            <FaTractor className="text-base shrink-0" />
             <span>Farmers</span>
           </Link>
 
@@ -298,7 +299,7 @@ export default function Sidebar({
             onClick={handleMenuClick}
             className={menuClass("/doc-agents")}
           >
-            <FaUsers className="text-base shrink-0" />
+            <FaEgg className="text-base shrink-0" />
             <span>DOC Agents</span>
           </Link>
 

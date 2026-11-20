@@ -316,11 +316,19 @@ export default function ReportsPage() {
         // The module cache survives a logout/login in the same tab — never
         // serve another user's cached page (role, upazilas, users list).
         // If the session user changed, drop the cache and load fresh.
+        // An empty cached users list is also never trusted: the list
+        // always has at least the current user, so an empty one means a
+        // stale failed load — drop the cache so the network retry runs.
         const cachedUserId = cachedPageState.currentUserId;
+        const cachedUsersEmpty =
+          (cachedPageState.usersList || []).length === 0;
         const {
           data: { user },
         } = await supabase.auth.getUser();
-        if (user && String(cachedUserId || "") !== String(user.id)) {
+        if (
+          (user && String(cachedUserId || "") !== String(user.id)) ||
+          cachedUsersEmpty
+        ) {
           cachedPageState = null;
           loadReportsData();
         }

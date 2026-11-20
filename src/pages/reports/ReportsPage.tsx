@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Filter, ChevronDown, Stethoscope } from "lucide-react";
-import { supabase } from "../../lib/supabase";
+import { supabase, rawSupabase } from "../../lib/supabase";
 import ExcelJS from "exceljs";
 import SearchableSelect from "../../components/common/SearchableSelect";
 
@@ -311,10 +311,23 @@ export default function ReportsPage() {
   const isFullAccess = userRole === "super_admin" || userRole === "manager";
 
   useEffect(() => {
-    if (cachedPageState?.initialized) {
-      return;
-    }
-    loadReportsData();
+    (async () => {
+      if (cachedPageState?.initialized) {
+        // The module cache survives a logout/login in the same tab — never
+        // serve another user's cached page (role, upazilas, users list).
+        // If the session user changed, drop the cache and load fresh.
+        const cachedUserId = cachedPageState.currentUserId;
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (user && String(cachedUserId || "") !== String(user.id)) {
+          cachedPageState = null;
+          loadReportsData();
+        }
+        return;
+      }
+      loadReportsData();
+    })();
   }, []);
 
   async function loadReportsData() {
@@ -478,6 +491,22 @@ export default function ReportsPage() {
       userRows = usData || [];
     } catch {
       userRows = [];
+    }
+    // An empty list is never trusted on its own: the cache-first read can
+    // serve a stale empty IndexedDB copy (cached when the first fetch
+    // failed), and the page cache would then freeze the filter at 0.
+    // Retry once straight from the network. If that also returns nothing,
+    // the block is Supabase-side — check RLS on the users table.
+    if (userRows.length === 0 && navigator.onLine) {
+      try {
+        const { data: netData } = await rawSupabase
+          .from("users")
+          .select("id, full_name, upazilas")
+          .order("full_name");
+        if (Array.isArray(netData) && netData.length > 0) userRows = netData;
+      } catch {
+        // Keep the cached (empty) result — offline or unreachable.
+      }
     }
     setUsersList(userRows);
 

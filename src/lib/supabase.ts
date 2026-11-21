@@ -32,6 +32,7 @@ export const SYNC_TABLES = [
   "unions",
   "upazilas",
   "districts",
+  "bazars",
 ];
 
 export interface SyncMutation {

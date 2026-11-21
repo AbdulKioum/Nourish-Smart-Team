@@ -14,6 +14,7 @@ import LoginPage from "../pages/auth/LoginPage";
 
 import DashboardPage from "../pages/dashboard/DashboardPage";
 import CompaniesPage from "../pages/companies/CompaniesPage";
+import AreaPage from "../pages/area/AreaPage";
 import AgentsPage from "../pages/agents/AgentsPage";
 import SubAgentPage from "../pages/sub-agents/SubAgentPage";
 import RetailersPage from "../pages/retailers/RetailerPage";
@@ -214,6 +215,7 @@ export default function AppRoutes() {
         >
           <Route path="/" element={<DashboardPage />} />
           <Route path="/companies" element={<CompaniesPage />} />
+          <Route path="/area" element={<AreaPage />} />
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/sub-agents" element={<SubAgentPage />} />
           <Route path="/retailers" element={<RetailersPage />} />

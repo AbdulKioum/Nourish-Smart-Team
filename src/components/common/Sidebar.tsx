@@ -18,6 +18,7 @@ import {
   FaEgg,
   FaTractor,
   FaRoute,
+  FaMap,
 } from "react-icons/fa";
 import { GiChicken, GiRooster } from "react-icons/gi";
 import { Capacitor } from "@capacitor/core";
@@ -328,6 +329,15 @@ export default function Sidebar({
           >
             <FaBuilding className="text-base shrink-0" />
             <span>Companies</span>
+          </Link>
+
+          <Link
+            to="/area"
+            onClick={handleMenuClick}
+            className={menuClass("/area")}
+          >
+            <FaMap className="text-base shrink-0" />
+            <span>Area</span>
           </Link>
 
           {role === "super_admin" && (
